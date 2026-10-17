@@ -1,0 +1,33 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# dag-healer demo and local state
+.demo/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# UI
+ui/node_modules/
+ui/dist/
+
+# Docker / secrets
+docker/.env
+.env
+
+# OS / editors
+.DS_Store
+Thumbs.db

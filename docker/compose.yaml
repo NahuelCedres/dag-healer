@@ -1,0 +1,324 @@
+# dag-healer development stack: Apache Airflow 3.3.2 (LocalExecutor) + the dag-healer plugin.
+#
+# Based on the official reference compose file of Airflow 3.3.2
+# (https://airflow.apache.org/docs/apache-airflow/3.3.2/docker-compose.yaml), adapted:
+#   - LocalExecutor: no redis, no celery worker, no flower
+#   - one custom image (dag-healer/airflow:dev, built from docker/Dockerfile with the repository
+#     root as build context) shared by every Airflow container
+#   - the demo copy of the example repository (.demo/repo) is the DAGs bundle
+#   - a separate Postgres database "healer" for the incident store
+#   - mailpit as the SMTP sink for the alerts
+#   - profiles: "worker" (healer-worker) and "tests" (pytest on tests/airflow inside the image)
+#
+# WARNING: development configuration with fixed, publicly known secrets. Never expose it.
+#
+# Run it through the task runner (it creates docker/.env and .demo/repo first):
+#   python scripts/tasks.py up          # or: make up
+# or directly from the repository root:
+#   docker compose -f docker/compose.yaml up -d --wait
+#
+# Variables are read from docker/.env (see docker/.env.example) or from the shell.
+---
+name: dag-healer
+
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+  # INSECURE development default; override FERNET_KEY in docker/.env for anything shared.
+  AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-oBP-x0wLjzJcrv0PMy2BuNMcHMiohFuV5IJG82kmc9c=}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  # INSECURE development default.
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-dag-healer-dev-jwt-secret-insecure}
+  AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+  AIRFLOW__API__BASE_URL: http://localhost:8080
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/repo/dags
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  # Pick up new/changed DAG files faster than the 300 s default (demo convenience).
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+  # Simple HTTP server on the scheduler for health checks (as in the reference file).
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  # The repository root is importable for DAG code (e.g. "from src.etl import sales"),
+  # like on the user's Airflow box.
+  PYTHONPATH: /opt/airflow/repo
+  # dag-healer
+  HEALER_CONFIG: /opt/airflow/repo/healer.yaml
+  HEALER_HOME: /opt/airflow/healer
+  HEALER_DATABASE_URL: postgresql+psycopg2://airflow:airflow@postgres/healer
+  HEALER_API_URL: http://airflow-apiserver:8080
+  # Shared secret of the listener/callback -> ingest endpoint (INSECURE development default).
+  HEALER_INGEST_TOKEN: ${HEALER_INGEST_TOKEN:-dag-healer-dev-ingest-token}
+  HEALER_SMTP_HOST: mailpit
+  HEALER_SMTP_PORT: "1025"
+  # git: the repository is a bind mount owned by another uid; keep bytes and modes as they are.
+  GIT_CONFIG_COUNT: "3"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  GIT_CONFIG_KEY_1: core.autocrlf
+  GIT_CONFIG_VALUE_1: "false"
+  GIT_CONFIG_KEY_2: core.filemode
+  GIT_CONFIG_VALUE_2: "false"
+
+# Credentials only the dag-healer processes need (api-server, where "dag-healer ..." commands are
+# exec'ed, and healer-worker). They are NOT given to the scheduler: with the LocalExecutor it runs
+# the DAGs' task code, which must not see the LLM / GitHub / Airflow-admin credentials.
+# Empty values are passed through from docker/.env or the shell; unset ones stay unset.
+x-healer-secrets-env: &healer-secrets-env
+  HEALER_AIRFLOW_USERNAME: ${HEALER_AIRFLOW_USERNAME:-admin}
+  HEALER_AIRFLOW_PASSWORD: ${HEALER_AIRFLOW_PASSWORD:-admin}
+  ANTHROPIC_API_KEY:
+  GITHUB_TOKEN:
+  GITHUB_REPO:
+  HEALER_LLM_PROVIDER:
+
+x-airflow-common: &airflow-common
+  image: ${HEALER_IMAGE:-dag-healer/airflow:dev}
+  # The image is built by the airflow-init service only (one build for all services); the
+  # others never try to pull it from a registry.
+  pull_policy: never
+  environment:
+    <<: *airflow-common-env
+  volumes:
+    - ${HEALER_REPO_DIR:-../.demo/repo}:/opt/airflow/repo
+    - ${HEALER_LOGS_DIR:-../.demo/logs}:/opt/airflow/logs
+    - healer-home:/opt/airflow/healer
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+# Runs the service command through the image entrypoint as `bash -c 'exec "$@"'`, so that a
+# non-airflow command such as ["dag-healer", "worker"] is not turned into `airflow dag-healer ...`
+# while the entrypoint still prepares the user/HOME for an arbitrary AIRFLOW_UID.
+x-healer-entrypoint: &healer-entrypoint
+  entrypoint: ["/usr/bin/dumb-init", "--", "/entrypoint", "bash", "-c", "exec \"$$@\"", "dag-healer-entrypoint"]
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      # 01-healer.sql creates the separate "healer" database on first initialisation.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_MAX_MESSAGES: "5000"
+    ports:
+      - "8025:8025"   # web UI
+      - "1025:1025"   # SMTP
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      retries: 5
+      start_period: 10s
+    restart: always
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    environment:
+      <<: [*airflow-common-env, *healer-secrets-env]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    # The only service with a build section: every other service reuses this image.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -eu
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        if (( mem_available < 4000 )); then
+          echo "WARNING: at least 4 GB of memory is recommended for Docker; available: $${mem_available} MB"
+        fi
+        if (( cpus_available < 2 )); then
+          echo "WARNING: at least 2 CPUs are recommended for Docker; available: $${cpus_available}"
+        fi
+        echo
+        echo "Creating missing directories"
+        mkdir -v -p /opt/airflow/logs /opt/airflow/healer /opt/airflow/repo/dags
+        # As root, airflow is only importable through the image entrypoint (it adds the airflow
+        # user's site-packages to PYTHONPATH); run follow-up commands without re-migrating.
+        entrypoint_only() { _AIRFLOW_DB_MIGRATE= _AIRFLOW_WWW_USER_CREATE= /entrypoint "$$@"; }
+        echo
+        echo "Airflow version (the entrypoint migrates the metadata DB and creates the admin user):"
+        /entrypoint airflow version
+        entrypoint_only airflow db check-migrations --migration-wait-timeout 60
+        echo
+        echo "Creating the read-only user 'viewer' (Viewer role) if it does not exist"
+        entrypoint_only airflow users create \
+          --username viewer --password viewer --role Viewer \
+          --firstname Read --lastname Only --email viewer@example.com
+        # The Airflow UI builds the plugin nav items and tabs (react_apps) from GET /api/v2/plugins,
+        # which FAB only allows to Op/Admin by default; without this the read-only user cannot see
+        # the dag-healer UI at all. Additive and idempotent.
+        echo "Allowing the Viewer role to read the plugin list (needed to show the dag-healer UI)"
+        entrypoint_only airflow roles add-perms Viewer --resource Plugins --action can_read
+        echo
+        echo "Ensuring the dag-healer database exists (for postgres volumes created before initdb/)"
+        entrypoint_only python - <<'PY'
+        import os
+
+        import sqlalchemy as sa
+        from sqlalchemy.engine import make_url
+
+        url = make_url(os.environ["HEALER_DATABASE_URL"])
+        if url.get_backend_name() == "postgresql" and url.database:
+            engine = sa.create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+            with engine.connect() as conn:
+                found = conn.execute(
+                    sa.text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": url.database}
+                ).scalar()
+                if found:
+                    print(f"database {url.database!r} already exists")
+                else:
+                    conn.execute(sa.text('CREATE DATABASE "' + url.database.replace('"', '') + '"'))
+                    print(f"database {url.database!r} created")
+        PY
+        echo
+        echo "Changing ownership of the shared directories to ${AIRFLOW_UID:-50000}:0"
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/healer \
+          || echo "WARNING: could not change ownership of /opt/airflow/logs or /opt/airflow/healer"
+        chown "${AIRFLOW_UID:-50000}:0" /opt/airflow /opt/airflow/repo /opt/airflow/repo/dags \
+          || echo "WARNING: could not change ownership of the repository mount (fine on Docker Desktop)"
+        echo
+        ls -la /opt/airflow /opt/airflow/repo /opt/airflow/logs /opt/airflow/healer
+        echo
+        echo "airflow-init finished"
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+      _PIP_ADDITIONAL_REQUIREMENTS: ""
+    user: "0:0"
+
+  # Phase 2+: the dag-healer worker (reconcile -> triage -> report/repair). Opt in with
+  # `docker compose --profile worker up -d` or `python scripts/tasks.py up --worker`.
+  healer-worker:
+    <<: [*airflow-common, *healer-entrypoint]
+    profiles: ["worker"]
+    command: ["dag-healer", "worker"]
+    environment:
+      <<: [*airflow-common-env, *healer-secrets-env]
+      # The worker never imports the user's code itself; pytest runs inside its clones.
+      PYTHONPATH: ""
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-apiserver:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  # Airflow-dependent tests (tests/airflow) inside the image:
+  #   docker compose -f docker/compose.yaml --profile tests run --rm tests
+  # Standalone: SQLite metadata DB and SimpleAuthManager under /tmp, no other service needed.
+  # tests/airflow/conftest.py may override any of these variables before importing airflow.
+  tests:
+    image: ${HEALER_IMAGE:-dag-healer/airflow:dev}
+    pull_policy: never
+    profiles: ["tests"]
+    user: "${AIRFLOW_UID:-50000}:0"
+    working_dir: /opt/dag-healer
+    environment:
+      AIRFLOW_HOME: /tmp/airflow-tests
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow-tests/airflow.db
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin,viewer:viewer
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "false"
+      AIRFLOW__API_AUTH__JWT_SECRET: dag-healer-tests-jwt-secret
+      AIRFLOW__API__BASE_URL: http://localhost:8080
+      HEALER_HOME: /tmp/airflow-tests/healer
+      HEALER_DATABASE_URL: sqlite:////tmp/airflow-tests/healer.db
+      HEALER_INGEST_TOKEN: dag-healer-tests-ingest-token
+      HEALER_LLM_PROVIDER: fake
+      CONNECTION_CHECK_MAX_COUNT: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../tests:/opt/dag-healer/tests:ro
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir=/opt/dag-healer", "tests/airflow"]
+
+volumes:
+  postgres-db-volume:
+  healer-home:

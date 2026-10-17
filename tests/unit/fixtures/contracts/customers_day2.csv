@@ -1,0 +1,5 @@
+customer_id,email,full_name,signup_date,country,lifetime_value,is_active
+7,gabriela.mora@example.com,Gabriela Mora,2026-10-01,AR,99.9,true
+8,hugo.paz@example.com,Hugo Paz,2026-10-02T14:03:00Z,UY,10.0,true
+9,ines.vera@example.com,Ines Vera,2026-10-02T15:30:00+00:00,AR,,true
+10,julian.rios@example.com,Julian Rios,2026-10-03,CL,42.0,false

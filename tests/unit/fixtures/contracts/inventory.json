@@ -1,0 +1,5 @@
+[
+  {"sku": "SKU-1", "qty": 10, "warehouse": "north", "updated_at": "2026-09-01T08:00:00Z"},
+  {"sku": "SKU-2", "qty": 0, "warehouse": "south", "updated_at": "2026-09-01T08:00:00Z"},
+  {"sku": "SKU-3", "qty": null, "warehouse": "north", "updated_at": "2026-09-01T09:30:00Z"}
+]

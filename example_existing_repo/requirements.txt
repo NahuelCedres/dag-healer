@@ -1,0 +1,2 @@
+# apache-airflow comes from the platform image, do not pin it here
+pandas>=2.1

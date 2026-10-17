@@ -1,0 +1,37 @@
+# Build context = repository root (docker/Dockerfile). Keep it small and secret-free.
+
+# VCS, virtualenvs, demo state
+.git
+.venv
+venv
+.demo
+
+# Local secrets and editor/agent settings
+.env
+docker/.env
+.idea
+.vscode
+.claude
+
+# Node (dependencies are installed inside the ui stage)
+ui/node_modules
+ui/dist
+ui/coverage
+ui/.pnpm-store
+**/node_modules
+**/.pnpm-store
+**/.vite
+
+# Python caches and build output
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.hypothesis
+**/*.egg-info
+build
+dist
+htmlcov
+.coverage
+.coverage.*

@@ -1,0 +1,36 @@
+# Normalize every text file to LF in the repository and in working trees (the code
+# runs in Linux containers that bind-mount this checkout from Windows).
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.parquet binary
+*.feather binary
+*.arrow binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.whl binary
+*.xlsx binary
+
+# Generated files: committed, but not diffed line by line
+src/dag_healer/api/static/main.umd.cjs linguist-generated=true -diff
+ui/pnpm-lock.yaml linguist-generated=true

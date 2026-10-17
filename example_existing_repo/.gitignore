@@ -1,0 +1,11 @@
+# job outputs
+data/processed/
+
+__pycache__/
+*.pyc
+venv/
+.venv/
+.idea/
+.vscode/
+.env
+logs/

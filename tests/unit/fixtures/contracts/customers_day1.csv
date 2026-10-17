@@ -1,0 +1,7 @@
+customer_id,email,full_name,signup_date,country,lifetime_value,is_active
+1,ana.perez@example.com,Ana Perez,2026-09-01,AR,120.5,true
+2,bruno.diaz@example.com,Bruno Diaz,2026-09-02,AR,80.0,true
+3,carla.gomez@example.com,Carla Gomez,2026-09-03,UY,,false
+4,diego.ruiz@example.com,Diego Ruiz,2026-09-05,CL,45.25,true
+5,elena.sosa@example.com,Elena Sosa,2026-09-08,AR,300.0,true
+6,fabian.leiva@example.com,Fabian Leiva,2026-09-13,BR,15.75,false
