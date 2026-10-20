@@ -1,0 +1,33 @@
+{% extends "_layout.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block headline %}Fix proposed{% endblock %}
+{% block lead %}dag-healer reproduced this failure with a new test and proposed a minimal code fix. The new test fails without the fix and passes with it. Nothing is merged automatically.{% endblock %}
+{% block content %}
+{{ m.summary(incident) }}
+{{ m.text_section("Root cause", incident.diagnosis) }}
+{{ m.text_section("The fix", incident.fix_summary) }}
+{% if incident.test_path or incident.branch or changed_files or incident.attempts %}
+{% call m.section("Changes") %}
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+  {% if incident.test_path %}{{ m.row("New test", incident.test_path, True) }}{% endif %}
+  {% if incident.branch %}{{ m.row("Branch", incident.branch, True) }}{% endif %}
+  {% if changed_files %}{{ m.row("Changed files", changed_files | join(", "), True) }}{% endif %}
+  {% if incident.attempts %}{{ m.row("Attempts", incident.attempts) }}{% endif %}
+</table>
+{% endcall %}
+{% endif %}
+{{ m.list_section("Notes", notes) }}
+{% call m.section("Review") %}
+{% if links.pr_kind == "pull_request" %}
+{{ m.paragraph("A pull request is waiting for your review. Merge it like any other contribution; once the fix is deployed, retry the task from the Healer incident tab.") }}
+{{ m.button(links.pr, "Review the pull request", accent) }}
+{% elif links.pr %}
+{{ m.paragraph("No GitHub pull request was opened (no GitHub token or repository configured): the fix was saved as PR.md and fix.patch" ~ (" and pushed to the local branch " ~ incident.branch if incident.branch else "") ~ ". Once the fix is merged and deployed, retry the task from the Healer incident tab.") }}
+{{ m.button(links.pr, "Review PR.md", accent) }}
+{% else %}
+{{ m.paragraph("Review the proposed change in the Healer incident tab; once the fix is merged and deployed, retry the task from there.") }}
+{% endif %}
+{{ m.button(links.task_instance, "Open the Healer incident", "#374151") }}
+{{ m.secondary_links(links) }}
+{% endcall %}
+{% endblock %}

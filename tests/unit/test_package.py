@@ -177,14 +177,14 @@ def test_plugin_definition(
     assert plugin_cls.listeners == [listener_module]
 
     apps = {app["name"]: app for app in plugin_cls.react_apps}
-    assert set(apps) == {"DagHealerNav", "DagHealerDag", "DagHealerTaskInstance"}
-    assert apps["DagHealerNav"]["destination"] == "nav"
-    assert apps["DagHealerNav"]["url_route"] == "healer"
-    assert apps["DagHealerNav"]["nav_top_level"] is True
-    assert apps["DagHealerDag"]["destination"] == "dag"
-    assert apps["DagHealerDag"]["url_route"] == "healer-dag"
-    assert apps["DagHealerTaskInstance"]["destination"] == "task_instance"
-    assert apps["DagHealerTaskInstance"]["url_route"] == "healer-ti"
+    assert set(apps) == {"Healer", "Healer incidents", "Healer incident"}
+    assert apps["Healer"]["destination"] == "nav"
+    assert apps["Healer"]["url_route"] == "healer"
+    assert apps["Healer"]["nav_top_level"] is True
+    assert apps["Healer incidents"]["destination"] == "dag"
+    assert apps["Healer incidents"]["url_route"] == "healer-dag"
+    assert apps["Healer incident"]["destination"] == "task_instance"
+    assert apps["Healer incident"]["url_route"] == "healer-ti"
     for app in apps.values():
         assert app["bundle_url"] == f"healer/static/main.umd.cjs?v={__version__}"
         assert not app["bundle_url"].startswith("/")

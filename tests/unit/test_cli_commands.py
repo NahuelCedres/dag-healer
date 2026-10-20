@@ -377,9 +377,13 @@ def test_incidents_list_store_unreachable(
 # --------------------------------------------------------------------------- worker / registry
 
 
-def test_worker_placeholder(isolated: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["worker", "--once"]) == 2
-    assert "worker arrives in phase 2" in capsys.readouterr().err
+def test_worker_rejects_an_invalid_config(
+    isolated: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "healer.yaml"
+    bad.write_text("version: 2\n", encoding="utf-8")
+    assert main(["-c", str(bad), "worker", "--once"]) == 1
+    assert "unsupported config version" in capsys.readouterr().err
 
 
 def test_all_commands_registered(capsys: pytest.CaptureFixture[str]) -> None:

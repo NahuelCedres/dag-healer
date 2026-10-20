@@ -1,9 +1,11 @@
 /**
- * Minimal client for the dag-healer API mounted by the plugin under `/healer` on the Airflow API server.
+ * Typed client for the dag-healer API mounted by the plugin under `/healer` on the Airflow API server.
  *
  * Requests are same-origin: the Airflow `_token` cookie (HttpOnly) is sent by the browser on its own,
  * so the UI never handles credentials. URLs are resolved against `document.baseURI`, which the Airflow
  * UI sets with `<base href>`, so deployments under a sub-path keep working.
+ *
+ * The types below mirror the JSON shapes of the `/healer/api/v1` endpoints.
  */
 
 export const API_PREFIX = "healer/api/v1/";
@@ -11,46 +13,288 @@ export const API_PREFIX = "healer/api/v1/";
 /** Header required by the healer API on every request (CSRF guard for state-changing calls). */
 export const REQUESTED_WITH = "dag-healer";
 
-/** Error raised for any failed API call; `status` is the HTTP status, or 0 for network failures. */
+// --------------------------------------------------------------------------------------------- //
+// Shapes
+// --------------------------------------------------------------------------------------------- //
+
+export type Category = "ambiguous" | "code" | "data";
+
+export type IncidentStatus =
+  | "classified"
+  | "error"
+  | "ignored"
+  | "new"
+  | "repair_failed"
+  | "repaired"
+  | "repairing"
+  | "reported"
+  | "reporting"
+  | "resumed"
+  | "triaging"
+  | "waiting_human";
+
+/** Statuses of incidents that still need work (by the worker or by a human). */
+export const OPEN_STATUSES: ReadonlyArray<IncidentStatus> = [
+  "new",
+  "triaging",
+  "classified",
+  "reporting",
+  "repairing",
+  "waiting_human",
+  "resumed",
+];
+
+export const ALL_STATUSES: ReadonlyArray<IncidentStatus> = [
+  ...OPEN_STATUSES,
+  "reported",
+  "repaired",
+  "repair_failed",
+  "ignored",
+  "error",
+];
+
+export const CATEGORIES: ReadonlyArray<Category> = ["data", "code", "ambiguous"];
+
+export type IncidentAction = "ignore" | "resolve_code" | "resolve_data" | "retry_repair" | "retry_task";
+
+export type Resolution = "code" | "data" | "ignore";
+
+export type ContractStatus = "approved" | "draft" | "missing" | "stale";
+
+export interface IncidentSummary {
+  category: Category | null;
+  confidence: number | null;
+  created_at: string;
+  dag_id: string;
+  /** Not part of the summary contract; used when a server includes it. */
+  diagnosis?: string | null;
+  error_summary: string;
+  has_pr_md: boolean;
+  id: string;
+  map_index: number;
+  occurrences: number;
+  pr_url: string | null;
+  run_id: string;
+  source: string;
+  status: IncidentStatus;
+  task_id: string;
+  try_number: number;
+  updated_at: string;
+}
+
+/** One broken contract rule (`dag_healer.contracts.schema.Violation`). */
+export interface Violation {
+  actual?: unknown;
+  column?: string | null;
+  dataset?: string;
+  expected?: unknown;
+  message?: string;
+  row_indexes?: Array<number>;
+  rule: string;
+}
+
+/** The rule picked as the main cause of a data incident (a violation, or a looser object). */
+export type ViolatedRule = Partial<Violation> & Record<string, unknown>;
+
+/** Masked rows of a dataset; `rows` are records (column -> value) or positional arrays. */
+export interface MaskedSample {
+  columns: Array<string>;
+  dataset: string;
+  masked: true;
+  rows: Array<Array<unknown> | Record<string, unknown>>;
+}
+
+export interface IncidentEvent {
+  actor: string;
+  at: string;
+  data: unknown;
+  kind: string;
+  message: string;
+}
+
+export interface AlertRecord {
+  channel: string;
+  error: string | null;
+  recipients: Array<string> | null;
+  sent_at: string;
+  status: string;
+  subject: string;
+}
+
+export interface PendingCommand {
+  actor: string;
+  created_at: string;
+  id: number | string;
+  kind: string;
+}
+
+export interface IncidentLinks {
+  dag?: string | null;
+  healer?: string | null;
+  task_instance?: string | null;
+}
+
+export interface IncidentDetail extends IncidentSummary {
+  alerts: Array<AlertRecord>;
+  allowed_actions: Array<IncidentAction>;
+  attempts: number;
+  can_edit: boolean;
+  diagnosis: string | null;
+  diff: string | null;
+  events: Array<IncidentEvent>;
+  evidence: Array<string>;
+  links: IncidentLinks;
+  pending_commands: Array<PendingCommand>;
+  pr_md_url: string | null;
+  pytest_output: string | null;
+  resolution: string | null;
+  resolved_by: string | null;
+  sample: MaskedSample | null;
+  test_code: string | null;
+  test_path: string | null;
+  tokens_used: number;
+  violated_rule: ViolatedRule | null;
+  violations: Array<Violation>;
+}
+
+export interface DagSummary {
+  contract_status: ContractStatus;
+  dag_id: string;
+  last_incident: IncidentSummary | null;
+  monitored: boolean;
+  open_incidents: number;
+}
+
+export interface ColumnRuleView {
+  allowed_values: Array<string> | null;
+  dtype: string;
+  max: number | null;
+  min: number | null;
+  name: string;
+  note: string | null;
+  nullable: boolean;
+  pii: boolean;
+}
+
+export interface ContractDatasetView {
+  columns: Array<ColumnRuleView>;
+  locator: { path: string; type: string };
+  name: string;
+  row_count: { max: number | null; min: number | null };
+  task_id: string | null;
+}
+
+export interface ContractView {
+  approved_at: string | null;
+  approved_by: string | null;
+  can_approve: boolean;
+  dag_id: string;
+  datasets: Array<ContractDatasetView>;
+  path: string;
+  pending_approval: boolean;
+  stale: boolean;
+  status: ContractStatus;
+}
+
+export interface MeResponse {
+  base_url: string | null;
+  user: Record<string, unknown> | string | null;
+}
+
+export interface IncidentListResponse {
+  incidents: Array<IncidentSummary>;
+  total: number;
+}
+
+export interface DagListResponse {
+  dags: Array<DagSummary>;
+}
+
+export interface ContractListResponse {
+  contracts: Array<ContractView>;
+}
+
+export interface DagIncidentsResponse {
+  can_edit: boolean;
+  contract: ContractView | null;
+  incidents: Array<IncidentSummary>;
+  monitored: boolean;
+}
+
+export interface TaskInstanceIncidentResponse {
+  incident: IncidentDetail | null;
+}
+
+/** Answer of every state-changing endpoint: the queued command the worker will apply. */
+export interface CommandAccepted {
+  command_id: number | string;
+  status: string;
+}
+
+export interface TaskFailedAccepted {
+  accepted: boolean;
+  pending_event_id: number | string;
+}
+
+// --------------------------------------------------------------------------------------------- //
+// Errors
+// --------------------------------------------------------------------------------------------- //
+
+/**
+ * Error raised for any failed API call.
+ *
+ * `status` is the HTTP status (0 for network failures) and `detail` the human-readable message taken
+ * from the FastAPI `{"detail": ...}` body; `body` keeps the raw parsed body.
+ */
 export class ApiError extends Error {
-  readonly detail: unknown;
+  readonly body: unknown;
+  readonly detail: string;
   readonly path: string;
   readonly status: number;
 
-  constructor(status: number, message: string, path: string, detail?: unknown) {
-    super(message);
+  constructor(status: number, detail: string, path: string, body?: unknown) {
+    super(detail);
     this.name = "ApiError";
     this.status = status;
-    this.path = path;
     this.detail = detail;
+    this.path = path;
+    this.body = body;
   }
 }
 
 /** 401: the Airflow session cookie is missing or expired. */
 export class UnauthorizedError extends ApiError {
-  constructor(path: string, detail?: unknown) {
-    super(401, "Your Airflow session has expired. Reload the page to sign in again.", path, detail);
+  constructor(path: string, detail: string, body?: unknown) {
+    super(401, detail, path, body);
     this.name = "UnauthorizedError";
   }
 }
 
 /** 403: the current user lacks the Airflow permission required by the endpoint. */
 export class ForbiddenError extends ApiError {
-  constructor(path: string, message: string, detail?: unknown) {
-    super(403, message, path, detail);
+  constructor(path: string, detail: string, body?: unknown) {
+    super(403, detail, path, body);
     this.name = "ForbiddenError";
   }
 }
 
-/** 404: unknown incident, DAG or contract. */
+/** 404: unknown incident, DAG or contract (or an older plugin without that route). */
 export class NotFoundError extends ApiError {
-  constructor(path: string, message: string, detail?: unknown) {
-    super(404, message, path, detail);
+  constructor(path: string, detail: string, body?: unknown) {
+    super(404, detail, path, body);
     this.name = "NotFoundError";
   }
 }
 
-/** The request never reached the server (offline, DNS, CORS, aborted...). */
+/** 409: the action is not allowed for the current status of the incident. */
+export class ConflictError extends ApiError {
+  constructor(path: string, detail: string, body?: unknown) {
+    super(409, detail, path, body);
+    this.name = "ConflictError";
+  }
+}
+
+/** The request never reached the server (offline, DNS, aborted...). */
 export class NetworkError extends ApiError {
   constructor(path: string, cause: unknown) {
     super(0, `Network error while calling ${path}: ${describe(cause)}`, path, cause);
@@ -60,6 +304,14 @@ export class NetworkError extends ApiError {
 
 export const isApiError = (error: unknown): error is ApiError => error instanceof ApiError;
 
+/** True when one of the errors is a 401 (the Airflow session expired). */
+export const hasSessionExpired = (...errors: Array<unknown>): boolean =>
+  errors.some((error) => isApiError(error) && error.status === 401);
+
+/** Normalize anything thrown by a loader into an {@link ApiError}. */
+export const toApiError = (error: unknown, path = ""): ApiError =>
+  isApiError(error) ? error : new ApiError(0, describe(error), path, error);
+
 function describe(value: unknown): string {
   if (value instanceof Error) {
     return value.message;
@@ -67,11 +319,6 @@ function describe(value: unknown): string {
 
   return typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
 }
-
-/** Build the absolute URL of an API path such as `"incidents?limit=20"` or `"dags/x/contract"`. */
-export const apiUrl = (path: string, baseUri: string = document.baseURI): URL =>
-  // A leading slash would resolve against the origin root and escape the deployment base path.
-  new URL(API_PREFIX + path.replace(/^\/+/u, ""), baseUri);
 
 /** Human-readable message from a FastAPI error body (`{"detail": "..."}` or validation errors). */
 const messageFromDetail = (status: number, detail: unknown): string => {
@@ -108,22 +355,33 @@ const readBody = async (response: Response): Promise<unknown> => {
   return text;
 };
 
-const toApiError = async (response: Response, path: string): Promise<ApiError> => {
+const errorFromResponse = async (response: Response, path: string): Promise<ApiError> => {
   const body = await readBody(response);
-  const detail = body !== null && typeof body === "object" && "detail" in body ? body.detail : body;
-  const message = messageFromDetail(response.status, detail);
+  const rawDetail = body !== null && typeof body === "object" && "detail" in body ? body.detail : body;
+  const detail = messageFromDetail(response.status, rawDetail);
 
   switch (response.status) {
     case 401:
-      return new UnauthorizedError(path, detail);
+      return new UnauthorizedError(path, detail, body);
     case 403:
-      return new ForbiddenError(path, message, detail);
+      return new ForbiddenError(path, detail, body);
     case 404:
-      return new NotFoundError(path, message, detail);
+      return new NotFoundError(path, detail, body);
+    case 409:
+      return new ConflictError(path, detail, body);
     default:
-      return new ApiError(response.status, message, path, detail);
+      return new ApiError(response.status, detail, path, body);
   }
 };
+
+// --------------------------------------------------------------------------------------------- //
+// Transport
+// --------------------------------------------------------------------------------------------- //
+
+/** Build the absolute URL of an API path such as `"incidents?limit=20"` or `"dags/x/contract"`. */
+export const apiUrl = (path: string, baseUri: string = document.baseURI): URL =>
+  // A leading slash would resolve against the origin root and escape the deployment base path.
+  new URL(API_PREFIX + path.replace(/^\/+/u, ""), baseUri);
 
 /**
  * Call the healer API and return the parsed JSON (or text) body.
@@ -151,12 +409,147 @@ export const apiFetch = async <T = unknown>(path: string, init: RequestInit = {}
   }
 
   if (!response.ok) {
-    throw await toApiError(response, path);
+    throw await errorFromResponse(response, path);
   }
 
   return (await readBody(response)) as T;
 };
 
 /** POST a JSON body to the healer API. */
-export const apiPost = <T = unknown>(path: string, body: unknown = {}): Promise<T> =>
-  apiFetch<T>(path, { body: JSON.stringify(body), method: "POST" });
+export const apiPost = <T = unknown>(path: string, body: unknown = {}, init: RequestInit = {}): Promise<T> =>
+  apiFetch<T>(path, { ...init, body: JSON.stringify(body), method: "POST" });
+
+const seg = (value: string): string => encodeURIComponent(value);
+
+const query = (params: Record<string, number | string | undefined>): string => {
+  const search = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  const text = search.toString();
+
+  return text.length > 0 ? `?${text}` : "";
+};
+
+/** `{note}` when a non-empty note was typed, `{}` otherwise. */
+const noteBody = (note?: string): { note?: string } => {
+  const trimmed = note?.trim();
+
+  return trimmed === undefined || trimmed.length === 0 ? {} : { note: trimmed };
+};
+
+// --------------------------------------------------------------------------------------------- //
+// Endpoints
+// --------------------------------------------------------------------------------------------- //
+
+/** `GET /me`: the signed-in user and the Airflow base URL. */
+export const getMe = (signal?: AbortSignal) => apiFetch<MeResponse>("me", { signal });
+
+export interface IncidentQuery {
+  dagId?: string;
+  limit?: number;
+  status?: string;
+}
+
+/** `GET /incidents`: incidents of the DAGs the user can read, newest first. */
+export const listIncidents = ({ dagId, limit, status }: IncidentQuery = {}, signal?: AbortSignal) =>
+  apiFetch<IncidentListResponse>(`incidents${query({ dag_id: dagId, limit, status })}`, { signal });
+
+/** `GET /dags`: monitored DAGs with their contract status and last incident. */
+export const listDags = (signal?: AbortSignal) => apiFetch<DagListResponse>("dags", { signal });
+
+/** `GET /contracts`: every data contract the user can read. */
+export const listContracts = (signal?: AbortSignal) =>
+  apiFetch<ContractListResponse>("contracts", { signal });
+
+/** `GET /dags/{dag_id}/incidents`: incidents, contract and monitoring status of one DAG. */
+export const getDagIncidents = (dagId: string, signal?: AbortSignal) =>
+  apiFetch<DagIncidentsResponse>(`dags/${seg(dagId)}/incidents`, { signal });
+
+/** `GET /dags/{dag_id}/incidents/{incident_id}`. */
+export const getIncident = (dagId: string, incidentId: string, signal?: AbortSignal) =>
+  apiFetch<IncidentDetail>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}`, { signal });
+
+/** Path of the PR.md of an incident, relative to the API prefix. */
+export const prMarkdownPath = (dagId: string, incidentId: string): string =>
+  `dags/${seg(dagId)}/incidents/${seg(incidentId)}/pr.md`;
+
+/** `GET /dags/{dag_id}/incidents/{incident_id}/pr.md` as text. */
+export const getPrMarkdown = (dagId: string, incidentId: string, signal?: AbortSignal) =>
+  apiFetch<string>(prMarkdownPath(dagId, incidentId), {
+    headers: { Accept: "text/markdown, text/plain;q=0.9, */*;q=0.1" },
+    signal,
+  });
+
+export interface TaskInstanceRef {
+  mapIndex?: number | string;
+  runId: string;
+  taskId: string;
+}
+
+/** `GET /dags/{dag_id}/task-instance`: the latest incident of a task instance (any try), or null. */
+export const getTaskInstanceIncident = (
+  dagId: string,
+  { mapIndex = -1, runId, taskId }: TaskInstanceRef,
+  signal?: AbortSignal,
+) =>
+  apiFetch<TaskInstanceIncidentResponse>(
+    `dags/${seg(dagId)}/task-instance${query({ map_index: mapIndex, run_id: runId, task_id: taskId })}`,
+    { signal },
+  );
+
+/** `GET /dags/{dag_id}/contract` (404 when the DAG has no contract). */
+export const getContract = (dagId: string, signal?: AbortSignal) =>
+  apiFetch<ContractView>(`dags/${seg(dagId)}/contract`, { signal });
+
+/** `POST .../resolve`: a human decides the incident is a data problem, a code bug, or noise. */
+export const resolveIncident = (dagId: string, incidentId: string, resolution: Resolution, note?: string) =>
+  apiPost<CommandAccepted>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}/resolve`, {
+    ...noteBody(note),
+    resolution,
+  });
+
+/** `POST .../retry-repair`: run the repair agent again. */
+export const retryRepair = (dagId: string, incidentId: string, note?: string) =>
+  apiPost<CommandAccepted>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}/retry-repair`, noteBody(note));
+
+/** `POST .../retry-task`: clear the failed task instance in Airflow. */
+export const retryTask = (dagId: string, incidentId: string, note?: string) =>
+  apiPost<CommandAccepted>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}/retry-task`, noteBody(note));
+
+/** `POST /dags/{dag_id}/contract/approve`. */
+export const approveContract = (dagId: string, note?: string) =>
+  apiPost<CommandAccepted>(`dags/${seg(dagId)}/contract/approve`, noteBody(note));
+
+/**
+ * `POST /events/task-failed` with the ingest token. Used by the listener and by tooling, never by
+ * the views (the token must not reach browsers in production).
+ */
+export const reportTaskFailed = (payload: Record<string, unknown>, token: string) =>
+  apiPost<TaskFailedAccepted>("events/task-failed", payload, { headers: { "X-Healer-Token": token } });
+
+/** Queue the command behind one of the action-bar buttons. */
+export const runIncidentAction = (
+  dagId: string,
+  incidentId: string,
+  action: IncidentAction,
+  note?: string,
+): Promise<CommandAccepted> => {
+  switch (action) {
+    case "ignore":
+      return resolveIncident(dagId, incidentId, "ignore", note);
+    case "resolve_code":
+      return resolveIncident(dagId, incidentId, "code", note);
+    case "resolve_data":
+      return resolveIncident(dagId, incidentId, "data", note);
+    case "retry_repair":
+      return retryRepair(dagId, incidentId, note);
+    case "retry_task":
+      return retryTask(dagId, incidentId, note);
+    default:
+      return Promise.reject(new ApiError(422, `Unknown action ${String(action)}`, ""));
+  }
+};

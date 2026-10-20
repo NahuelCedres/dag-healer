@@ -1,0 +1,6 @@
+{
+  "content": [
+    "[2026-10-18, 07:00:01 UTC] {taskinstance.py:1157} INFO - Dependencies all met for <TaskInstance: inventory_report.build_report manual__2026-10-18T07:00:00+00:00 [queued]>\n[2026-10-18, 07:00:02 UTC] {common.py:31} INFO - reading /opt/airflow/repo/data/incoming/inventory.csv\n[2026-10-18, 07:00:02 UTC] {taskinstance.py:2905} ERROR - Task failed with exception\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py\", line 465, in _execute_task\n    result = _execute_callable(context=context, **execute_callable_kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/airflow/repo/dags/../src/etl/inventory.py\", line 28, in buildReport\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n                ~~^^^^^^^\n  File \"/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'qty'\n[2026-10-18, 07:00:02 UTC] {taskinstance.py:1206} INFO - Marking task as FAILED. dag_id=inventory_report, task_id=build_report, contact ops-oncall@example.com or 555-201-7788\n"
+  ],
+  "continuation_token": null
+}

@@ -1,0 +1,40 @@
+{
+  "dag_id": "customers_sync",
+  "dag_display_name": "customers_sync",
+  "is_paused": false,
+  "is_stale": false,
+  "last_parsed_time": "2026-10-17T18:49:14.840238Z",
+  "last_parse_duration": 0.7658107959996414,
+  "last_expired": null,
+  "bundle_name": "dags-folder",
+  "bundle_version": null,
+  "relative_fileloc": "customers_sync.py",
+  "fileloc": "/opt/airflow/repo/dags/customers_sync.py",
+  "description": null,
+  "timetable_summary": null,
+  "timetable_description": "Never, external triggers only",
+  "timetable_partitioned": false,
+  "timetable_periodic": false,
+  "tags": [
+    {
+      "name": "legacy",
+      "dag_id": "customers_sync",
+      "dag_display_name": "customers_sync"
+    }
+  ],
+  "max_active_tasks": 16,
+  "max_active_runs": 16,
+  "max_consecutive_failed_dag_runs": 0,
+  "has_task_concurrency_limits": false,
+  "has_import_errors": false,
+  "next_dagrun_logical_date": null,
+  "next_dagrun_data_interval_start": null,
+  "next_dagrun_data_interval_end": null,
+  "next_dagrun_run_after": null,
+  "allowed_run_types": null,
+  "owners": [
+    "crm-team"
+  ],
+  "is_backfillable": false,
+  "file_token": "REDACTED"
+}

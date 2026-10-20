@@ -1,0 +1,57 @@
+{
+  "task_instances": [
+    {
+      "id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "task_id": "transform",
+      "dag_id": "customers_sync",
+      "dag_run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "map_index": -1,
+      "logical_date": null,
+      "run_after": "2026-10-17T18:48:46.093857Z",
+      "start_date": "2026-10-17T18:48:52.471386Z",
+      "end_date": "2026-10-17T18:48:53.147334Z",
+      "duration": 0.675948,
+      "state": "failed",
+      "try_number": 1,
+      "max_tries": 0,
+      "task_display_name": "transform",
+      "dag_display_name": "customers_sync",
+      "hostname": "9549ef6aaa86",
+      "unixname": "airflow",
+      "pool": "default_pool",
+      "pool_slots": 1,
+      "queue": "default",
+      "priority_weight": 2,
+      "operator": "PythonOperator",
+      "operator_name": "PythonOperator",
+      "queued_when": "2026-10-17T18:48:52.361005Z",
+      "scheduled_when": "2026-10-17T18:48:52.343161Z",
+      "pid": 483,
+      "executor": null,
+      "executor_config": "{}",
+      "note": null,
+      "rendered_map_index": null,
+      "rendered_fields": {
+        "templates_dict": null,
+        "op_args": [],
+        "op_kwargs": {}
+      },
+      "trigger": null,
+      "triggerer_job": null,
+      "dag_version": {
+        "id": "01a14b1b-39b9-7054-87d1-4fbbd6753492",
+        "version_number": 1,
+        "dag_id": "customers_sync",
+        "bundle_name": "dags-folder",
+        "bundle_version": null,
+        "created_at": "2026-10-17T18:23:57.881178Z",
+        "dag_display_name": "customers_sync",
+        "bundle_url": null
+      }
+    }
+  ],
+  "total_entries": 1,
+  "total_entries_limit": null,
+  "next_cursor": null,
+  "previous_cursor": null
+}

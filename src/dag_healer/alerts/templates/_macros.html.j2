@@ -1,0 +1,125 @@
+{#- HTML building blocks of the alert emails. Inline styles only: no external assets. -#}
+{% set mono = "font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;" %}
+
+{% macro badge(label, fg, bg) %}
+<span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:700;letter-spacing:0.03em;color:{{ fg }};background:{{ bg }};">{{ label }}</span>
+{% endmacro %}
+
+{% macro section(title) %}
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">{{ title }}</h2>
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{% macro paragraph(text) %}
+<p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">{{ text }}</p>
+{% endmacro %}
+
+{% macro pre(text) %}
+<pre style="margin:0;padding:12px;{{ mono }}font-size:12px;line-height:18px;color:#111827;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;white-space:pre-wrap;word-break:break-word;">{{ text }}</pre>
+{% endmacro %}
+
+{% macro row(label, value, monospace=False) %}
+<tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">{{ label }}</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;{{ mono if monospace else '' }}">{{ value }}</td>
+</tr>
+{% endmacro %}
+
+{% macro summary(incident) %}
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px 0;">
+  {{ row("DAG", incident.dag_id, True) }}
+  {{ row("Task", incident.task_id ~ (" (map index %d)" % incident.map_index if incident.map_index >= 0 else ""), True) }}
+  {{ row("Run", incident.run_id, True) }}
+  {{ row("Try", incident.try_number) }}
+  <tr>
+    <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;">Classification</td>
+    <td style="padding:4px 0;font-size:13px;color:#111827;">{{ badge(incident.category_label, incident.category_fg, incident.category_bg) }}{% if incident.confidence_pct %} <span style="color:#6b7280;">confidence {{ incident.confidence_pct }}</span>{% endif %}</td>
+  </tr>
+  {{ row("Status", incident.status) }}
+  {% if incident.occurrences > 1 %}
+  {{ row("Occurrences", incident.occurrences ~ " (same failure signature)") }}
+  {% endif %}
+  {{ row("Incident", incident.id, True) }}
+</table>
+{% endmacro %}
+
+{% macro rule_box(v) %}
+<div style="margin:0 0 20px 0;padding:12px 14px;border-left:4px solid #d97706;background:#fffbeb;border-radius:4px;">
+  <div style="font-size:12px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:0.04em;">Violated rule</div>
+  <div style="margin-top:4px;font-size:14px;color:#111827;"><code style="{{ mono }}font-size:13px;">{{ v.rule }}</code>{% if v.where %} on <code style="{{ mono }}font-size:13px;">{{ v.where }}</code>{% endif %}</div>
+  {% if v.message %}<div style="margin-top:4px;font-size:13px;color:#374151;">{{ v.message }}</div>{% endif %}
+  {% if v.expected or v.actual %}<div style="margin-top:4px;font-size:12px;color:#6b7280;">expected: <code style="{{ mono }}">{{ v.expected or "-" }}</code> &middot; actual: <code style="{{ mono }}">{{ v.actual or "-" }}</code>{% if v.rows %} &middot; {{ v.rows }} rows{% endif %}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro th(text) %}<th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">{{ text }}</th>{% endmacro %}
+{% macro td(text, monospace=False) %}<td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;{{ mono if monospace else '' }}">{{ text }}</td>{% endmacro %}
+
+{% macro violations(items, more, title="Contract violations") %}
+{% if items %}
+{% call section(title) %}
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+  <tr>{{ th("Rule") }}{{ th("Column") }}{{ th("Details") }}{{ th("Expected / actual") }}</tr>
+  {% for v in items %}
+  <tr>{{ td(v.rule, True) }}{{ td(v.where or "-", True) }}{{ td(v.message or "-") }}{{ td(((v.expected or "-") ~ " / " ~ (v.actual or "-")) if (v.expected or v.actual) else "-", True) }}</tr>
+  {% endfor %}
+</table>
+{% if more %}<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">... and {{ more }} more</p>{% endif %}
+{% endcall %}
+{% endif %}
+{% endmacro %}
+
+{% macro sample_table(sample) %}
+{% if sample %}
+{% call section("Masked data sample" ~ (" (" ~ sample.dataset ~ ")" if sample.dataset else "")) %}
+{% if sample.omitted %}
+{{ paragraph(sample.omitted) }}
+{% else %}
+<div style="overflow-x:auto;">
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+  <tr>{% for column in sample.columns %}{{ th(column) }}{% endfor %}</tr>
+  {% for cells in sample.rows %}
+  <tr>{% for cell in cells %}{{ td(cell, True) }}{% endfor %}</tr>
+  {% endfor %}
+</table>
+</div>
+<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">{% if sample.hidden_rows or sample.hidden_columns %}{{ sample.hidden_rows }} more rows and {{ sample.hidden_columns }} more columns not shown. {% endif %}Sensitive values are masked (<code style="{{ mono }}">h:&hellip;</code> = salted hash, <code style="{{ mono }}">***</code> = redacted).</p>
+{% endif %}
+{% endcall %}
+{% endif %}
+{% endmacro %}
+
+{% macro text_section(title, text) %}
+{% if text %}
+{% call section(title) %}{{ paragraph(text) }}{% endcall %}
+{% endif %}
+{% endmacro %}
+
+{% macro pre_section(title, text) %}
+{% if text %}
+{% call section(title) %}{{ pre(text) }}{% endcall %}
+{% endif %}
+{% endmacro %}
+
+{% macro list_section(title, items) %}
+{% if items %}
+{% call section(title) %}
+<ul style="margin:0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+  {% for item in items %}<li style="margin:0 0 4px 0;">{{ item }}</li>{% endfor %}
+</ul>
+{% endcall %}
+{% endif %}
+{% endmacro %}
+
+{% macro button(url, label, color="#2563eb") %}
+<a href="{{ url }}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:{{ color }};color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">{{ label }}</a>
+{% endmacro %}
+
+{% macro secondary_links(links) %}
+<p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;">
+  <a href="{{ links.dag }}" style="color:#2563eb;text-decoration:underline;">DAG incidents</a> &middot;
+  <a href="{{ links.healer }}" style="color:#2563eb;text-decoration:underline;">Healer page</a>
+</p>
+{% endmacro %}

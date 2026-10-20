@@ -1,0 +1,41 @@
+# Fake LLM script: CODE scenario (customers_sync), phase "test".
+# Writes a pytest regression test that reproduces the latent bug in
+# src/etl/customers.py::parse_signup_date (ISO-8601 timestamps are rejected).
+# Before the fix the first test fails with ValueError; the second one passes.
+name: customers_sync_test
+match:
+  dag_id: customers_sync
+  task_id: transform
+  exception_type: ValueError
+  phase: test
+steps:
+  - tool: list_files
+    input: {path: ".", pattern: "*.py"}
+  - tool: read_file
+    input: {path: src/etl/customers.py}
+  - tool: write_file
+    input:
+      path: tests/test_customers_signup_date.py
+      content: |
+        """Regression test for customers_sync: the CRM export may send ISO-8601 signup timestamps."""
+
+        from datetime import date
+
+        from src.etl.customers import parse_signup_date
+
+
+        def test_parse_signup_date_accepts_iso_timestamp_with_z():
+            assert parse_signup_date("2026-10-02T14:03:00Z") == date(2026, 10, 2)
+
+
+        def test_parse_signup_date_still_accepts_plain_dates():
+            assert parse_signup_date("2025-01-14") == date(2025, 1, 14)
+            assert parse_signup_date(" 2025-02-03 ") == date(2025, 2, 3)
+  - tool: run_tests
+    input:
+      paths: [tests/test_customers_signup_date.py]
+final_text: >-
+  Added tests/test_customers_signup_date.py. test_parse_signup_date_accepts_iso_timestamp_with_z
+  reproduces the failure of customers_sync.transform: parse_signup_date raises ValueError on the
+  ISO-8601 timestamp 2026-10-02T14:03:00Z, which the approved contract allows. The plain-date
+  test documents the behaviour that must keep working.

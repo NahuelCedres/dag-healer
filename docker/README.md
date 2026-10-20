@@ -14,7 +14,9 @@ All commands run from the repository root and work on Windows, macOS and Linux (
 spaces included). `make <target>` is an optional shortcut for the same commands.
 
 ```bash
+python scripts/tasks.py demo          # the whole day-2 demo (see "Demo" below); or: make demo
 python scripts/tasks.py up            # first run builds the image (UI + wheel + Airflow), then waits
+python scripts/tasks.py init          # dag-healer init on the mounted repo (the worker waits for it)
 python scripts/tasks.py ps            # container status
 python scripts/tasks.py logs -f airflow-scheduler
 python scripts/tasks.py healer doctor # any dag-healer command, inside the api-server
@@ -46,7 +48,7 @@ Then open:
 | `airflow-scheduler` | `dag-healer/airflow:dev` | - | Scheduler; with the LocalExecutor it also runs the tasks (and the dag-healer listener) |
 | `airflow-dag-processor` | `dag-healer/airflow:dev` | - | Parses `/opt/airflow/repo/dags` |
 | `airflow-triggerer` | `dag-healer/airflow:dev` | - | Deferrable operators |
-| `healer-worker` | `dag-healer/airflow:dev` | - | Profile `worker`: `dag-healer worker` (reconcile, triage, report, repair) |
+| `healer-worker` | `dag-healer/airflow:dev` | - | `dag-healer worker` (reconcile, triage, report, repair); starts with the stack and waits until `healer.yaml` exists |
 | `tests` | `dag-healer/airflow:dev` | - | Profile `tests`: `pytest tests/airflow` inside the image |
 
 Only `airflow-init` has a `build:` section; the other services reuse the image it builds
@@ -54,8 +56,10 @@ Only `airflow-init` has a `build:` section; the other services reuse the image i
 
 ### Profiles
 
+`healer-worker` is a default service (no profile). `python scripts/tasks.py up --no-worker`
+starts everything else. The only profile is `tests`:
+
 ```bash
-python scripts/tasks.py up --worker          # core services + healer-worker
 python scripts/tasks.py test-airflow         # rebuild the image, run tests/airflow, remove the container
 python scripts/tasks.py test-airflow --no-build -k auth   # extra arguments go to pytest
 ```
@@ -110,10 +114,58 @@ Shared by every Airflow container (`x-airflow-common-env`): LocalExecutor, FabAu
 Only `airflow-apiserver` and `healer-worker` also receive `HEALER_AIRFLOW_USERNAME` /
 `HEALER_AIRFLOW_PASSWORD`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GITHUB_REPO` and
 `HEALER_LLM_PROVIDER`: with the LocalExecutor the scheduler runs the DAGs' own task code,
-which has no business seeing those credentials. The optional ones are passed through from
-`docker/.env` or the shell and stay unset when they are not defined.
+which has no business seeing those credentials. The scheduler only gets what the listener
+needs to post failure events: `HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The optional
+credentials are passed through from `docker/.env` or the shell and stay unset when they are
+not defined.
 
-Without an Anthropic key, uncomment `HEALER_LLM_PROVIDER=fake` in `docker/.env`.
+`healer-worker` additionally sets `HEALER_FAKE_LLM_DIR=/opt/airflow/repo/fixtures/fake_llm`,
+the git identity of its fix commits (`GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` `dag-healer`,
+e-mail `dag-healer@localhost`) and an empty `PYTHONPATH`.
+
+### LLM provider
+
+`HEALER_LLM_PROVIDER` defaults to **`fake`**: an offline provider that follows the
+deterministic policy and replays the YAML scripts in `<repo>/fixtures/fake_llm`, so the demo
+needs no API key. **To use Claude, set `HEALER_LLM_PROVIDER=anthropic` and
+`ANTHROPIC_API_KEY` in `docker/.env`**, then `python scripts/tasks.py up` (the containers are
+recreated with the new environment).
+
+## Demo
+
+`python scripts/tasks.py demo` (same as `make demo` or `python scripts/demo.py`) runs the
+day-2 story of `example_existing_repo/` end to end (standard library only, Windows-safe):
+
+1. stops `healer-worker`, recreates `.demo/repo` from `example_existing_repo/` (new git
+   history; the `dags/` folder is rewritten in place so Airflow never loses the DAGs) and
+   empties the store with `dag-healer store reset --yes --artifacts` (it also restarts the
+   worker's REST poll at that moment, so older failures in Airflow's history are ignored);
+2. `docker compose up --detach --wait` (builds the image when it is missing; `--build` forces
+   a rebuild);
+3. `dag-healer init --repo /opt/airflow/repo`, then the demo settings in `healer.yaml` (poll
+   every 5 s; e-mail alerts to `mailpit:1025` for `data-team@example.com`), approves the
+   `sales_daily_etl` and `customers_sync` contracts (`inventory_report` stays a draft),
+   commits "Add dag-healer config and contracts" and starts the worker;
+4. copies `fixtures/day2/*.csv` over `data/incoming/` (uncommitted), triggers the three DAGs
+   through the REST API (admin token) and waits for their runs to fail;
+5. waits (up to `--timeout`, 600 s) for the three incidents: `sales_daily_etl` DATA
+   `reported`, `customers_sync` CODE `repaired` (new test, fix, PR.md, branch `healer/...`
+   in `.demo/repo`), `inventory_report` AMBIGUOUS `waiting_human`;
+6. prints the incidents, the URLs (Healer page, each task-instance "Healer incident" tab,
+   Mailpit) and copies each `PR.md` / `fix.patch` to `.demo/prs/<incident_id>/`.
+
+Options: `--no-reset` (keep the repo, store and config), `--build`, `--listener-only`
+(`monitor.modes: [listener]`: only the Airflow listener creates incidents, the REST poll is
+off), `--timeout SECONDS`. The AMBIGUOUS incident is left for you: open its "Healer incident"
+tab and click "Resolve as code" or "Resolve as data".
+
+`python scripts/tasks.py e2e` (`scripts/e2e_smoke.py`) runs the demo and then checks
+everything through the APIs (incidents, diff, PR.md, branch, Mailpit e-mails with masked
+samples, 401/403 answers, resolve as code and as data); it exits 1 when a check fails.
+`HEALER_E2E=1 python -m pytest tests/e2e` wraps it for pytest.
+
+Other store commands (run with `python scripts/tasks.py healer ...`): `store stats` (rows per
+table) and `store reset --yes [--artifacts] [--keep-state]`.
 
 ## Linux notes
 
@@ -124,6 +176,11 @@ creates the file. Otherwise files written by the containers under `.demo/` belon
 
 - `python scripts/tasks.py logs airflow-init` - migrations, user creation, ownership fixes.
 - `python scripts/tasks.py wait` - polls http://localhost:8080/api/v2/monitor/health.
+- `python scripts/tasks.py logs --follow healer-worker` - one line per incident transition.
+  "waiting for /opt/airflow/repo/healer.yaml" means `python scripts/tasks.py init` (or the
+  demo) has not run yet.
+- "The Docker daemon did not answer within 60 s": Docker Desktop is starting or stuck; check
+  its window (an error dialog may be waiting) or restart it.
 - Docker Desktop needs at least 4 GB of memory and 2 CPUs for Airflow.
 - Ports 8080, 8025 or 1025 already in use: stop the other program, or edit `docker/compose.yaml`.
 - Postgres volumes created before `initdb/` existed have no `healer` database; `airflow-init`

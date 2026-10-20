@@ -132,10 +132,15 @@ def test_airflow_init_creates_users_and_database(services: dict[str, Any]) -> No
 
 def test_profiles(services: dict[str, Any]) -> None:
     worker = services["healer-worker"]
-    assert worker["profiles"] == ["worker"]
+    assert "profiles" not in worker  # the worker starts with the stack
     assert worker["command"] == ["dag-healer", "worker"]
     # the image entrypoint would otherwise run `airflow dag-healer worker`
     assert worker["entrypoint"][:5] == ["/usr/bin/dumb-init", "--", "/entrypoint", "bash", "-c"]
+    # it waits for healer.yaml, then execs the command
+    script = worker["entrypoint"][5]
+    assert '[ -f "$${HEALER_CONFIG}" ]' in script and 'exec "$$@"' in script
+    assert worker["restart"] == "unless-stopped"
+    assert worker["depends_on"]["airflow-apiserver"]["condition"] == "service_healthy"
     tests = services["tests"]
     assert tests["profiles"] == ["tests"]
     assert tests["working_dir"] == "/opt/dag-healer"
@@ -183,3 +188,24 @@ def test_dockerignore_keeps_context_small() -> None:
     }
     expected = {".git", ".venv", ".demo", "ui/node_modules", "ui/dist", "ui/.pnpm-store", "docker/.env"}
     assert expected <= lines
+
+
+def test_worker_environment(services: dict[str, Any]) -> None:
+    env = services["healer-worker"]["environment"]
+    # offline fake LLM unless docker/.env selects Claude
+    assert env["HEALER_LLM_PROVIDER"] == "${HEALER_LLM_PROVIDER:-fake}"
+    assert services["airflow-apiserver"]["environment"]["HEALER_LLM_PROVIDER"] == env["HEALER_LLM_PROVIDER"]
+    assert env["HEALER_FAKE_LLM_DIR"] == "/opt/airflow/repo/fixtures/fake_llm"
+    for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        assert env[key] == "dag-healer"
+    for key in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        assert env[key] == "dag-healer@localhost"
+    assert env["PYTHONPATH"] == ""
+
+
+def test_scheduler_can_post_listener_events(services: dict[str, Any]) -> None:
+    """The task runner (scheduler, LocalExecutor) reaches the ingest endpoint, nothing more."""
+    env = services["airflow-scheduler"]["environment"]
+    assert env["HEALER_API_URL"] == "http://airflow-apiserver:8080"
+    assert env["HEALER_INGEST_TOKEN"].startswith("${HEALER_INGEST_TOKEN:-")
+    assert "HEALER_LLM_PROVIDER" not in env and "ANTHROPIC_API_KEY" not in env

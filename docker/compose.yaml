@@ -8,12 +8,16 @@
 #   - the demo copy of the example repository (.demo/repo) is the DAGs bundle
 #   - a separate Postgres database "healer" for the incident store
 #   - mailpit as the SMTP sink for the alerts
-#   - profiles: "worker" (healer-worker) and "tests" (pytest on tests/airflow inside the image)
+#   - healer-worker (`dag-healer worker`) starts with the stack; it waits for healer.yaml
+#   - profile "tests" (pytest on tests/airflow inside the image)
+#   - without ANTHROPIC_API_KEY the LLM provider defaults to the offline "fake" one; set
+#     HEALER_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in docker/.env to use Claude
 #
 # WARNING: development configuration with fixed, publicly known secrets. Never expose it.
 #
 # Run it through the task runner (it creates docker/.env and .demo/repo first):
 #   python scripts/tasks.py up          # or: make up
+#   python scripts/tasks.py demo        # the scripted end-to-end demo (scripts/demo.py)
 # or directly from the repository root:
 #   docker compose -f docker/compose.yaml up -d --wait
 #
@@ -70,7 +74,9 @@ x-healer-secrets-env: &healer-secrets-env
   ANTHROPIC_API_KEY:
   GITHUB_TOKEN:
   GITHUB_REPO:
-  HEALER_LLM_PROVIDER:
+  # "fake" (offline, scripted; the default) or "anthropic" (Claude, needs ANTHROPIC_API_KEY).
+  # To use Claude set HEALER_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in docker/.env.
+  HEALER_LLM_PROVIDER: ${HEALER_LLM_PROVIDER:-fake}
 
 x-airflow-common: &airflow-common
   image: ${HEALER_IMAGE:-dag-healer/airflow:dev}
@@ -87,12 +93,6 @@ x-airflow-common: &airflow-common
   depends_on: &airflow-common-depends-on
     postgres:
       condition: service_healthy
-
-# Runs the service command through the image entrypoint as `bash -c 'exec "$@"'`, so that a
-# non-airflow command such as ["dag-healer", "worker"] is not turned into `airflow dag-healer ...`
-# while the entrypoint still prepares the user/HOME for an arbitrary AIRFLOW_UID.
-x-healer-entrypoint: &healer-entrypoint
-  entrypoint: ["/usr/bin/dumb-init", "--", "/entrypoint", "bash", "-c", "exec \"$$@\"", "dag-healer-entrypoint"]
 
 services:
   postgres:
@@ -272,16 +272,39 @@ services:
       _PIP_ADDITIONAL_REQUIREMENTS: ""
     user: "0:0"
 
-  # Phase 2+: the dag-healer worker (reconcile -> triage -> report/repair). Opt in with
-  # `docker compose --profile worker up -d` or `python scripts/tasks.py up --worker`.
+  # The dag-healer worker (reconcile -> triage -> report/repair), the only writer of the
+  # repository (it clones it, and pushes healer/* branches back). It waits until healer.yaml
+  # exists (`python scripts/tasks.py init` or the demo writes it), then runs `dag-healer worker`.
+  # The command goes through the image entrypoint as `bash -c '... exec "$@"'`, so that it is
+  # not turned into `airflow dag-healer ...` while the entrypoint still prepares the user/HOME
+  # for an arbitrary AIRFLOW_UID.
   healer-worker:
-    <<: [*airflow-common, *healer-entrypoint]
-    profiles: ["worker"]
+    <<: *airflow-common
+    entrypoint:
+      - /usr/bin/dumb-init
+      - --
+      - /entrypoint
+      - bash
+      - -c
+      - |
+        until [ -f "$${HEALER_CONFIG}" ]; do
+          echo "dag-healer worker: waiting for $${HEALER_CONFIG} (run: python scripts/tasks.py init)"
+          sleep 10
+        done
+        exec "$$@"
+      - dag-healer-worker
     command: ["dag-healer", "worker"]
     environment:
       <<: [*airflow-common-env, *healer-secrets-env]
       # The worker never imports the user's code itself; pytest runs inside its clones.
       PYTHONPATH: ""
+      # Scripts of the offline "fake" LLM provider (used when HEALER_LLM_PROVIDER=fake).
+      HEALER_FAKE_LLM_DIR: /opt/airflow/repo/fixtures/fake_llm
+      # Identity of the fix commits on the healer/* branches.
+      GIT_AUTHOR_NAME: dag-healer
+      GIT_AUTHOR_EMAIL: dag-healer@localhost
+      GIT_COMMITTER_NAME: dag-healer
+      GIT_COMMITTER_EMAIL: dag-healer@localhost
     restart: unless-stopped
     depends_on:
       <<: *airflow-common-depends-on

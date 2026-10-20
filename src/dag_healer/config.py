@@ -338,6 +338,8 @@ class LlmConfig(_Model):
     model: str = "claude-opus-5-5"
     effort: str = "high"
     max_tokens: int = Field(default=16000, ge=1)
+    #: Opt into server-side refusal fallbacks (``fallbacks: "default"`` beta).
+    fallbacks: bool = True
 
 
 class LimitsConfig(_Model):
@@ -718,6 +720,7 @@ llm:
   model: claude-opus-5-5
   effort: high
   max_tokens: 16000
+  fallbacks: true                # server-side refusal fallbacks (Claude API only)
 
 limits:
   max_fix_attempts: 3

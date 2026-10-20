@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL_ENV = "HEALER_DATABASE_URL"
 SQLITE_BUSY_TIMEOUT_SECONDS = 30
+POSTGRES_CONNECT_TIMEOUT_SECONDS = 5
 
 _lock = threading.RLock()
 _engines: dict[str, Engine] = {}
@@ -73,10 +74,28 @@ def _install_sqlite_pragmas(engine: Engine, *, wal: bool) -> None:
             cursor.close()
 
 
+def _postgres_connect_args(url: str) -> dict[str, Any]:
+    """Connection timeout for PostgreSQL drivers, so an unreachable store fails fast.
+
+    libpq-based drivers (psycopg2, psycopg 3) take ``connect_timeout``; pg8000 takes
+    ``timeout``. A value given in the URL query string wins.
+    """
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "postgresql":
+        return {}
+    driver = parsed.get_driver_name()
+    key = "timeout" if driver == "pg8000" else "connect_timeout"
+    if driver not in ("psycopg2", "psycopg", "psycopg2cffi", "pg8000") or key in parsed.query:
+        return {}
+    return {key: POSTGRES_CONNECT_TIMEOUT_SECONDS}
+
+
 def _create_engine(url: str) -> Engine:
     backend = make_url(url).get_backend_name()
     if backend != "sqlite":
-        return create_engine(url, pool_pre_ping=True, pool_recycle=1800)
+        return create_engine(
+            url, pool_pre_ping=True, pool_recycle=1800, connect_args=_postgres_connect_args(url)
+        )
 
     connect_args: dict[str, Any] = {
         "check_same_thread": False,

@@ -1,0 +1,174 @@
+{
+  "content": [
+    {
+      "event": "::group::Log message source details"
+    },
+    {
+      "event": "/opt/airflow/logs/dag_id=sales_daily_etl/run_id=manual__2026-10-17T18:26:53.101536+00:00/task_id=extract_sales/attempt=1.log"
+    },
+    {
+      "event": "::endgroup::"
+    },
+    {
+      "timestamp": "2026-10-17T18:26:54.364801Z",
+      "event": "::group::Pre Execute",
+      "level": "info",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2412
+    },
+    {
+      "timestamp": "2026-10-17T18:26:58.461044Z",
+      "event": "DAG bundles loaded: dags-folder",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "airflow.dag_processing.bundles.manager.DagBundlesManager",
+      "filename": "manager.py",
+      "lineno": 304
+    },
+    {
+      "timestamp": "2026-10-17T18:26:58.467810Z",
+      "event": "Filling up the DagBag from /opt/airflow/repo/dags/sales_daily_etl.py",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "airflow.dag_processing.dagbag.BundleDagBag",
+      "filename": "dagbag.py",
+      "lineno": 460
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.278724Z",
+      "event": "Worker startup parse complete",
+      "level": "info",
+      "bundle_name": "dags-folder",
+      "bundle_version": null,
+      "dag_file": "sales_daily_etl.py",
+      "dag_id": "sales_daily_etl",
+      "bundle_prepare_ms": 8,
+      "dag_file_parse_ms": 1811,
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1073
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.313809Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2232
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.318438Z",
+      "event": "reading /opt/airflow/repo/data/incoming/sales.csv",
+      "level": "info",
+      "logger": "etl",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "filename": "common.py",
+      "lineno": 31
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.342710Z",
+      "event": "extracted 30 rows from data/incoming/sales.csv",
+      "level": "info",
+      "logger": "task.stdout"
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.360013Z",
+      "event": "wrote 30 rows to /opt/airflow/repo/data/processed/sales_staging.csv",
+      "level": "info",
+      "logger": "etl",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "filename": "common.py",
+      "lineno": 43
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.360382Z",
+      "event": "Done. Returned value was: 30",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "airflow.task.operators.airflow.providers.standard.operators.python.PythonOperator",
+      "filename": "python.py",
+      "lineno": 233
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.360513Z",
+      "event": "::group::Post Execute",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1580
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.360733Z",
+      "event": "Pushing xcom",
+      "level": "info",
+      "ti": "RuntimeTaskInstance(id=UUID('01a14b1d-e673-799e-8306-753205da0e60'), task_id='extract_sales', dag_id='sales_daily_etl', run_id='manual__2026-10-17T18:26:53.101536+00:00', try_number=1, dag_version_id=UUID('01a14b1b-3c7e-7fd4-8281-f49b57658509'), map_index=-1, hostname='9549ef6aaa86', context_carrier={'traceparent': '00-ba546a49da699041da197b07f6eef12b-9747028325bd3c2b-00'}, queue='default', task=<Task(PythonOperator): extract_sales>, bundle_instance=LocalDagBundle(name=dags-folder), max_tries=0, start_date=datetime.datetime(2026, 10, 17, 18, 26, 58, 454224, tzinfo=datetime.timezone.utc), end_date=None, state=<TaskInstanceState.RUNNING: 'running'>, is_mapped=False, rendered_map_index=None, sentry_integration='')",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2280
+    },
+    {
+      "timestamp": "2026-10-17T18:27:00.410828Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-17T18:26:53.101536+00:00",
+      "ti_id": "01a14b1d-e673-799e-8306-753205da0e60",
+      "task_id": "extract_sales",
+      "try_number": 1,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2379
+    }
+  ],
+  "continuation_token": null
+}

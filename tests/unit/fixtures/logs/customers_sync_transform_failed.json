@@ -1,0 +1,271 @@
+{
+  "content": [
+    {
+      "event": "::group::Log message source details"
+    },
+    {
+      "event": "/opt/airflow/logs/dag_id=customers_sync/run_id=manual__2026-10-17T18:48:46.093857+00:00/task_id=transform/attempt=1.log"
+    },
+    {
+      "event": "::endgroup::"
+    },
+    {
+      "timestamp": "2026-10-17T18:48:52.483872Z",
+      "event": "::group::Pre Execute",
+      "level": "info",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2412
+    },
+    {
+      "timestamp": "2026-10-17T18:48:52.503600Z",
+      "event": "DAG bundles loaded: dags-folder",
+      "level": "info",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "airflow.dag_processing.bundles.manager.DagBundlesManager",
+      "filename": "manager.py",
+      "lineno": 304
+    },
+    {
+      "timestamp": "2026-10-17T18:48:52.507928Z",
+      "event": "Filling up the DagBag from /opt/airflow/repo/dags/customers_sync.py",
+      "level": "info",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "airflow.dag_processing.dagbag.BundleDagBag",
+      "filename": "dagbag.py",
+      "lineno": 460
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.043437Z",
+      "event": "Worker startup parse complete",
+      "level": "info",
+      "bundle_name": "dags-folder",
+      "bundle_version": null,
+      "dag_file": "customers_sync.py",
+      "dag_id": "customers_sync",
+      "bundle_prepare_ms": 4,
+      "dag_file_parse_ms": 535,
+      "task_id": "transform",
+      "try_number": 1,
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1073
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.065983Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2232
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.070047Z",
+      "event": "reading /opt/airflow/repo/data/processed/customers_raw.csv",
+      "level": "info",
+      "logger": "etl",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "filename": "common.py",
+      "lineno": 31
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.084907Z",
+      "event": "Task failed with exception",
+      "level": "error",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1676,
+      "error_detail": [
+        {
+          "exc_type": "ValueError",
+          "exc_value": "unconverted data remains: T08:30:00Z",
+          "exc_notes": [],
+          "syntax_error": null,
+          "is_cause": false,
+          "frames": [
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 1579,
+              "name": "_run_task_and_map_outcome"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 197,
+              "name": "wrapper"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 2234,
+              "name": "_execute_task"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 197,
+              "name": "wrapper"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 2192,
+              "name": "_run_execute_callable"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py",
+              "lineno": 462,
+              "name": "wrapper"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py",
+              "lineno": 231,
+              "name": "execute"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py",
+              "lineno": 254,
+              "name": "execute_callable"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py",
+              "lineno": 97,
+              "name": "run"
+            },
+            {
+              "filename": "/opt/airflow/repo/src/etl/customers.py",
+              "lineno": 36,
+              "name": "transform_customers"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py",
+              "lineno": 5084,
+              "name": "apply"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py",
+              "lineno": 1520,
+              "name": "apply"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py",
+              "lineno": 1578,
+              "name": "apply_standard"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py",
+              "lineno": 1020,
+              "name": "_map_values"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py",
+              "lineno": 1770,
+              "name": "map"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py",
+              "lineno": 2745,
+              "name": "map"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py",
+              "lineno": 1715,
+              "name": "map_array"
+            },
+            {
+              "filename": "/opt/airflow/pandas/_libs/lib.pyx",
+              "lineno": 3071,
+              "name": "pandas._libs.lib.map_infer"
+            },
+            {
+              "filename": "/opt/airflow/repo/src/etl/customers.py",
+              "lineno": 19,
+              "name": "parse_signup_date"
+            },
+            {
+              "filename": "/usr/python/lib/python3.13/_strptime.py",
+              "lineno": 789,
+              "name": "_strptime_datetime"
+            },
+            {
+              "filename": "/usr/python/lib/python3.13/_strptime.py",
+              "lineno": 558,
+              "name": "_strptime"
+            }
+          ],
+          "is_group": false,
+          "exceptions": []
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.085307Z",
+      "event": "::group::Post Execute",
+      "level": "info",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1677
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.135488Z",
+      "event": "dag-healer: failure report rejected with HTTP 404",
+      "level": "warning",
+      "logger": "dag_healer.ingest",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "filename": "ingest.py",
+      "lineno": 238
+    },
+    {
+      "timestamp": "2026-10-17T18:48:53.135814Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "task_id": "transform",
+      "try_number": 1,
+      "dag_id": "customers_sync",
+      "map_index": -1,
+      "run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+      "ti_id": "01a14b31-ef25-7a11-87f7-536dea2b5a0a",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2379
+    }
+  ],
+  "continuation_token": null
+}

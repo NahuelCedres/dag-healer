@@ -46,20 +46,40 @@ def tmp_repo(make_repo: MakeRepo) -> Path:
     return make_repo()
 
 
+#: Variables that change dag-healer's behaviour; ``healer_env`` unsets them for each test.
+HEALER_ENV_VARS: tuple[str, ...] = (
+    "HEALER_CONFIG",
+    "HEALER_DATABASE_URL",
+    "HEALER_API_URL",
+    "HEALER_PUBLIC_URL",
+    "HEALER_INGEST_TOKEN",
+    "HEALER_DEBUG",
+    "HEALER_LLM_PROVIDER",
+    "HEALER_FAKE_LLM_DIR",
+    "HEALER_AIRFLOW_USERNAME",
+    "HEALER_AIRFLOW_PASSWORD",
+    "HEALER_SMTP_HOST",
+    "AIRFLOW_HOME",
+    "AIRFLOW__CORE__EXECUTION_API_SERVER_URL",
+    "AIRFLOW__CORE__DAGS_FOLDER",
+    "AIRFLOW__API__BASE_URL",
+    "GITHUB_TOKEN",
+    "GITHUB_REPO",
+)
+
+
 @pytest.fixture
 def healer_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Isolate dag-healer from the host environment; returns a temporary HEALER_HOME."""
-    for name in (
-        "HEALER_CONFIG",
-        "HEALER_DATABASE_URL",
-        "HEALER_API_URL",
-        "HEALER_INGEST_TOKEN",
-        "HEALER_DEBUG",
-        "AIRFLOW_HOME",
-        "AIRFLOW__CORE__EXECUTION_API_SERVER_URL",
-        "AIRFLOW__API__BASE_URL",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    """Isolate dag-healer from the host environment; returns a temporary HEALER_HOME.
+
+    Each variable is first set, then deleted, through ``monkeypatch``: that records its
+    original state, so whatever the code under test writes to ``os.environ`` directly (for
+    example ``main(["-c", ...])`` exporting ``HEALER_CONFIG``) is undone at teardown and
+    never leaks into the next test.
+    """
+    for name in HEALER_ENV_VARS:
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     home = tmp_path / "healer_home"
     home.mkdir()
     monkeypatch.setenv("HEALER_HOME", str(home))

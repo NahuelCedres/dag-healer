@@ -1,0 +1,6 @@
+{
+  "content": "# customers_sync - CRM export -> customers dim\n# maintained by crm-team\nimport os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom datetime import datetime\n\nfrom airflow.sdk import DAG\nfrom airflow.providers.standard.operators.python import PythonOperator\n\nfrom src.etl.customers import extract_customers, transform_customers, load_customers\n\n\nwith DAG(\n    dag_id=\"customers_sync\",\n    default_args={\"owner\": \"crm-team\", \"retries\": 0},\n    schedule=None,\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n    doc_md=\"Syncs the CRM customers export into the customers dim. See README.\",\n):\n    t1 = PythonOperator(task_id=\"extract\", python_callable=extract_customers)\n\n    t2 = PythonOperator(task_id=\"transform\", python_callable=transform_customers)\n\n    t3 = PythonOperator(\n        task_id=\"load\",\n        python_callable=load_customers,\n        op_kwargs={\"target\": \"customers_dim\"},\n    )\n\n    t1 >> t2 >> t3\n",
+  "dag_id": "customers_sync",
+  "version_number": 1,
+  "dag_display_name": "customers_sync"
+}

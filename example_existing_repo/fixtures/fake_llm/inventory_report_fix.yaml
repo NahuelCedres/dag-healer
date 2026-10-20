@@ -1,0 +1,31 @@
+# Fake LLM script: AMBIGUOUS scenario (inventory_report) resolved as "code", phase "fix".
+# Minimal change to src/etl/inventory.py::buildReport: accept the new "quantity" column
+# by renaming it back to "qty" (the rest of the report keeps its column names).
+name: inventory_report_fix
+match:
+  dag_id: inventory_report
+  task_id: build_report
+  exception_type: KeyError
+  phase: fix
+steps:
+  - tool: read_file
+    input: {path: src/etl/inventory.py}
+  - tool: replace_in_file
+    input:
+      path: src/etl/inventory.py
+      old: '    df = _load()  # file is small, just read it again'
+      # "|4-": keep the 4-space function-body indentation, no trailing newline.
+      new: |4-
+              df = _load()  # file is small, just read it again
+              if "qty" not in df.columns and "quantity" in df.columns:
+                  df = df.rename(columns={"quantity": "qty"})  # the export renamed qty to quantity
+  - tool: run_tests
+    input:
+      paths: [tests/test_inventory_build_report.py]
+  - tool: run_tests
+    input: {}
+final_text: >-
+  The inventory export renamed the qty column to quantity, so buildReport failed with
+  KeyError: 'qty'. buildReport now renames quantity back to qty when only the new name is
+  present, so both the old and the new export work and the report keeps its columns. The
+  regression test and the whole suite pass.

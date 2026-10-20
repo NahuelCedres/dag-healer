@@ -5,6 +5,7 @@ Every Makefile target delegates here, so ``make`` is optional (it is not install
 Windows by default)::
 
     python scripts/tasks.py up             # build if needed, start Airflow + dag-healer
+    python scripts/tasks.py demo           # the scripted end-to-end demo (scripts/demo.py)
     python scripts/tasks.py healer doctor  # run "dag-healer doctor" in the api-server
     python scripts/tasks.py --help         # every command
 
@@ -58,13 +59,15 @@ CORE_SERVICES = (
     "airflow-dag-processor",
     "airflow-triggerer",
 )
-ALL_PROFILES = ("worker", "tests")
+ALL_PROFILES = ("tests",)
 CONTAINER_REPO = "/opt/airflow/repo"
 
 AIRFLOW_URL = "http://localhost:8080"
 HEALTH_URL = f"{AIRFLOW_URL}/api/v2/monitor/health"
 HEALTH_REQUIRED_COMPONENTS = ("metadatabase", "scheduler")
 DEFAULT_TIMEOUT = 600
+#: Seconds `docker info` may take before the daemon is considered unreachable.
+DOCKER_INFO_TIMEOUT = 60
 
 DEMO_GIT_USER = "dag-healer demo"
 DEMO_GIT_EMAIL = "dag-healer-demo@example.com"
@@ -123,8 +126,12 @@ def run(cmd: Sequence[str], *, cwd: Path | None = None, env: dict[str, str] | No
         raise TaskError(f"cannot run {cmd[0]!r}: {exc}") from exc
 
 
-def capture(cmd: Sequence[str], *, cwd: Path | None = None) -> tuple[int, str]:
-    """Run a command quietly and return ``(exit code, stdout + stderr)``."""
+def capture(cmd: Sequence[str], *, cwd: Path | None = None, timeout: float | None = None) -> tuple[int, str]:
+    """Run a command quietly and return ``(exit code, stdout + stderr)``.
+
+    With ``timeout`` (seconds) a command that does not finish in time is killed and
+    reported as exit code 124.
+    """
     try:
         proc = subprocess.run(
             list(cmd),
@@ -135,9 +142,12 @@ def capture(cmd: Sequence[str], *, cwd: Path | None = None) -> tuple[int, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         return 127, str(exc)
+    except subprocess.TimeoutExpired:
+        return 124, f"{cmd[0]} did not finish within {timeout:g} s"
     return proc.returncode, proc.stdout or ""
 
 
@@ -215,7 +225,12 @@ def optional_script(name: str) -> Path | None:
 def ensure_docker_running() -> str:
     """Return the docker executable after checking that the daemon answers."""
     docker = which("docker", "Install Docker Desktop (or Docker Engine with the compose plugin).")
-    code, out = capture([docker, "info", "--format", "{{.ServerVersion}}"])
+    code, out = capture([docker, "info", "--format", "{{.ServerVersion}}"], timeout=DOCKER_INFO_TIMEOUT)
+    if code == 124:
+        raise TaskError(
+            f"The Docker daemon did not answer within {DOCKER_INFO_TIMEOUT} s. Docker Desktop may be "
+            "starting or stuck: check its window (or restart it) and retry."
+        )
     if code != 0:
         raise TaskError(
             "The Docker daemon is not reachable. Start Docker Desktop (it can take a few "
@@ -347,8 +362,9 @@ def print_urls(*, worker: bool) -> None:
     print("  Mailpit (alerts) ... http://localhost:8025")
     if worker:
         print("  healer worker ...... python scripts/tasks.py logs --follow healer-worker")
+        print("                       (it waits for healer.yaml: python scripts/tasks.py init)")
     else:
-        print("  healer worker ...... not started (python scripts/tasks.py up --worker)")
+        print("  healer worker ...... not started (python scripts/tasks.py up)")
     print()
 
 
@@ -530,9 +546,9 @@ def cmd_build(args: argparse.Namespace, extra: list[str]) -> int:
 def cmd_up(args: argparse.Namespace, extra: list[str]) -> int:
     """Start the stack (the image is built automatically the first time)."""
     prepare_demo_repo()
-    profiles = ["worker"] if args.worker else []
-    services = [*CORE_SERVICES, *([WORKER_SERVICE] if args.worker else [])]
-    cmd = compose_base(profiles) + ["up", "--detach"]
+    worker = not args.no_worker
+    services = [*CORE_SERVICES, *([WORKER_SERVICE] if worker else [])]
+    cmd = compose_base() + ["up", "--detach"]
     if args.build:
         cmd.append("--build")
     if not args.no_wait:
@@ -543,7 +559,7 @@ def cmd_up(args: argparse.Namespace, extra: list[str]) -> int:
         return code
     if not args.no_wait and not wait_for_airflow(args.timeout):
         return 1
-    print_urls(worker=args.worker)
+    print_urls(worker=worker)
     return 0
 
 
@@ -646,7 +662,7 @@ def _run_optional_script(name: str, extra: list[str], later: str) -> int:
 
 
 def cmd_demo(args: argparse.Namespace, extra: list[str]) -> int:
-    """Run the end-to-end demo (scripts/demo.py)."""
+    """Run the end-to-end demo (scripts/demo.py; --help lists its options)."""
     return _run_optional_script(
         "demo.py",
         extra,
@@ -670,7 +686,7 @@ def cmd_wait(args: argparse.Namespace, extra: list[str]) -> int:
 # Commands whose unknown arguments are forwarded to the underlying tool.
 FORWARDING = {"airflow", "healer", "init", "doctor", "test", "test-airflow", "demo", "e2e"}
 # Commands that take everything after their name verbatim (even --help).
-VERBATIM = {"airflow", "healer"}
+VERBATIM = {"airflow", "healer", "demo", "e2e"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -697,7 +713,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("up", cmd_up, "start the stack and wait until Airflow is healthy")
     p.add_argument("--build", action="store_true", help="rebuild the image before starting")
-    p.add_argument("--worker", action="store_true", help="also start healer-worker (profile 'worker')")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--worker", action="store_true", help="start healer-worker (the default; kept for compatibility)"
+    )
+    group.add_argument("--no-worker", action="store_true", help="do not start healer-worker")
     p.add_argument("--no-wait", action="store_true", help="return without waiting for health")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds to wait (default 600)")
 
@@ -733,8 +753,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("test-airflow", cmd_test_airflow, "run tests/airflow in the image (profile 'tests') ...")
     p.add_argument("--no-build", action="store_true", help="do not rebuild the image first")
 
-    add("demo", cmd_demo, "run the end-to-end demo (scripts/demo.py) ...")
-    add("e2e", cmd_e2e, "run the e2e smoke test (scripts/e2e_smoke.py) ...")
+    add("demo", cmd_demo, "run the end-to-end demo (scripts/demo.py) ...", add_help=False)
+    add("e2e", cmd_e2e, "run the e2e smoke test (scripts/e2e_smoke.py) ...", add_help=False)
 
     p = add("wait", cmd_wait, f"wait for {HEALTH_URL}")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds to wait (default 600)")

@@ -46,9 +46,9 @@ def _react_app(name: str, destination: str, url_route: str, **extra: Any) -> dic
 
 
 REACT_APPS: list[dict[str, Any]] = [
-    _react_app("DagHealerNav", "nav", "healer", nav_top_level=True),
-    _react_app("DagHealerDag", "dag", "healer-dag"),
-    _react_app("DagHealerTaskInstance", "task_instance", "healer-ti"),
+    _react_app("Healer", "nav", "healer", nav_top_level=True),
+    _react_app("Healer incidents", "dag", "healer-dag"),
+    _react_app("Healer incident", "task_instance", "healer-ti"),
 ]
 
 

@@ -1,0 +1,182 @@
+{
+  "content": [
+    {
+      "event": "::group::Log message source details"
+    },
+    {
+      "event": "/opt/airflow/logs/dag_id=sales_daily_etl/run_id=manual__2026-10-18T06:00:00.000000+00:00/task_id=transform_sales/attempt=2.log"
+    },
+    {
+      "event": "::endgroup::"
+    },
+    {
+      "timestamp": "2026-10-18T06:00:05.100000Z",
+      "event": "::group::Pre Execute",
+      "level": "info",
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2412
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.200000Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-18T06:00:00.000000+00:00",
+      "ti_id": "01a14c00-0000-7000-8000-000000000001",
+      "task_id": "transform_sales",
+      "try_number": 2,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2232
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.300000Z",
+      "event": "reading /opt/airflow/repo/data/processed/sales_staging.csv",
+      "level": "info",
+      "logger": "etl",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-18T06:00:00.000000+00:00",
+      "ti_id": "01a14c00-0000-7000-8000-000000000001",
+      "task_id": "transform_sales",
+      "try_number": 2,
+      "filename": "common.py",
+      "lineno": 31
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.310000Z",
+      "event": "first row: order_id=A-1001 customer_email=jane.doe@example.com phone=+1 415 555 0134",
+      "level": "info",
+      "logger": "task.stdout"
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.400000Z",
+      "event": "Task failed with exception",
+      "level": "error",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-18T06:00:00.000000+00:00",
+      "ti_id": "01a14c00-0000-7000-8000-000000000001",
+      "task_id": "transform_sales",
+      "try_number": 2,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1676,
+      "error_detail": [
+        {
+          "exc_type": "KeyError",
+          "exc_value": "'amount'",
+          "exc_notes": [],
+          "syntax_error": null,
+          "is_cause": false,
+          "is_group": false,
+          "exceptions": [],
+          "frames": [
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 1579,
+              "name": "_run_task_and_map_outcome"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py",
+              "lineno": 2192,
+              "name": "_run_execute_callable"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py",
+              "lineno": 462,
+              "name": "wrapper"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py",
+              "lineno": 231,
+              "name": "execute"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py",
+              "lineno": 254,
+              "name": "execute_callable"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py",
+              "lineno": 97,
+              "name": "run"
+            },
+            {
+              "filename": "/opt/airflow/repo/src/etl/sales.py",
+              "lineno": 25,
+              "name": "transform_sales"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py",
+              "lineno": 4378,
+              "name": "__getitem__"
+            },
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py",
+              "lineno": 3648,
+              "name": "get_loc"
+            }
+          ]
+        },
+        {
+          "exc_type": "KeyError",
+          "exc_value": "'amount'",
+          "exc_notes": [],
+          "syntax_error": null,
+          "is_cause": true,
+          "is_group": false,
+          "exceptions": [],
+          "frames": [
+            {
+              "filename": "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py",
+              "lineno": 3641,
+              "name": "get_loc"
+            },
+            {
+              "filename": "pandas/_libs/index.pyx",
+              "lineno": 168,
+              "name": "pandas._libs.index.IndexEngine.get_loc"
+            },
+            {
+              "filename": "pandas/_libs/hashtable_class_helper.pxi",
+              "lineno": 7668,
+              "name": "pandas._libs.hashtable.PyObjectHashTable.get_item"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.500000Z",
+      "event": "::group::Post Execute",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-18T06:00:00.000000+00:00",
+      "ti_id": "01a14c00-0000-7000-8000-000000000001",
+      "task_id": "transform_sales",
+      "try_number": 2,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 1580
+    },
+    {
+      "timestamp": "2026-10-18T06:00:06.600000Z",
+      "event": "::endgroup::",
+      "level": "info",
+      "map_index": -1,
+      "dag_id": "sales_daily_etl",
+      "run_id": "manual__2026-10-18T06:00:00.000000+00:00",
+      "ti_id": "01a14c00-0000-7000-8000-000000000001",
+      "task_id": "transform_sales",
+      "try_number": 2,
+      "logger": "task",
+      "filename": "task_runner.py",
+      "lineno": 2379
+    }
+  ],
+  "continuation_token": null
+}

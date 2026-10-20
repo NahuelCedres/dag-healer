@@ -292,7 +292,7 @@ def test_ensure_env_file_keeps_default_uid(
 def test_compose_base_arguments(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tasks, "ensure_docker_running", lambda: "docker")
     monkeypatch.setattr(tasks, "ensure_env_file", lambda: tasks.ENV_FILE)
-    cmd = tasks.compose_base(["worker", "tests"])
+    cmd = tasks.compose_base(["worker", "tests"])  # any profile names are passed through
     assert cmd[:4] == ["docker", "compose", "--project-name", "dag-healer"]
     assert cmd[cmd.index("--file") + 1] == str(REPO_ROOT / "docker" / "compose.yaml")
     assert cmd[cmd.index("--env-file") + 1] == str(REPO_ROOT / "docker" / ".env")
@@ -317,12 +317,24 @@ def test_up_runs_compose_with_wait(tasks: ModuleType, monkeypatch: pytest.Monkey
     monkeypatch.setattr(tasks, "print_urls", lambda **_kw: None)
     recorded: list[list[str]] = []
     monkeypatch.setattr(tasks, "run", lambda cmd, **_kw: recorded.append(list(cmd)) or 0)
-    assert tasks.main(["up", "--worker", "--timeout", "42"]) == 0
-    (cmd,) = recorded
-    assert cmd[:4] == ["docker", "compose", "worker", "up"]
+    assert tasks.main(["up", "--timeout", "42"]) == 0
+    assert tasks.main(["up", "--worker"]) == 0  # the old flag still works (worker is the default)
+    assert tasks.main(["up", "--no-worker"]) == 0
+    cmd, legacy, no_worker = recorded
+    assert cmd[:3] == ["docker", "compose", "up"]  # no profile: the worker is a default service
     assert ["--wait", "--wait-timeout", "42"] == cmd[cmd.index("--wait") : cmd.index("--wait") + 3]
     assert cmd[-1] == "healer-worker"
     assert "airflow-apiserver" in cmd
+    assert legacy[-1] == "healer-worker"
+    assert "healer-worker" not in no_worker and no_worker[-1] == "airflow-triggerer"
+
+
+def test_demo_and_e2e_forward_everything(tasks: ModuleType) -> None:
+    args, extra = tasks.parse(["demo", "--listener-only", "--timeout", "60", "--help"])
+    assert args.command == "demo"
+    assert extra == ["--listener-only", "--timeout", "60", "--help"]
+    args, extra = tasks.parse(["e2e", "--no-demo"])
+    assert (args.command, extra) == ("e2e", ["--no-demo"])
 
 
 def test_failed_command_exit_code_propagates(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -428,3 +440,20 @@ def test_remove_tree_handles_read_only_files(tasks: ModuleType, tmp_path: Path) 
     tasks.remove_tree(target)
     assert not target.exists()
     tasks.remove_tree(target)  # missing directory is fine
+
+
+def test_capture_times_out(tasks: ModuleType) -> None:
+    code, out = tasks.capture([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.5)
+    assert code == 124
+    assert "did not finish within 0.5 s" in out
+
+
+def test_hanging_docker_daemon_is_reported(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tasks, "which", lambda name, hint: "docker")
+    seen: list[object] = []
+    monkeypatch.setattr(
+        tasks, "capture", lambda cmd, **kw: seen.append(kw.get("timeout")) or (124, "timeout")
+    )
+    with pytest.raises(tasks.TaskError, match="did not answer within 60 s"):
+        tasks.ensure_docker_running()
+    assert seen == [tasks.DOCKER_INFO_TIMEOUT]

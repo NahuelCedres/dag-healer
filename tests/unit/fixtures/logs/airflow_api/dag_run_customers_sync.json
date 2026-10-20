@@ -1,0 +1,35 @@
+{
+  "dag_run_id": "manual__2026-10-17T18:48:46.093857+00:00",
+  "dag_id": "customers_sync",
+  "logical_date": null,
+  "queued_at": "2026-10-17T18:48:46.102726Z",
+  "start_date": "2026-10-17T18:48:47.066006Z",
+  "end_date": "2026-10-17T18:48:54.424596Z",
+  "duration": 7.35859,
+  "data_interval_start": null,
+  "data_interval_end": null,
+  "run_after": "2026-10-17T18:48:46.093857Z",
+  "last_scheduling_decision": "2026-10-17T18:48:54.421630Z",
+  "run_type": "manual",
+  "state": "failed",
+  "triggered_by": "rest_api",
+  "triggering_user_name": "admin",
+  "conf": {},
+  "note": null,
+  "dag_versions": [
+    {
+      "id": "01a14b1b-39b9-7054-87d1-4fbbd6753492",
+      "version_number": 1,
+      "dag_id": "customers_sync",
+      "bundle_name": "dags-folder",
+      "bundle_version": null,
+      "created_at": "2026-10-17T18:23:57.881178Z",
+      "dag_display_name": "customers_sync",
+      "bundle_url": null
+    }
+  ],
+  "bundle_version": null,
+  "dag_display_name": "customers_sync",
+  "partition_key": null,
+  "partition_date": null
+}

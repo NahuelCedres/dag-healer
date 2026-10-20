@@ -1,0 +1,28 @@
+{% import "_macros.txt.j2" as m %}
+{% set subject %}[dag-healer] {{ incident.category_label }} issue in {{ incident.task_label }}{% endset %}
+{{ incident.category_label }} ISSUE: {{ incident.task_label }}
+
+{% if violated_rule %}
+The input data of this task does not match its data contract. The code was not changed.
+{% else %}
+This failure was classified as a data issue. The code was not changed.
+{% endif %}
+
+{{ m.summary(incident) }}
+
+{% if violated_rule %}
+{{ m.heading("Violated rule") }}
+{{ m.violation_line(violated_rule) }}
+
+{% endif %}
+{{ m.text_block("Diagnosis", incident.diagnosis) }}
+{{ m.violations(violations, violations_more) }}
+{{ m.sample_block(sample) }}
+{{ m.text_block("Error", incident.error_summary) }}
+{{ m.list_block("Evidence", incident.evidence) }}
+{{ m.heading("Next steps") }}
+- Fix or re-deliver the input data, then retry the task from the Healer incident tab.
+- If the change in the data is intended, update the data contract and approve it again.
+
+{{ m.links_block(links) }}
+{{ m.footer(incident, generated_at) }}

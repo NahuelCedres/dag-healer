@@ -24,8 +24,9 @@ export default defineConfig(({ command, mode }) => {
             fileName: "main",
             formats: ["umd"],
             // UMD global for the module object. The Airflow host does NOT read it: it reads
-            // globalThis.DagHealerNav / DagHealerDag / DagHealerTaskInstance, which src/main.tsx
-            // assigns at evaluation time. Never use "AirflowPlugin" here (shared by all plugins).
+            // globalThis["Healer"] / ["Healer incidents"] / ["Healer incident"] (the react_apps
+            // names), which src/main.tsx assigns at evaluation time. Never use "AirflowPlugin" here
+            // (shared by all plugins).
             name: "DagHealer",
           },
           rollupOptions: {

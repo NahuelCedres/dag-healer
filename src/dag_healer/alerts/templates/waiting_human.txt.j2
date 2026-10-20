@@ -1,0 +1,23 @@
+{% import "_macros.txt.j2" as m %}
+{% set subject %}[dag-healer] Human decision needed: {{ incident.task_label }}{% endset %}
+HUMAN DECISION NEEDED: {{ incident.task_label }}
+
+dag-healer could not safely decide whether this failure is caused by the input data
+or by the code, so it is waiting for a human decision. Nothing has been changed.
+
+{{ m.summary(incident) }}
+
+{{ m.text_block("Why a human is needed", reason or "The automatic classification did not reach the required confidence.") }}
+{{ m.text_block("Diagnosis", incident.diagnosis) }}
+{{ m.text_block("Error", incident.error_summary) }}
+{{ m.violations(violations, violations_more, "Contract checks (evidence)") }}
+{{ m.sample_block(sample) }}
+{{ m.list_block("Evidence", incident.evidence) }}
+{{ m.heading("What you can do") }}
+Open the Healer incident tab and choose one of:
+- Resolve as data: report it as a data issue and alert the data owners (no code change).
+- Resolve as code: dag-healer writes a failing test and proposes a minimal fix.
+- Ignore: close the incident without further action.
+
+{{ m.links_block(links) }}
+{{ m.footer(incident, generated_at) }}
