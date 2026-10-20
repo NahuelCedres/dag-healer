@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data contracts</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+body{margin:0;background:#07090D;color:#E7EAF2;font-family:'Geist', ui-sans-serif, system-ui, sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#2DE2E6}
+a:hover{color:#7FF0F2}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid #2DE2E6;outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.dh-nav:hover{background:#151A24 !important;color:#E7EAF2 !important}
+.dh-tab:hover{color:#E7EAF2 !important}
+.dh-icon-btn:hover{background:#1B2130 !important;color:#E7EAF2 !important}
+.dh-pill[aria-pressed="false"]:hover{border-color:#2C3446 !important;color:#E7EAF2 !important}
+.dh-row:hover{background:#151A24}
+.dh-row-link:hover{color:#2DE2E6 !important}
+.dh-btn-ghost:hover{background:#151A24 !important;color:#E7EAF2 !important}
+.dh-btn-secondary:hover{background:#1B2130 !important;border-color:#5B6578 !important}
+.dh-btn-primary:hover{background:#6BEBEE !important}
+.dh-field:focus-within{border-color:#2DE2E6 !important;box-shadow:0 0 0 1px #2DE2E633, 0 0 12px #2DE2E633}
+.dh-field input::placeholder{color:#7D879B}
+.dh-field input:focus,.dh-field input:focus-visible{outline:none}
+*{scrollbar-width:thin;scrollbar-color:#2C3446 transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#2C3446;border-radius:999px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</helmet>
+
+<div style="--g: {{glowScale}}; display: flex; flex-wrap: wrap; min-height: 100vh; background: #07090D; color: #E7EAF2; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 20px">
+
+  <!-- ============ Sidebar ============ -->
+  <aside aria-label="Workspace" style="flex: 1 1 264px; min-width: 0; box-sizing: border-box; background: #0B0E14; border-right: 1px solid #212836; padding: 12px 8px; display: flex; flex-direction: column; gap: 16px">
+
+    <div style="height: 32px; padding: 0 8px; display: flex; align-items: center; gap: 8px">
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" style="flex: none; overflow: visible"><path d="M7.6 8.2 L12.9 5.6 M7.6 11.8 L12.9 14.4" fill="none" stroke="#2C3446" stroke-width="1.5" stroke-linecap="round"></path><circle cx="16" cy="4" r="2.5" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.5"></circle><circle cx="16" cy="16" r="2.5" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.5"></circle><circle cx="4" cy="10" r="3" fill="#2DE2E6" style="filter: drop-shadow(0 0 calc(4px * var(--g, 1)) #2DE2E6)"></circle></svg>
+      <span style="font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em; color: #E7EAF2">dag-healer</span>
+    </div>
+
+    <nav aria-label="Primary" style="display: flex; flex-direction: column; gap: 4px">
+      <a href="#incidents" class="dh-nav" style="height: 32px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+        <span style="flex: 1; min-width: 0">Incidents</span>
+        <span style="min-width: 20px; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; background: #1B2130; color: #E7EAF2; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 18px; text-align: center">4<span class="sr-only"> open</span></span>
+      </a>
+      <a href="#pipelines" class="dh-nav" style="height: 32px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><rect width="8" height="8" x="3" y="3" rx="2"></rect><path d="M7 11v4a2 2 0 0 0 2 2h4"></path><rect width="8" height="8" x="13" y="13" rx="2"></rect></svg>
+        <span style="flex: 1; min-width: 0">Pipelines</span>
+      </a>
+      <a href="#contracts" aria-current="page" style="height: 32px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; background: #1B2130; color: #2DE2E6; text-decoration: none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>
+        <span style="flex: 1; min-width: 0; font-weight: 500">Contracts</span>
+      </a>
+      <a href="#connectors" class="dh-nav" style="height: 32px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"></path></svg>
+        <span style="flex: 1; min-width: 0">Connectors</span>
+      </a>
+      <button type="button" class="dh-nav" style="height: 32px; width: 100%; box-sizing: border-box; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-align: left; cursor: pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+        <span style="flex: 1; min-width: 0">Search</span>
+        <kbd style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #2C3446; background: #0F131B; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px">Ctrl K</kbd>
+      </button>
+    </nav>
+
+    <section aria-labelledby="sb-connectors" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-connectors" style="margin: 0; padding: 0 8px; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Connectors</h2>
+      <a href="#connector-airflow-prod" class="dh-nav" style="height: 28px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span>
+        <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Airflow <span style="color: #7D879B">·</span> prod<span class="sr-only">, connected</span></span>
+      </a>
+      <a href="#connector-step-functions" class="dh-nav" style="height: 28px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span>
+        <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Step Functions <span style="color: #7D879B">·</span> us-east-1<span class="sr-only">, connected</span></span>
+      </a>
+      <a href="#connector-dagster" class="dh-nav" style="height: 28px; box-sizing: border-box; padding: 0 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px; color: #A3ACBE; text-decoration: none">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #5B6578"></span>
+        <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Dagster</span>
+        <span style="flex: none; font-size: 12px; line-height: 16px; color: #7D879B">not connected</span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-needs-you" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-needs-you" style="margin: 0; padding: 0 8px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Needs you <span style="padding: 0 6px; border-radius: 999px; background: #B28CFF1F; color: #B28CFF; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0">1</span></h2>
+      <a href="#incident-inventory_report" class="dh-nav" style="padding: 8px; border-radius: 6px; display: flex; flex-direction: column; gap: 4px; color: #E7EAF2; text-decoration: none">
+        <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+          <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 calc(8px * var(--g, 1)) #B28CFF"></span>
+          <span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">inventory_report <span style="color: #7D879B">/</span> build_report</span>
+        </span>
+        <span style="display: flex; align-items: center; gap: 8px; padding-left: 16px; min-width: 0">
+          <span style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #212836; background: #151A24; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; white-space: nowrap">analytics-etl</span>
+          <span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B">2m</span>
+        </span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-healing" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-healing" style="margin: 0; padding: 0 8px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Healing <span style="padding: 0 6px; border-radius: 999px; background: #2DE2E61A; color: #2DE2E6; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0">1</span></h2>
+      <a href="#incident-orders-ingest" class="dh-nav" style="padding: 8px; border-radius: 6px; display: flex; flex-direction: column; gap: 4px; color: #E7EAF2; text-decoration: none">
+        <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+          <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 calc(8px * var(--g, 1)) #2DE2E6"></span>
+          <span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">orders-ingest <span style="color: #7D879B">/</span> ValidateOrder</span>
+        </span>
+        <span style="display: flex; align-items: center; gap: 8px; padding-left: 16px; min-width: 0">
+          <span style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #212836; background: #151A24; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; white-space: nowrap">analytics-etl</span>
+          <span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B">6m</span>
+        </span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-recent" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-recent" style="margin: 0; padding: 0 8px; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Recent</h2>
+      <a href="#incident-customers_sync" class="dh-nav" style="padding: 8px; border-radius: 6px; display: flex; flex-direction: column; gap: 4px; color: #E7EAF2; text-decoration: none">
+        <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+          <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span>
+          <span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">customers_sync <span style="color: #7D879B">/</span> transform</span>
+        </span>
+        <span style="display: flex; align-items: center; gap: 8px; padding-left: 16px; min-width: 0">
+          <span style="flex: none; font-size: 12px; line-height: 16px; color: #B6F35C">repaired</span>
+          <span title="healer/customers_sync-transform-3f9a2c1d" style="min-width: 0; max-width: 104px; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #212836; background: #151A24; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">healer/customers_sync-transform-3f9a2c1d</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M13 6h3a2 2 0 0 1 2 2v7"></path><path d="M6 9v12"></path></svg>
+          <span class="sr-only">PR.md ready</span>
+          <span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B">9m</span>
+        </span>
+      </a>
+      <a href="#incident-sales_daily_etl" class="dh-nav" style="padding: 8px; border-radius: 6px; display: flex; flex-direction: column; gap: 4px; color: #E7EAF2; text-decoration: none">
+        <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+          <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #FFB547; box-shadow: 0 0 calc(8px * var(--g, 1)) #FFB547"></span>
+          <span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">sales_daily_etl <span style="color: #7D879B">/</span> transform_sales</span>
+        </span>
+        <span style="display: flex; align-items: center; gap: 8px; padding-left: 16px; min-width: 0">
+          <span style="flex: none; font-size: 12px; line-height: 16px; color: #FFB547">data</span>
+          <span style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #212836; background: #151A24; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; white-space: nowrap">analytics-etl</span>
+          <span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B">14m</span>
+        </span>
+      </a>
+    </section>
+  </aside>
+
+  <!-- ============ Main area ============ -->
+  <div style="flex: 999 1 560px; min-width: 0; min-height: 100vh; display: flex; flex-direction: column">
+
+    <!-- Tab strip -->
+    <nav aria-label="Open tabs" style="flex: none; height: 36px; box-sizing: border-box; display: flex; align-items: stretch; background: #0B0E14; box-shadow: inset 0 -1px 0 #212836; overflow-x: auto; overflow-y: hidden">
+      <div class="dh-tab" style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; border-right: 1px solid #212836; color: #A3ACBE; font-size: 12px; line-height: 16px">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 calc(8px * var(--g, 1)) #B28CFF"></span>
+        <a href="#incident-inventory_report" style="color: inherit; text-decoration: none; white-space: nowrap">inventory_report / build_report</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close tab inventory_report / build_report" style="flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #7D879B; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+      </div>
+      <div class="dh-tab" style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; border-right: 1px solid #212836; color: #A3ACBE; font-size: 12px; line-height: 16px">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 calc(8px * var(--g, 1)) #2DE2E6"></span>
+        <a href="#incident-orders-ingest" style="color: inherit; text-decoration: none; white-space: nowrap">orders-ingest / ValidateOrder</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close tab orders-ingest / ValidateOrder" style="flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #7D879B; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+      </div>
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; border-right: 1px solid #212836; background: #07090D; box-shadow: inset 0 1px 0 #2DE2E6; color: #E7EAF2; font-size: 12px; line-height: 16px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #2DE2E6"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>
+        <a href="#contracts" aria-current="page" style="color: inherit; text-decoration: none; white-space: nowrap; font-weight: 500">Contracts</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close tab Contracts" style="flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #A3ACBE; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+      </div>
+      <button type="button" class="dh-icon-btn" aria-label="New tab" style="flex: none; width: 36px; padding: 0; border: 0; background: transparent; color: #7D879B; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+    </nav>
+
+    <!-- Page content -->
+    <main id="contracts" style="flex: 1 1 auto; min-width: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+      <header style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px">
+        <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+          <h1 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em; color: #E7EAF2">Data contracts</h1>
+          <p style="margin: 0; color: #A3ACBE; text-wrap: pretty">dag-healer only enforces contracts a human approved. Drafts were inferred from sample data by <code style="padding: 0 4px; border-radius: 4px; background: #151A24; color: #E7EAF2; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px">dag-healer init</code>.</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; height: 20px; font-size: 12px; line-height: 16px; color: #7D879B">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
+          <span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; color: #A3ACBE">healer/contracts/</span>
+          <span>in</span>
+          <span style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #212836; background: #151A24; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px">analytics-etl</span>
+        </div>
+      </header>
+
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <!-- Filters -->
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+          <div role="group" aria-label="Filter contracts by status" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+            <button type="button" class="dh-pill" aria-pressed="{{pills.all.pressed}}" onClick="{{ pills.all.onClick }}" style="height: 28px; box-sizing: border-box; padding: 0 12px; border-radius: 999px; border: 1px solid {{pills.all.bd}}; background: {{pills.all.bg}}; color: {{pills.all.fg}}; box-shadow: {{pills.all.glow}}; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">All<span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; color: {{pills.all.count}}">3</span></button>
+            <button type="button" class="dh-pill" aria-pressed="{{pills.approved.pressed}}" onClick="{{ pills.approved.onClick }}" style="height: 28px; box-sizing: border-box; padding: 0 12px; border-radius: 999px; border: 1px solid {{pills.approved.bd}}; background: {{pills.approved.bg}}; color: {{pills.approved.fg}}; box-shadow: {{pills.approved.glow}}; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">Approved<span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; color: {{pills.approved.count}}">2</span></button>
+            <button type="button" class="dh-pill" aria-pressed="{{pills.draft.pressed}}" onClick="{{ pills.draft.onClick }}" style="height: 28px; box-sizing: border-box; padding: 0 12px; border-radius: 999px; border: 1px solid {{pills.draft.bd}}; background: {{pills.draft.bg}}; color: {{pills.draft.fg}}; box-shadow: {{pills.draft.glow}}; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">Draft<span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; color: {{pills.draft.count}}">1</span></button>
+            <button type="button" class="dh-pill" aria-pressed="{{pills.stale.pressed}}" onClick="{{ pills.stale.onClick }}" style="height: 28px; box-sizing: border-box; padding: 0 12px; border-radius: 999px; border: 1px solid {{pills.stale.bd}}; background: {{pills.stale.bg}}; color: {{pills.stale.fg}}; box-shadow: {{pills.stale.glow}}; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">Stale<span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; color: {{pills.stale.count}}">0</span></button>
+          </div>
+          <label class="dh-field" style="margin-left: auto; flex: 0 1 256px; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 6px; border: 1px solid #212836; background: #0F131B; color: #7D879B">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+            <span class="sr-only">Filter contracts by pipeline or dataset</span>
+            <input type="search" placeholder="Filter by pipeline or dataset" style="flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; color: #E7EAF2; font-size: 13px; line-height: 20px">
+          </label>
+        </div>
+
+        <!-- Contracts table -->
+        <section aria-labelledby="contracts-list-title" style="background: #0F131B; border: 1px solid #212836; border-radius: 10px; overflow: hidden">
+          <h2 id="contracts-list-title" class="sr-only">Contracts</h2>
+          <div style="overflow-x: auto">
+            <table style="width: 100%; min-width: 1000px; border-collapse: collapse; table-layout: fixed; font-size: 13px; line-height: 20px">
+              <colgroup>
+                <col style="width: 192px">
+                <col style="width: 140px">
+                <col style="width: 112px">
+                <col style="width: 80px">
+                <col style="width: 80px">
+                <col style="width: 180px">
+                <col>
+                <col style="width: 40px">
+              </colgroup>
+              <thead>
+                <tr style="height: 32px">
+                  <th scope="col" style="padding: 0 12px 0 16px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Pipeline</th>
+                  <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Connector</th>
+                  <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Status</th>
+                  <th scope="col" style="padding: 0 12px; text-align: right; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Datasets</th>
+                  <th scope="col" style="padding: 0 12px; text-align: right; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Columns</th>
+                  <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Approved by / at</th>
+                  <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Last check · today</th>
+                  <th scope="col" style="padding: 0; border-bottom: 1px solid #212836"><span class="sr-only">Open</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- sales_daily_etl -->
+                <tr class="dh-row" style="height: 40px; display: {{rows.sales}}">
+                  <td style="padding: 0 12px 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><a href="#contract-sales_daily_etl" class="dh-row-link" style="color: #E7EAF2; font-weight: 500; text-decoration: none">sales_daily_etl</a></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span><span>Airflow · prod</span></span></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: inline-flex; align-items: center; gap: 4px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid #B6F35C; color: #B6F35C; font-size: 12px; line-height: 16px; font-weight: 500; box-shadow: 0 0 calc(10px * var(--g, 1)) #B6F35C40"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>Approved</span></td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">1</td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">5</td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: baseline; gap: 8px"><span style="color: #E7EAF2">demo</span><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #7D879B">2026-10-17 18:20</span></span></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; min-width: 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #FF3EA5; filter: drop-shadow(0 0 calc(4px * var(--g, 1)) #FF3EA5)"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg><span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #FF3EA5">violated: <span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px">missing_column amount</span></span><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #7D879B">14m</span></span></td>
+                  <td style="padding: 0 12px 0 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display: block; margin-left: auto; color: #7D879B"><path d="m9 18 6-6-6-6"></path></svg></td>
+                </tr>
+                <!-- customers_sync -->
+                <tr class="dh-row" style="height: 40px; border-top: 1px solid #212836; display: {{rows.customers}}">
+                  <td style="padding: 0 12px 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><a href="#contract-customers_sync" class="dh-row-link" style="color: #E7EAF2; font-weight: 500; text-decoration: none">customers_sync</a></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span><span>Airflow · prod</span></span></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: inline-flex; align-items: center; gap: 4px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid #B6F35C; color: #B6F35C; font-size: 12px; line-height: 16px; font-weight: 500; box-shadow: 0 0 calc(10px * var(--g, 1)) #B6F35C40"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>Approved</span></td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">1</td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">6</td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: baseline; gap: 8px"><span style="color: #E7EAF2">demo</span><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #7D879B">2026-10-17 18:20</span></span></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; min-width: 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #B6F35C; filter: drop-shadow(0 0 calc(4px * var(--g, 1)) #B6F35C)"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg><span style="color: #B6F35C">passed</span><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #7D879B">9m</span></span></td>
+                  <td style="padding: 0 12px 0 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display: block; margin-left: auto; color: #7D879B"><path d="m9 18 6-6-6-6"></path></svg></td>
+                </tr>
+                <!-- inventory_report (selected) -->
+                <tr style="height: 40px; border-top: 1px solid #212836; background: #1B2130; display: {{rows.inventory}}">
+                  <td style="padding: 0 12px 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><a href="#contract-inventory_report" aria-current="true" style="color: #2DE2E6; font-weight: 500; text-decoration: none">inventory_report</a></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(8px * var(--g, 1)) #B6F35C"></span><span>Airflow · prod</span></span></td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: inline-flex; align-items: center; gap: 4px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid #B28CFF66; background: #B28CFF1F; color: #B28CFF; font-size: 12px; line-height: 16px; font-weight: 500"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"></circle></svg>Draft</span></td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">1</td>
+                  <td style="padding: 0 12px; text-align: right; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">4</td>
+                  <td style="padding: 0 12px; white-space: nowrap; color: #A3ACBE">not approved</td>
+                  <td style="padding: 0 12px; white-space: nowrap"><span style="display: flex; align-items: center; gap: 8px; min-width: 0; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="10"></circle><path d="M8 12h8"></path></svg><span>not enforced (draft)</span><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px">2m</span></span></td>
+                  <td style="padding: 0 12px 0 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display: block; margin-left: auto; color: #2DE2E6"><path d="m9 18 6-6-6-6"></path></svg></td>
+                </tr>
+                <!-- empty state for the Stale filter -->
+                <tr style="height: 40px; display: {{rows.empty}}">
+                  <td colspan="8" style="padding: 0 16px; color: #A3ACBE">No stale contracts.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- Detail: inventory_report -->
+      <section id="contract-inventory_report" aria-labelledby="detail-title" style="background: #0F131B; border: 1px solid #212836; border-radius: 10px; display: flex; flex-direction: column; min-width: 0">
+        <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 12px 16px; border-bottom: 1px solid #212836">
+          <div style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+            <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+              <h2 id="detail-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: #E7EAF2">inventory_report</h2>
+              <span style="display: inline-flex; align-items: center; gap: 4px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid #B28CFF66; background: #B28CFF1F; color: #B28CFF; font-size: 12px; line-height: 16px; font-weight: 500"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="4 3"></circle></svg>Draft</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; font-size: 12px; line-height: 16px; color: #7D879B; min-width: 0">
+              <span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; color: #A3ACBE">healer/contracts/inventory_report.yaml</span>
+              <span aria-hidden="true">·</span>
+              <span>not enforced until approved</span>
+            </div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+            <button type="button" class="dh-btn-ghost" style="height: 32px; box-sizing: border-box; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: #A3ACBE; display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>Re-infer from today's file</button>
+            <button type="button" class="dh-btn-secondary" title="Open healer/contracts/inventory_report.yaml in analytics-etl" style="height: 32px; box-sizing: border-box; padding: 0 12px; border: 1px solid #2C3446; border-radius: 6px; background: #151A24; color: #E7EAF2; display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>Edit in repo</button>
+            <button type="button" class="dh-btn-primary" style="height: 32px; box-sizing: border-box; padding: 0 12px; border: 0; border-radius: 6px; background: #2DE2E6; color: #07090D; display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; font-weight: 600; cursor: pointer; box-shadow: 0 0 0 1px #2DE2E633, 0 0 calc(16px * var(--g, 1)) #2DE2E666"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M20 6 9 17l-5-5"></path></svg>Approve contract</button>
+          </div>
+        </header>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 16px; padding: 16px">
+
+          <!-- Left: dataset, column rules, row count -->
+          <div style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <h3 style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Dataset</h3>
+              <div style="min-height: 48px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 12px; background: #151A24; border: 1px solid #212836; border-radius: 10px; min-width: 0">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 9h18"></path><path d="M3 15h18"></path><path d="M12 3v18"></path></svg>
+                <span style="flex: none; font-weight: 600; color: #E7EAF2">inventory</span>
+                <span style="min-width: 0; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">data/incoming/inventory.csv</span>
+                <span style="margin-left: auto; flex: none; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 4px; border: 1px solid #2C3446; background: #0F131B; color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px">csv</span>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+                <h3 style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Column rules</h3>
+                <span style="font-size: 12px; line-height: 16px; color: #7D879B">4 columns · inferred from sample</span>
+              </div>
+              <div style="border: 1px solid #212836; border-radius: 10px; overflow-x: auto">
+                <table style="width: 100%; min-width: 560px; border-collapse: collapse; table-layout: fixed; font-size: 13px; line-height: 20px">
+                  <colgroup>
+                    <col style="width: 120px">
+                    <col style="width: 96px">
+                    <col style="width: 76px">
+                    <col style="width: 76px">
+                    <col style="width: 52px">
+                    <col>
+                  </colgroup>
+                  <thead>
+                    <tr style="height: 28px; background: #151A24">
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Name</th>
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Type</th>
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Nullable</th>
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Range</th>
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">PII</th>
+                      <th scope="col" style="padding: 0 12px; text-align: left; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B; border-bottom: 1px solid #212836; white-space: nowrap">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr style="height: 40px">
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2; white-space: nowrap">sku</td>
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">string</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #7D879B">—</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #7D879B">—</td>
+                    </tr>
+                    <tr style="height: 40px; border-top: 1px solid #212836">
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2; white-space: nowrap">warehouse</td>
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">string</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #7D879B">—</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #7D879B">—</td>
+                    </tr>
+                    <tr style="height: 40px; border-top: 1px solid #212836">
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2; white-space: nowrap">qty</td>
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">integer</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #E7EAF2; white-space: nowrap">min 0</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span style="display: flex; align-items: center; gap: 8px; color: #FFB547; font-size: 12px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>missing in today's file</span></td>
+                    </tr>
+                    <tr style="height: 40px; border-top: 1px solid #212836">
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2; white-space: nowrap">updated_at</td>
+                      <td style="padding: 0 12px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">string</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #7D879B">—</td>
+                      <td style="padding: 0 12px; color: #A3ACBE">no</td>
+                      <td style="padding: 0 12px; color: #A3ACBE; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">looks like a date</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px">
+              <h3 style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; color: #7D879B">Row count band</h3>
+              <div style="flex: 1 1 auto; min-height: 56px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: #151A24; border: 1px solid #212836; border-radius: 10px">
+                <span class="sr-only">Each run is expected to have between 15 and 100 rows.</span>
+                <span aria-hidden="true" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">15</span>
+                <span aria-hidden="true" style="flex: 1; min-width: 48px; display: flex; align-items: center">
+                  <span style="flex: none; width: 2px; height: 12px; border-radius: 1px; background: #A3ACBE"></span>
+                  <span style="flex: 1; height: 2px; background: #5B6578"></span>
+                  <span style="flex: none; width: 2px; height: 12px; border-radius: 1px; background: #A3ACBE"></span>
+                </span>
+                <span aria-hidden="true" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #E7EAF2">100</span>
+                <span aria-hidden="true" style="flex: none; font-size: 12px; line-height: 16px; color: #7D879B">rows per run</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: drift callout and YAML preview -->
+          <div style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+            <div role="note" aria-labelledby="drift-title" style="padding: 12px; display: flex; flex-direction: column; gap: 12px; background: #FFB5470D; border: 1px solid #FFB54759; border-radius: 10px; box-shadow: 0 0 calc(24px * var(--g, 1)) #FFB5471F">
+              <div style="display: flex; flex-direction: column; gap: 4px">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #FFB547; filter: drop-shadow(0 0 calc(4px * var(--g, 1)) #FFB547)"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+                  <h3 id="drift-title" style="margin: 0; min-width: 0; font-size: 13px; line-height: 20px; font-weight: 600; color: #E7EAF2">Today's file differs from this draft</h3>
+                  <span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #A3ACBE">inventory.csv · today</span>
+                </div>
+                <p style="margin: 0; padding-left: 24px; color: #A3ACBE"><code style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #E7EAF2">qty</code> missing; <code style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #E7EAF2">warehouse_code</code> and <code style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #E7EAF2">quantity</code> new</p>
+              </div>
+              <div role="group" aria-label="Column diff: draft contract versus today's inventory.csv" style="padding: 8px 0; background: #07090D; border: 1px solid #212836; border-radius: 6px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; line-height: 20px">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; color: #7D879B"> </span><span style="flex: 1; min-width: 0">sku</span></div>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; color: #7D879B"> </span><span style="flex: 1; min-width: 0">warehouse</span></div>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; background: #FFB54714; color: #FFB547; text-shadow: 0 0 calc(8px * var(--g, 1)) #FFB54799"><span aria-hidden="true" style="flex: none; width: 8px">−</span><span style="flex: 1; min-width: 0">qty</span><span style="flex: none; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; text-shadow: none">missing</span></div>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; background: #FFB54714; color: #FFB547; text-shadow: 0 0 calc(8px * var(--g, 1)) #FFB54799"><span aria-hidden="true" style="flex: none; width: 8px">+</span><span style="flex: 1; min-width: 0">warehouse_code</span><span style="flex: none; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; text-shadow: none">new</span></div>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; background: #FFB54714; color: #FFB547; text-shadow: 0 0 calc(8px * var(--g, 1)) #FFB54799"><span aria-hidden="true" style="flex: none; width: 8px">+</span><span style="flex: 1; min-width: 0">quantity</span><span style="flex: none; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.08em; font-weight: 600; text-transform: uppercase; text-shadow: none">new</span></div>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 0 12px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; color: #7D879B"> </span><span style="flex: 1; min-width: 0">updated_at</span></div>
+              </div>
+            </div>
+
+            <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: #07090D; border: 1px solid #212836; border-radius: 10px">
+              <div style="height: 32px; box-sizing: border-box; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 12px; border-bottom: 1px solid #212836; font-size: 12px; line-height: 16px; color: #A3ACBE; min-width: 0">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path></svg>
+                <span style="min-width: 0; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">inventory_report.yaml</span>
+                <span style="flex: none; color: #7D879B">header</span>
+                <button type="button" class="dh-icon-btn" aria-label="Copy YAML header" style="margin-left: auto; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #7D879B; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg></button>
+              </div>
+              <div role="region" aria-label="YAML preview of healer/contracts/inventory_report.yaml" style="padding: 8px 0; overflow-x: auto; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; line-height: 20px; white-space: nowrap">
+                <div style="display: flex; gap: 12px; padding: 0 12px"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #7D879B">1</span><span style="color: #7D879B"># inferred from sample data by dag-healer init</span></div>
+                <div style="display: flex; gap: 12px; padding: 0 12px"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #7D879B">2</span><span><span style="color: #A3ACBE">version:</span> <span style="color: #E7EAF2">1</span></span></div>
+                <div style="display: flex; gap: 12px; padding: 0 12px"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #7D879B">3</span><span><span style="color: #A3ACBE">pipeline:</span> <span style="color: #E7EAF2">inventory_report</span></span></div>
+                <div style="display: flex; gap: 12px; padding: 0 12px; background: #B28CFF14"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #A3ACBE">4</span><span><span style="color: #A3ACBE">status:</span> <span style="color: #B28CFF; font-weight: 600">draft</span> <span style="margin-left: 8px; color: #7D879B"># not enforced until approved</span></span></div>
+                <div style="display: flex; gap: 12px; padding: 0 12px"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #7D879B">5</span><span><span style="color: #A3ACBE">approved_by:</span> <span style="color: #7D879B">null</span></span></div>
+                <div style="display: flex; gap: 12px; padding: 0 12px"><span aria-hidden="true" style="flex: none; width: 16px; text-align: right; color: #7D879B">6</span><span><span style="color: #A3ACBE">approved_at:</span> <span style="color: #7D879B">null</span></span></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </main>
+
+    <!-- Status bar -->
+    <footer style="flex: none; height: 28px; box-sizing: border-box; display: flex; align-items: center; gap: 16px; padding: 0 12px; background: #0B0E14; border-top: 1px solid #212836; font-size: 12px; line-height: 16px; color: #A3ACBE; white-space: nowrap; overflow-x: auto; overflow-y: hidden">
+      <span style="flex: none; display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(6px * var(--g, 1)) #B6F35C"></span>worker online · polling 5s</span>
+      <span aria-hidden="true" style="flex: none; width: 1px; height: 12px; background: #212836"></span>
+      <span style="flex: none; display: flex; align-items: center; gap: 8px">
+        <span>Claude Opus 5.5</span>
+        <span role="meter" aria-label="Daily token budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="41" style="flex: none; width: 64px; height: 4px; border-radius: 999px; background: #212836; overflow: hidden"><span style="display: block; width: 41%; height: 100%; border-radius: 999px; background: #2DE2E6"></span></span>
+        <span style="color: #7D879B">41% of daily token budget</span>
+      </span>
+      <span aria-hidden="true" style="flex: none; width: 1px; height: 12px; background: #212836"></span>
+      <span style="flex: none; display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(6px * var(--g, 1)) #B6F35C"></span>Airflow<span class="sr-only"> healthy</span></span>
+      <span style="flex: none; display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 calc(6px * var(--g, 1)) #B6F35C"></span>Step Functions<span class="sr-only"> healthy</span></span>
+      <span style="margin-left: auto; flex: none">4 incidents · <span style="color: #B28CFF">1 needs you</span></span>
+    </footer>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"glow":"full","filter":"all","$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const props = this.props || {};
+    const state = this.state || {};
+    const glowScales = { full: 1, calm: 0.5, off: 0 };
+    const glowScale = Object.prototype.hasOwnProperty.call(glowScales, props.glow) ? glowScales[props.glow] : 1;
+    const filters = ['all', 'approved', 'draft', 'stale'];
+    const requested = state.filter || props.filter;
+    const filter = filters.indexOf(requested) >= 0 ? requested : 'all';
+
+    const pill = (key) => {
+      const on = filter === key;
+      return {
+        pressed: on ? 'true' : 'false',
+        bd: on ? '#2DE2E6' : '#212836',
+        bg: on ? '#2DE2E61A' : '#0F131B',
+        fg: on ? '#E7EAF2' : '#A3ACBE',
+        count: on ? '#2DE2E6' : '#7D879B',
+        glow: on ? '0 0 ' + (12 * glowScale) + 'px #2DE2E640' : 'none',
+        onClick: () => this.setState({ filter: key }),
+      };
+    };
+
+    const showRow = (visible) => (visible ? 'table-row' : 'none');
+
+    return {
+      glowScale: String(glowScale),
+      pills: {
+        all: pill('all'),
+        approved: pill('approved'),
+        draft: pill('draft'),
+        stale: pill('stale'),
+      },
+      rows: {
+        sales: showRow(filter === 'all' || filter === 'approved'),
+        customers: showRow(filter === 'all' || filter === 'approved'),
+        inventory: showRow(filter === 'all' || filter === 'draft'),
+        empty: showRow(filter === 'stale'),
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>

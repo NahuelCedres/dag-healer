@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pipelines</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+body{margin:0;background:#07090D;color:#E7EAF2;font-family:'Geist', ui-sans-serif, system-ui, sans-serif;font-size:13px;line-height:20px;-webkit-font-smoothing:antialiased}
+a{color:#2DE2E6;text-decoration:none}
+a:hover{color:#7FF0F2}
+button,input{font-family:inherit}
+code,kbd,time{font-family:'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace}
+:focus-visible{outline:2px solid #2DE2E6;outline-offset:2px}
+input::placeholder{color:#7D879B}
+input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none}
+.dc-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.dc-grid{background-color:#07090D;background-image:radial-gradient(#1A2030 1px, transparent 1px);background-size:20px 20px}
+.dc-nav:hover{background:#151A24;color:#E7EAF2 !important}
+.dc-ghost:hover{background:#1B2130 !important;color:#E7EAF2 !important}
+.dc-tab:hover{background:#121722}
+.dc-row{background:transparent}
+.dc-row:hover{background:#151A24}
+.dc-row-on,.dc-row-on:hover{background:#1B2130}
+.dc-primary:hover{background:#6CEEF0 !important}
+.dc-secondary:hover{border-color:#2C3446 !important;background:#151A24}
+.dc-node{cursor:pointer;transition:transform .12s ease}
+.dc-node:hover{transform:translateY(-1px)}
+@keyframes dcPulse{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.08)}100%{opacity:0;transform:scale(1.08)}}
+.dc-pulse{animation:dcPulse 2.2s ease-out infinite}
+@keyframes dcShimmer{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
+.dc-shimmer{animation:dcShimmer 1.6s linear infinite}
+@keyframes dcBreathe{0%,100%{box-shadow:0 0 4px #2DE2E6}50%{box-shadow:0 0 12px #2DE2E6}}
+.dc-breathe{animation:dcBreathe 2s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){.dc-pulse,.dc-shimmer,.dc-breathe{animation:none}.dc-node{transition:none}}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#212836;border-radius:999px;border:2px solid #0B0E14}
+</style>
+</helmet>
+
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: #07090D; color: #E7EAF2; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 20px">
+
+<!-- ============ SIDEBAR ============ -->
+<nav aria-label="Primary" style="flex: 1 1 264px; min-width: 0; box-sizing: border-box; background: #0B0E14; border-right: 1px solid #212836; padding: 12px; display: flex; flex-direction: column; gap: 16px">
+
+  <div style="display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.4 15.2 10.6 9.4M13.4 9.4l4.2 5.8" stroke="#5B6578"></path><circle cx="5" cy="17" r="2.5" stroke="#A3ACBE" fill="#0B0E14"></circle><circle cx="19" cy="17" r="2.5" stroke="#A3ACBE" fill="#0B0E14"></circle><circle cx="12" cy="7" r="3" stroke="#2DE2E6" fill="#2DE2E6" style="filter: drop-shadow(0 0 4px #2DE2E6)"></circle></svg>
+    <span style="font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em">dag-healer</span>
+  </div>
+
+  <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px">
+    <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.5 20h19L12 3z"></path><path d="M12 10v4.5"></path><path d="M12 17.5h.01"></path></svg><span style="flex: 1">Incidents</span><span aria-label="4 open" style="min-width: 20px; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; background: #1B2130; color: #E7EAF2; font-size: 11px; line-height: 18px; font-weight: 600; text-align: center">4</span></a></li>
+    <li><a href="#" aria-current="page" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; background: #1B2130; color: #2DE2E6"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="6" rx="1.5"></rect><rect x="14" y="15" width="7" height="6" rx="1.5"></rect><path d="M10 6h4a3 3 0 0 1 3 3v6"></path><path d="M3 18h7"></path></svg><span style="flex: 1; font-weight: 500">Pipelines</span></a></li>
+    <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"></path><path d="M14 3v5h5"></path><path d="m9 14 2 2 4-4"></path></svg><span style="flex: 1">Contracts</span></a></li>
+    <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5"></path><path d="M6 7h12v4a6 6 0 0 1-12 0z"></path><path d="M12 17v5"></path></svg><span style="flex: 1">Connectors</span></a></li>
+    <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span style="flex: 1">Search</span><kbd style="height: 18px; box-sizing: border-box; padding: 0 6px; border: 1px solid #212836; border-radius: 4px; color: #A3ACBE; font-size: 11px; line-height: 16px">Ctrl K</kbd></a></li>
+  </ul>
+
+  <section aria-labelledby="sb-connectors" style="display: flex; flex-direction: column; gap: 4px">
+    <h2 id="sb-connectors" style="margin: 0; padding: 0 8px; height: 24px; display: flex; align-items: center; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Connectors</h2>
+    <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px">
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span><span style="flex: 1">Airflow · prod<span class="dc-sr">, connected</span></span><span style="font-size: 12px; line-height: 16px; color: #7D879B">3 DAGs</span></a></li>
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span><span style="flex: 1">Step Functions · us-east-1<span class="dc-sr">, connected</span></span><span style="font-size: 12px; line-height: 16px; color: #7D879B">2</span></a></li>
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; color: #A3ACBE"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #5B6578"></span><span style="flex: 1">Dagster</span><span style="font-size: 12px; line-height: 16px; color: #7D879B">not connected</span></a></li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="sb-needs" style="display: flex; flex-direction: column; gap: 4px">
+    <div style="padding: 0 8px; height: 24px; display: flex; align-items: center; justify-content: space-between">
+      <h2 id="sb-needs" style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Needs you</h2>
+      <span aria-label="1 item" style="min-width: 20px; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; background: #B28CFF1F; border: 1px solid #B28CFF59; color: #B28CFF; font-size: 11px; line-height: 16px; font-weight: 600; text-align: center">1</span>
+    </div>
+    <ul style="list-style: none; margin: 0; padding: 0">
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" style="flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 8px #B28CFF"></span><span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">inventory_report / build_report</span><span style="display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><code style="padding: 0 6px; border-radius: 4px; background: #151A24; border: 1px solid #212836; color: #A3ACBE; font-size: 11px; line-height: 16px">analytics-etl</code><time style="margin-left: auto">2m</time></span></span></a></li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="sb-healing" style="display: flex; flex-direction: column; gap: 4px">
+    <div style="padding: 0 8px; height: 24px; display: flex; align-items: center; justify-content: space-between">
+      <h2 id="sb-healing" style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Healing</h2>
+      <span aria-label="1 item" style="min-width: 20px; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; background: #2DE2E61F; border: 1px solid #2DE2E659; color: #2DE2E6; font-size: 11px; line-height: 16px; font-weight: 600; text-align: center">1</span>
+    </div>
+    <ul style="list-style: none; margin: 0; padding: 0">
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" class="dc-breathe" style="flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span><span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">orders-ingest / ValidateOrder</span><span style="display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><code style="padding: 0 6px; border-radius: 4px; background: #151A24; border: 1px solid #212836; color: #A3ACBE; font-size: 11px; line-height: 16px">analytics-etl</code><time style="margin-left: auto">6m</time></span></span></a></li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="sb-recent" style="display: flex; flex-direction: column; gap: 4px">
+    <h2 id="sb-recent" style="margin: 0; padding: 0 8px; height: 24px; display: flex; align-items: center; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Recent</h2>
+    <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px">
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" style="flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span><span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">customers_sync / transform<span class="dc-sr">, repaired</span></span><span style="display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><code style="min-width: 0; max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 4px; background: #151A24; border: 1px solid #212836; color: #A3ACBE; font-size: 11px; line-height: 16px">healer/customers_sync-transform-3f9a2c1d</code><svg role="img" aria-label="PR.md ready" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B6F35C" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="18" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M18 15.5V9a3 3 0 0 0-3-3h-4"></path><path d="m13 3-3 3 3 3"></path></svg><time style="margin-left: auto">9m</time></span></span></a></li>
+      <li><a href="#" class="dc-nav" style="display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2"><span aria-hidden="true" style="flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 999px; background: #FFB547; box-shadow: 0 0 8px #FFB547"></span><span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">sales_daily_etl / transform_sales<span class="dc-sr">, data issue reported</span></span><span style="display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><code style="padding: 0 6px; border-radius: 4px; background: #151A24; border: 1px solid #212836; color: #A3ACBE; font-size: 11px; line-height: 16px">analytics-etl</code><time style="margin-left: auto">14m</time></span></span></a></li>
+    </ul>
+  </section>
+</nav>
+
+<!-- ============ MAIN ============ -->
+<main style="flex: 999 1 max(560px, calc(100% - 264px)); min-width: 0; display: flex; flex-direction: column; background: #07090D">
+  <!-- tab strip -->
+  <div role="tablist" aria-label="Open tabs" style="flex: none; height: 36px; box-sizing: border-box; display: flex; align-items: stretch; background: #0B0E14; border-bottom: 1px solid #212836; overflow-x: auto">
+    <div style="flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 12px; background: #0F131B; border-right: 1px solid #212836">
+      <button type="button" role="tab" aria-selected="true" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0; border: none; background: none; color: #E7EAF2; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2DE2E6" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="6" rx="1.5"></rect><rect x="14" y="15" width="7" height="6" rx="1.5"></rect><path d="M10 6h4a3 3 0 0 1 3 3v6"></path><path d="M3 18h7"></path></svg>Pipelines</button>
+      <button type="button" aria-label="Close Pipelines tab" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: none; border-radius: 4px; background: none; color: #7D879B; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div class="dc-tab" style="flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 12px; border-right: 1px solid #212836">
+      <button type="button" role="tab" aria-selected="false" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0; border: none; background: none; color: #A3ACBE; font-size: 12px; line-height: 16px; cursor: pointer"><span aria-hidden="true" class="dc-breathe" style="width: 6px; height: 6px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>orders-ingest / ValidateOrder<span class="dc-sr">, healing</span></button>
+      <button type="button" aria-label="Close orders-ingest tab" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: none; border-radius: 4px; background: none; color: #7D879B; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div class="dc-tab" style="flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 12px; border-right: 1px solid #212836">
+      <button type="button" role="tab" aria-selected="false" style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0; border: none; background: none; color: #A3ACBE; font-size: 12px; line-height: 16px; cursor: pointer"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 8px #B28CFF"></span>inventory_report / build_report<span class="dc-sr">, needs you</span></button>
+      <button type="button" aria-label="Close inventory_report tab" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: none; border-radius: 4px; background: none; color: #7D879B; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div style="flex: none; display: flex; align-items: center; padding: 0 8px">
+      <button type="button" aria-label="New tab" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px; background: none; color: #A3ACBE; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+    </div>
+  </div>
+
+  <!-- toolbar -->
+  <div style="flex: none; min-height: 52px; box-sizing: border-box; padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; background: #0F131B; border-bottom: 1px solid #212836">
+    <h1 style="margin: 0 8px 0 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em">Pipelines</h1>
+    <div style="position: relative; display: flex; align-items: center; flex: 0 1 240px; min-width: 160px">
+      <label for="pl-filter" class="dc-sr">Filter pipelines</label>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="position: absolute; left: 10px; color: #7D879B; pointer-events: none"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      <input id="pl-filter" type="search" placeholder="Filter pipelines" autocomplete="off" onInput="{{ onSearch }}" style="width: 100%; height: 32px; box-sizing: border-box; padding: 0 10px 0 34px; background: #07090D; border: 1px solid #212836; border-radius: 6px; color: #E7EAF2; font-size: 13px; line-height: 20px">
+    </div>
+    <div role="group" aria-label="Orchestrator" style="display: flex; height: 32px; box-sizing: border-box; padding: 2px; gap: 2px; border: 1px solid #212836; border-radius: 6px; background: #07090D">
+      <button type="button" aria-pressed="{{segAll.pressed}}" onClick="{{ segAll.onClick }}" style="height: 26px; padding: 0 10px; border: none; border-radius: 4px; background: {{segAll.bg}}; color: {{segAll.color}}; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">All</button>
+      <button type="button" aria-pressed="{{segAirflow.pressed}}" onClick="{{ segAirflow.onClick }}" style="height: 26px; padding: 0 10px; border: none; border-radius: 4px; background: {{segAirflow.bg}}; color: {{segAirflow.color}}; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">Airflow</button>
+      <button type="button" aria-pressed="{{segSfn.pressed}}" onClick="{{ segSfn.onClick }}" style="height: 26px; padding: 0 10px; border: none; border-radius: 4px; background: {{segSfn.bg}}; color: {{segSfn.color}}; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer">Step Functions</button>
+    </div>
+    <button type="button" role="switch" aria-checked="{{healedChecked}}" onClick="{{ toggleHealed }}" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 4px; border: none; border-radius: 6px; background: none; color: #A3ACBE; font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer"><span aria-hidden="true" style="display: flex; align-items: center; justify-content: {{knobJustify}}; width: 30px; height: 18px; box-sizing: border-box; padding: 3px; border-radius: 999px; background: {{trackBg}}; border: 1px solid {{trackBorder}}"><span style="width: 10px; height: 10px; border-radius: 999px; background: {{knobBg}}; box-shadow: {{knobGlow}}"></span></span>Show healed</button>
+    <p style="margin: 0 0 0 auto; font-size: 12px; line-height: 16px; color: #7D879B">Sources: Airflow listener + REST · EventBridge</p>
+  </div>
+
+  <!-- panes -->
+  <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-wrap: wrap">
+
+    <!-- pipeline list -->
+    <section aria-labelledby="pl-list-title" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; background: #0F131B; border-right: 1px solid #212836">
+      <div style="flex: none; height: 40px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; justify-content: space-between">
+        <h2 id="pl-list-title" style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Monitored</h2>
+        <span style="font-size: 12px; line-height: 16px; color: #7D879B">{{countLabel}}</span>
+      </div>
+      <ul style="list-style: none; margin: 0; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 4px">
+        <sc-for list="{{pipes}}" as="p" hint-placeholder-count="5">
+        <li>
+          <button type="button" class="{{p.cls}}" aria-pressed="{{p.pressed}}" onClick="{{ p.onSelect }}" style="width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; border: 1px solid {{p.border}}; box-shadow: {{p.shadow}}; color: #E7EAF2; text-align: left; cursor: pointer; font-size: 13px; line-height: 20px">
+            <span style="display: flex; align-items: center; gap: 8px; width: 100%">
+              <sc-if value="{{p.isAirflow}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><circle cx="5" cy="12" r="2.5"></circle><circle cx="19" cy="5.5" r="2.5"></circle><circle cx="19" cy="18.5" r="2.5"></circle><path d="M7.3 11 16.7 6.5M7.3 13l9.4 4.5"></path></svg></sc-if>
+              <sc-if value="{{p.isSfn}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><rect x="6" y="2.5" width="12" height="6" rx="1.5"></rect><rect x="6" y="15.5" width="12" height="6" rx="1.5"></rect><path d="M12 8.5v7"></path><path d="m9.5 13 2.5 2.5 2.5-2.5"></path></svg></sc-if>
+              <span style="flex: 1; min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.name}}</span>
+              <sc-if value="{{p.hasCat}}" hint-placeholder-val="{{ true }}"><code style="flex: none; height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; border: 1px solid {{p.catBorder}}; background: {{p.catBg}}; color: {{p.catColor}}; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: .04em">{{p.cat}}</code></sc-if>
+            </span>
+            <span style="display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; line-height: 16px; color: #A3ACBE">
+              <span aria-hidden="true" class="{{p.dotCls}}" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: {{p.dot}}; box-shadow: 0 0 8px {{p.dot}}"></span>
+              <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span style="color: {{p.statusColor}}; font-weight: 500">{{p.status}}</span> · {{p.detail}}</span>
+              <time style="flex: none; color: #A3ACBE">{{p.ago}}</time>
+            </span>
+            <span style="display: flex; align-items: center; gap: 8px; width: 100%">
+              <span role="img" aria-label="{{p.histLabel}}" style="display: flex; align-items: flex-end; gap: 4px; height: 16px">
+                <sc-for list="{{p.ticks}}" as="t" hint-placeholder-count="14"><span style="flex: none; width: 6px; height: {{t.h}}; border-radius: 2px; background: {{t.bg}}; box-shadow: {{t.glow}}"></span></sc-for>
+              </span>
+              <span style="margin-left: auto; font-size: 11px; line-height: 16px; color: #A3ACBE">{{p.orchLabel}}</span>
+            </span>
+          </button>
+        </li>
+        </sc-for>
+      </ul>
+      <sc-if value="{{noResults}}" hint-placeholder-val="{{ false }}">
+        <p style="margin: 0 16px; padding: 16px; border: 1px dashed #2C3446; border-radius: 10px; color: #A3ACBE; font-size: 12px; line-height: 16px">No monitored pipeline matches this filter.</p>
+      </sc-if>
+      <div style="margin-top: auto; padding: 12px 16px; border-top: 1px solid #212836; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 16px; color: #A3ACBE">
+        <span>Run strip: last 14 runs, newest on the right.</span>
+        <span>Missing a pipeline? <a href="#">Manage connectors</a></span>
+      </div>
+    </section>
+    <!-- graph -->
+    <section aria-labelledby="graph-title" style="flex: 999 1 max(400px, calc(100% - 640px)); min-width: 0; display: flex; flex-direction: column; background: #07090D">
+      <div style="flex: none; height: 56px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: #0F131B; border-bottom: 1px solid #212836">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #A3ACBE"><rect x="6" y="2.5" width="12" height="6" rx="1.5"></rect><rect x="6" y="15.5" width="12" height="6" rx="1.5"></rect><path d="M12 8.5v7"></path><path d="m9.5 13 2.5 2.5 2.5-2.5"></path></svg>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <h2 id="graph-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600">orders-ingest</h2>
+            <span style="display: flex; align-items: center; gap: 6px; height: 18px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid #2DE2E659; background: #2DE2E614; color: #2DE2E6; font-size: 11px; line-height: 16px; font-weight: 600"><span aria-hidden="true" class="dc-breathe" style="width: 6px; height: 6px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>Healing</span>
+          </div>
+          <p style="margin: 0; font-size: 12px; line-height: 16px; color: #A3ACBE; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Last execution: <code style="font-size: 12px">TaskFailed</code> in ValidateOrder · 6m ago</p>
+        </div>
+        <div role="group" aria-label="Graph view" style="flex: none; display: flex; gap: 4px">
+          <button type="button" aria-label="Zoom out" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid #212836; border-radius: 6px; background: #07090D; color: #A3ACBE; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5M8 11h6"></path></svg></button>
+          <button type="button" aria-label="Zoom in" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid #212836; border-radius: 6px; background: #07090D; color: #A3ACBE; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5M8 11h6M11 8v6"></path></svg></button>
+          <button type="button" aria-label="Fit graph to view" class="dc-ghost" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid #212836; border-radius: 6px; background: #07090D; color: #A3ACBE; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg></button>
+        </div>
+      </div>
+
+      <div class="dc-grid" style="flex: 1 1 auto; position: relative; min-height: 728px; display: flex; flex-direction: column">
+        <div style="flex: 1 1 auto; overflow: auto">
+          <!-- DIAGRAM HOST: 536 x 652. Column cx 144 (cards 40..248), NotifyOps cx 408 (320..496). -->
+          <div role="group" aria-label="orders-ingest state machine graph" style="position: relative; width: 536px; height: 652px; margin: 0 auto">
+
+            <!-- band -->
+            <div aria-hidden="true" style="position: absolute; left: 16px; top: 16px; width: 504px; height: 620px; box-sizing: border-box; border: 1px solid #1B2130; border-radius: 12px; background: rgba(11, 14, 20, 0.55)"></div>
+
+            <!-- arrows -->
+            <svg aria-hidden="true" width="8" height="47" viewBox="0 0 8 47" preserveAspectRatio="none" style="position: absolute; left: 140px; top: 100px; width: 8px; height: 47px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px #B6F35C)"><defs><marker id="dc-arrow-head-filled-1" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#B6F35C" stroke="none" style="stroke: none; fill: #B6F35C; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 43" marker-end="url(#dc-arrow-head-filled-1)"></path></svg>
+            <svg aria-hidden="true" width="8" height="47" viewBox="0 0 8 47" preserveAspectRatio="none" style="position: absolute; left: 140px; top: 204px; width: 8px; height: 47px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px #B6F35C)"><defs><marker id="dc-arrow-head-filled-2" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#B6F35C" stroke="none" style="stroke: none; fill: #B6F35C; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 43" marker-end="url(#dc-arrow-head-filled-2)"></path></svg>
+            <svg aria-hidden="true" width="8" height="47" viewBox="0 0 8 47" preserveAspectRatio="none" style="position: absolute; left: 140px; top: 308px; width: 8px; height: 47px; overflow: visible; fill: none; stroke: #2C3446; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-3" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2C3446" stroke="none" style="stroke: none; fill: #2C3446; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 43" marker-end="url(#dc-arrow-head-filled-3)"></path></svg>
+            <svg aria-hidden="true" width="8" height="47" viewBox="0 0 8 47" preserveAspectRatio="none" style="position: absolute; left: 140px; top: 424px; width: 8px; height: 47px; overflow: visible; fill: none; stroke: #2C3446; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-4" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2C3446" stroke="none" style="stroke: none; fill: #2C3446; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 43" marker-end="url(#dc-arrow-head-filled-4)"></path></svg>
+            <svg aria-hidden="true" width="8" height="47" viewBox="0 0 8 47" preserveAspectRatio="none" style="position: absolute; left: 140px; top: 528px; width: 8px; height: 47px; overflow: visible; fill: none; stroke: #2C3446; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-5" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2C3446" stroke="none" style="stroke: none; fill: #2C3446; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 43" marker-end="url(#dc-arrow-head-filled-5)"></path></svg>
+            <svg aria-hidden="true" width="160" height="8" viewBox="0 0 160 8" preserveAspectRatio="none" style="position: absolute; left: 248px; top: 276px; width: 160px; height: 8px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 6 6; filter: drop-shadow(0 0 4px #B6F35C)"><path d="M 0 4 L 160 4"></path></svg>
+            <svg aria-hidden="true" width="8" height="75" viewBox="0 0 8 75" preserveAspectRatio="none" style="position: absolute; left: 404px; top: 280px; width: 8px; height: 75px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 6 6; filter: drop-shadow(0 0 4px #B6F35C)"><defs><marker id="dc-arrow-head-filled-6" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#B6F35C" stroke="none" style="stroke: none; fill: #B6F35C; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 71" marker-end="url(#dc-arrow-head-filled-6)"></path></svg>
+            <svg aria-hidden="true" width="8" height="178" viewBox="0 0 8 178" preserveAspectRatio="none" style="position: absolute; left: 404px; top: 412px; width: 8px; height: 178px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px #B6F35C)"><path d="M 4 0 L 4 178"></path></svg>
+            <svg aria-hidden="true" width="227" height="8" viewBox="0 0 227 8" preserveAspectRatio="none" style="position: absolute; left: 181px; top: 586px; width: 227px; height: 8px; overflow: visible; fill: none; stroke: #B6F35C; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px #B6F35C)"><defs><marker id="dc-arrow-head-filled-7" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#B6F35C" stroke="none" style="stroke: none; fill: #B6F35C; fill: context-stroke"/></marker></defs><path d="M 227 4 L 4 4" marker-end="url(#dc-arrow-head-filled-7)"></path></svg>
+
+            <!-- failure pulse + selection rings (decorative, no clicks) -->
+            <sc-if value="{{motion}}" hint-placeholder-val="{{ true }}"><div aria-hidden="true" class="dc-pulse" style="position: absolute; left: 40px; top: 252px; width: 208px; height: 56px; box-sizing: border-box; border: 1px solid #FF3EA5; border-radius: 10px; box-shadow: 0 0 16px #FF3EA5; pointer-events: none"></div></sc-if>
+            <sc-if value="{{ringReceive}}" hint-placeholder-val="{{ false }}"><div aria-hidden="true" style="position: absolute; left: 36px; top: 144px; width: 216px; height: 64px; box-sizing: border-box; border: 1px solid #2DE2E6; border-radius: 13px; box-shadow: 0 0 12px #2DE2E666; pointer-events: none"></div></sc-if>
+            <sc-if value="{{ringValidate}}" hint-placeholder-val="{{ true }}"><div aria-hidden="true" style="position: absolute; left: 36px; top: 248px; width: 216px; height: 64px; box-sizing: border-box; border: 1px solid #2DE2E6; border-radius: 13px; box-shadow: 0 0 12px #2DE2E666; pointer-events: none"></div></sc-if>
+            <sc-if value="{{ringEnrich}}" hint-placeholder-val="{{ false }}"><div aria-hidden="true" style="position: absolute; left: 36px; top: 352px; width: 216px; height: 76px; box-sizing: border-box; border: 1px solid #2DE2E6; border-radius: 13px; box-shadow: 0 0 12px #2DE2E666; pointer-events: none"></div></sc-if>
+            <sc-if value="{{ringWrite}}" hint-placeholder-val="{{ false }}"><div aria-hidden="true" style="position: absolute; left: 36px; top: 468px; width: 216px; height: 64px; box-sizing: border-box; border: 1px solid #2DE2E6; border-radius: 13px; box-shadow: 0 0 12px #2DE2E666; pointer-events: none"></div></sc-if>
+            <sc-if value="{{ringNotify}}" hint-placeholder-val="{{ false }}"><div aria-hidden="true" style="position: absolute; left: 316px; top: 352px; width: 184px; height: 64px; box-sizing: border-box; border: 1px solid #2DE2E6; border-radius: 13px; box-shadow: 0 0 12px #2DE2E666; pointer-events: none"></div></sc-if>
+
+            <!-- Map stack outlines (behind EnrichItems) -->
+            <div aria-hidden="true" style="position: absolute; left: 52px; top: 368px; width: 184px; height: 56px; box-sizing: border-box; border: 1px solid #2C3446; border-radius: 10px; background: #07090D"></div>
+            <div aria-hidden="true" style="position: absolute; left: 46px; top: 362px; width: 196px; height: 56px; box-sizing: border-box; border: 1px solid #2C3446; border-radius: 10px; background: #090C11"></div>
+
+            <!-- cards -->
+            <div style="position: absolute; left: 108px; top: 72px; width: 72px; height: 28px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border: 1px solid #2C3446; border-radius: 999px; background: #0B0E14; color: #A3ACBE; font-size: 12px; line-height: 16px; font-weight: 500">Start</div>
+            <div class="dc-node" role="button" tabindex="0" aria-label="ReceiveOrder, Lambda task, succeeded" aria-pressed="{{pressReceive}}" onClick="{{ selReceive }}" style="position: absolute; left: 40px; top: 148px; width: 208px; height: 56px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #B6F35C; border-radius: 10px; background: #0F131B; box-shadow: 0 0 0 1px #B6F35C33, 0 0 18px #B6F35C66, inset 0 0 14px #B6F35C22; color: #E7EAF2; font-size: 13px; line-height: 18px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #B6F35C"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg><span><b style="font-weight: 600">ReceiveOrder</b><br><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">Lambda · succeeded</span></span></div>
+            <div class="dc-node" role="button" tabindex="0" aria-label="ValidateOrder, Lambda task, failed" aria-pressed="{{pressValidate}}" onClick="{{ selValidate }}" style="position: absolute; left: 40px; top: 252px; width: 208px; height: 56px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #FF3EA5; border-radius: 10px; background: #0F131B; box-shadow: 0 0 0 1px #FF3EA555, 0 0 28px #FF3EA599, inset 0 0 18px #FF3EA533; color: #E7EAF2; font-size: 13px; line-height: 18px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #FF3EA5; filter: drop-shadow(0 0 4px #FF3EA5)"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg><span><b style="font-weight: 600">ValidateOrder</b><br><span style="font-size: 12px; line-height: 16px; color: #FF3EA5">Lambda · failed</span></span></div>
+            <div class="dc-node" role="button" tabindex="0" aria-label="EnrichItems, Map state with 128 items, not run" aria-pressed="{{pressEnrich}}" onClick="{{ selEnrich }}" style="position: absolute; left: 40px; top: 356px; width: 208px; height: 56px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #2C3446; border-radius: 10px; background: #0B0E14; color: #A3ACBE; font-size: 13px; line-height: 18px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #7D879B"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><b style="font-weight: 600; color: #E7EAF2">EnrichItems</b><br><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">(Map · 128 items)</span></span></div>
+            <div class="dc-node" role="button" tabindex="0" aria-label="WriteOrders, task, not run" aria-pressed="{{pressWrite}}" onClick="{{ selWrite }}" style="position: absolute; left: 40px; top: 472px; width: 208px; height: 56px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #2C3446; border-radius: 10px; background: #0B0E14; color: #A3ACBE; font-size: 13px; line-height: 18px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #7D879B"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><b style="font-weight: 600; color: #E7EAF2">WriteOrders</b><br><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">Task · not run</span></span></div>
+            <div style="position: absolute; left: 108px; top: 576px; width: 72px; height: 28px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border: 1px solid #2C3446; border-radius: 999px; background: #0B0E14; color: #A3ACBE; font-size: 12px; line-height: 16px; font-weight: 500">End</div>
+            <div class="dc-node" role="button" tabindex="0" aria-label="NotifyOps, SNS task, ran on Catch, succeeded" aria-pressed="{{pressNotify}}" onClick="{{ selNotify }}" style="position: absolute; left: 320px; top: 356px; width: 176px; height: 56px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #B6F35C; border-radius: 10px; background: #0F131B; box-shadow: 0 0 0 1px #B6F35C33, 0 0 18px #B6F35C66, inset 0 0 14px #B6F35C22; color: #E7EAF2; font-size: 13px; line-height: 18px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: #B6F35C"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg><span><b style="font-weight: 600">NotifyOps</b><br><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">SNS · ran on Catch</span></span></div>
+
+            <!-- labels -->
+            <div style="position: absolute; left: 32px; top: 28px; width: 336px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B">Step Functions · us-east-1 · Standard workflow</div>
+            <div style="position: absolute; left: 260px; top: 252px; width: 136px; text-align: center; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 13px; line-height: 16px; color: #B6F35C">Catch: States.ALL</div>
+            <div style="position: absolute; left: 260px; top: 292px; width: 80px; height: 20px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #2DE2E659; border-radius: 999px; background: #2DE2E614; color: #2DE2E6; font-size: 12px; line-height: 16px; font-weight: 500"><span aria-hidden="true" class="dc-breathe" style="width: 6px; height: 6px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>Healing</div>
+          </div>
+        </div>
+
+        <!-- legend -->
+        <div aria-label="Legend" role="group" style="position: absolute; left: 16px; bottom: 16px; max-width: calc(100% - 32px); box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: rgba(11, 14, 20, 0.92); border: 1px solid #212836; border-radius: 10px">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px">
+            <span style="width: 64px; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">State</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B6F35C" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg>Succeeded</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FF3EA5" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg>Failed</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2DE2E6" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9"></path></svg>Healing</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7D879B" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Not run</span>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px">
+            <span style="width: 64px; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Category</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFB547" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"></ellipse><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"></path><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"></path></svg>Data</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5B9BFF" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"></path></svg>Code</span>
+            <span style="display: flex; align-items: center; gap: 6px; height: 22px; box-sizing: border-box; padding: 0 8px; border: 1px solid #212836; border-radius: 999px; background: #0F131B; color: #A3ACBE; font-size: 12px; line-height: 16px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B28CFF" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6"></path><path d="M12 17h.01"></path></svg>Needs you</span>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- inspector -->
+    <aside aria-labelledby="ins-title" style="flex: 1 1 340px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; padding: 16px; background: #0F131B; border-left: 1px solid #212836">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <span style="font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Selected step</span>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+          <h2 id="ins-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600">{{ins.title}}</h2>
+          <span style="display: flex; align-items: center; gap: 6px; height: 20px; box-sizing: border-box; padding: 0 8px; border-radius: 999px; border: 1px solid {{ins.pillBorder}}; background: {{ins.pillBg}}; color: {{ins.color}}; font-size: 11px; line-height: 16px; font-weight: 600">
+            <sc-if value="{{ins.isOk}}" hint-placeholder-val="{{ false }}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg></sc-if>
+            <sc-if value="{{ins.isFail}}" hint-placeholder-val="{{ true }}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg></sc-if>
+            <sc-if value="{{ins.isIdle}}" hint-placeholder-val="{{ false }}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg></sc-if>
+            {{ins.status}}
+          </span>
+        </div>
+        <code style="font-size: 12px; line-height: 16px; color: #7D879B">orders-ingest / {{ins.title}}</code>
+      </div>
+
+      <dl style="margin: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-top: 1px solid #212836; border-bottom: 1px solid #212836">
+        <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Type</dt>
+        <dd style="margin: 0">{{ins.type}}</dd>
+        <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Resource</dt>
+        <dd style="margin: 0"><code style="font-size: 12.5px; line-height: 20px; color: #E7EAF2">{{ins.resource}}</code></dd>
+        <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Source</dt>
+        <dd style="margin: 0; display: flex; flex-direction: column; gap: 2px"><code style="font-size: 12.5px; line-height: 20px; color: #E7EAF2; overflow-wrap: anywhere">{{ins.source}}</code><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">{{ins.sourceNote}}</span></dd>
+        <dt style="font-size: 12px; line-height: 20px; color: #7D879B">{{ins.resultLabel}}</dt>
+        <dd style="margin: 0; display: flex; flex-direction: column; gap: 2px"><span style="color: {{ins.resultColor}}; font-family: {{ins.resultFont}}; font-size: {{ins.resultSize}}; line-height: 20px">{{ins.result}}</span><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">{{ins.resultNote}}</span></dd>
+        <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Attempts</dt>
+        <dd style="margin: 0; display: flex; align-items: baseline; gap: 8px"><code style="font-size: 12.5px; line-height: 20px; color: #E7EAF2">{{ins.attempts}}</code><span style="font-size: 12px; line-height: 16px; color: #A3ACBE">{{ins.attemptsNote}}</span></dd>
+      </dl>
+
+      <sc-if value="{{ins.hasIncident}}" hint-placeholder-val="{{ true }}">
+        <section aria-labelledby="ins-incident" style="display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid #212836; border-radius: 10px; background: #151A24">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <h3 id="ins-incident" style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #A3ACBE">Incident</h3>
+            <code style="height: 18px; box-sizing: border-box; padding: 0 6px; border-radius: 999px; border: 1px solid #5B9BFF59; background: #5B9BFF14; color: #5B9BFF; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: .04em">CODE</code>
+            <span style="margin-left: auto; font-size: 12px; line-height: 16px; color: #A3ACBE"><time>6m</time> ago · EventBridge</span>
+          </div>
+          <a href="#" style="display: flex; align-items: center; gap: 8px; color: #2DE2E6; font-weight: 500"><span aria-hidden="true" class="dc-breathe" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>Healing: agent writing a failing test</a>
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div role="progressbar" aria-label="Healing progress" aria-valuemin="0" aria-valuemax="4" aria-valuenow="1" aria-valuetext="Step 2 of 4: writing a failing test" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px">
+              <span style="height: 4px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 6px #B6F35C73"></span>
+              <span style="position: relative; height: 4px; border-radius: 999px; background: #2DE2E633; overflow: hidden; box-shadow: 0 0 8px #2DE2E666"><span class="{{shimmerCls}}" style="position: absolute; left: 0; top: 0; width: 45%; height: 100%; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span></span>
+              <span style="height: 4px; border-radius: 999px; background: #212836"></span>
+              <span style="height: 4px; border-radius: 999px; background: #212836"></span>
+            </div>
+            <div aria-hidden="true" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; font-size: 11px; line-height: 16px">
+              <span style="color: #A3ACBE">Classified</span>
+              <span style="color: #2DE2E6; font-weight: 500">Failing test</span>
+              <span style="color: #7D879B">Minimal fix</span>
+              <span style="color: #7D879B">PR</span>
+            </div>
+          </div>
+        </section>
+      </sc-if>
+      <sc-if value="{{ins.noIncident}}" hint-placeholder-val="{{ false }}">
+        <p style="margin: 0; padding: 12px; border: 1px dashed #2C3446; border-radius: 10px; font-size: 12px; line-height: 16px; color: #A3ACBE">{{ins.note}}</p>
+      </sc-if>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+        <sc-if value="{{ins.hasIncident}}" hint-placeholder-val="{{ true }}"><button type="button" class="dc-primary" style="height: 32px; padding: 0 14px; border: none; border-radius: 6px; background: #2DE2E6; color: #07090D; font-size: 13px; line-height: 20px; font-weight: 600; cursor: pointer">Open incident</button></sc-if>
+        <a href="#" class="dc-secondary" style="display: flex; align-items: center; gap: 6px; height: 32px; box-sizing: border-box; padding: 0 12px; border: 1px solid #212836; border-radius: 6px; color: #E7EAF2; font-size: 13px; line-height: 20px; font-weight: 500">View in AWS console<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: #A3ACBE"><path d="M14 4h6v6"></path><path d="M20 4 10 14"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg></a>
+      </div>
+
+      <section aria-labelledby="ins-events" style="display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid #212836">
+        <h3 id="ins-events" style="margin: 0; font-size: 11px; line-height: 16px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: #7D879B">Execution events</h3>
+        <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 20px">
+          <li style="display: flex; align-items: center; gap: 8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B6F35C" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg><span style="flex: none; width: 104px; color: #B6F35C">TaskSucceeded</span><span style="color: #A3ACBE">ReceiveOrder</span></li>
+          <li style="display: flex; align-items: center; gap: 8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FF3EA5" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg><span style="flex: none; width: 104px; color: #FF3EA5">TaskFailed</span><span style="color: #A3ACBE">ValidateOrder · 1/3</span></li>
+          <li style="display: flex; align-items: center; gap: 8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FF3EA5" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg><span style="flex: none; width: 104px; color: #FF3EA5">TaskFailed</span><span style="color: #A3ACBE">ValidateOrder · 2/3</span></li>
+          <li style="display: flex; align-items: center; gap: 8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FF3EA5" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="9"></circle><path d="m9 9 6 6M15 9l-6 6"></path></svg><span style="flex: none; width: 104px; color: #FF3EA5">TaskFailed</span><span style="color: #A3ACBE">ValidateOrder · 3/3</span></li>
+          <li style="display: flex; align-items: center; gap: 8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B6F35C" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><circle cx="12" cy="12" r="9"></circle><path d="m8 12.5 2.8 2.8L16 9.5"></path></svg><span style="flex: none; width: 104px; color: #B6F35C">TaskSucceeded</span><span style="color: #A3ACBE">NotifyOps · via Catch</span></li>
+        </ol>
+      </section>
+    </aside>
+  </div>
+
+  <!-- status bar -->
+  <footer style="flex: none; min-height: 28px; box-sizing: border-box; padding: 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; background: #0B0E14; border-top: 1px solid #212836; font-size: 12px; line-height: 16px; color: #A3ACBE">
+    <span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>worker online · polling 5s</span>
+    <span style="display: flex; align-items: center; gap: 8px">Claude Opus 5.5<span role="meter" aria-label="Daily token budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="41" style="display: flex; width: 56px; height: 4px; border-radius: 999px; background: #212836; overflow: hidden"><span style="width: 41%; background: #2DE2E6"></span></span>41% of daily token budget</span>
+    <span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>Airflow<span class="dc-sr">, healthy</span></span>
+    <span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>Step Functions<span class="dc-sr">, healthy</span></span>
+    <span style="margin-left: auto">4 incidents · <span style="color: #B28CFF">1 needs you</span></span>
+  </footer>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"motion":true,"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const sel = st.sel || 'orders-ingest';
+    const node = st.node || 'ValidateOrder';
+    const filter = st.filter || 'all';
+    const showHealed = st.showHealed !== false;
+    const q = String(st.q || '').trim().toLowerCase();
+    const motion = !(this.props && (this.props.motion === false || this.props.motion === 'off'));
+    const set = (patch) => () => this.setState(patch);
+
+    const LIME = '#B6F35C', PINK = '#FF3EA5', CYAN = '#2DE2E6', AMBER = '#FFB547', BLUE = '#5B9BFF', VIOLET = '#B28CFF', GRAY = '#5B6578';
+    const MONO = "'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace";
+    const UI = "'Geist', ui-sans-serif, system-ui, sans-serif";
+
+    // ---- pipeline list ----
+    const tick = (c) => c === 's' ? { bg: LIME, h: '16px', glow: '0 0 6px #B6F35C73' }
+      : c === 'f' ? { bg: PINK, h: '16px', glow: '0 0 8px #FF3EA5A6' }
+      : { bg: GRAY, h: '6px', glow: 'none' };
+    const cats = { DATA: AMBER, CODE: BLUE, AMBIGUOUS: VIOLET };
+    const raw = [
+      { id: 'sales_daily_etl', orch: 'airflow', cat: 'DATA', status: 'Failed', color: PINK, detail: 'transform_sales · alert sent', ago: '14m', hist: 's'.repeat(13) + 'f', healed: false },
+      { id: 'customers_sync', orch: 'airflow', cat: 'CODE', status: 'Healed', color: LIME, detail: 'transform · PR.md ready', ago: '9m', hist: 'n' + 's'.repeat(12) + 'f', healed: true },
+      { id: 'inventory_report', orch: 'airflow', cat: 'AMBIGUOUS', status: 'Needs you', color: VIOLET, detail: 'build_report · draft contract', ago: '2m', hist: 's'.repeat(13) + 'f', healed: false },
+      { id: 'orders-ingest', orch: 'sfn', cat: 'CODE', status: 'Healing', color: CYAN, detail: 'ValidateOrder · writing test', ago: '6m', hist: 'nnn' + 's'.repeat(10) + 'f', healed: false },
+      { id: 'payments-reconcile', orch: 'sfn', cat: '', status: 'Healthy', color: LIME, detail: 'no open incidents', ago: '', hist: 'nnn' + 's'.repeat(11), healed: false }
+    ];
+    const pipes = raw
+      .filter((p) => (filter === 'all' || p.orch === filter) && (showHealed || !p.healed) && (!q || p.id.toLowerCase().indexOf(q) !== -1))
+      .map((p) => {
+        const on = p.id === sel;
+        const chars = p.hist.split('');
+        const ok = chars.filter((c) => c === 's').length;
+        const bad = chars.filter((c) => c === 'f').length;
+        const none = chars.length - ok - bad;
+        const parts = [ok + ' succeeded'];
+        if (bad) parts.push(bad + ' failed');
+        if (none) parts.push(none + ' not run');
+        const cc = cats[p.cat] || '#A3ACBE';
+        return {
+          name: p.id,
+          isAirflow: p.orch === 'airflow',
+          isSfn: p.orch === 'sfn',
+          orchLabel: p.orch === 'airflow' ? 'Airflow' : 'Step Functions',
+          hasCat: !!p.cat, cat: p.cat, catColor: cc, catBg: cc + '14', catBorder: cc + '59',
+          status: p.status, statusColor: p.color, dot: p.color,
+          dotCls: motion && p.status === 'Healing' ? 'dc-breathe' : '',
+          detail: p.detail, ago: p.ago,
+          ticks: chars.map(tick),
+          histLabel: 'Last 14 runs: ' + parts.join(', '),
+          cls: on ? 'dc-row dc-row-on' : 'dc-row',
+          pressed: on ? 'true' : 'false',
+          border: on ? '#2DE2E666' : 'transparent',
+          shadow: on ? '0 0 0 1px #2DE2E61F, 0 0 18px #2DE2E61A' : 'none',
+          onSelect: set({ sel: p.id })
+        };
+      });
+    const seg = (key) => ({
+      pressed: filter === key ? 'true' : 'false',
+      bg: filter === key ? '#1B2130' : 'transparent',
+      color: filter === key ? '#E7EAF2' : '#A3ACBE',
+      onClick: set({ filter: key })
+    });
+
+    // ---- graph nodes -> inspector ----
+    const okPill = { color: LIME, pillBg: '#B6F35C14', pillBorder: '#B6F35C59', isOk: true, isFail: false, isIdle: false };
+    const failPill = { color: PINK, pillBg: '#FF3EA514', pillBorder: '#FF3EA566', isOk: false, isFail: true, isIdle: false };
+    const idlePill = { color: '#A3ACBE', pillBg: '#5B65781F', pillBorder: '#2C3446', isOk: false, isFail: false, isIdle: true };
+    const notReached = 'Not reached: ValidateOrder failed and Catch: States.ALL routed the execution to NotifyOps.';
+    const N = {
+      ReceiveOrder: Object.assign({
+        title: 'ReceiveOrder', status: 'Succeeded', type: 'Task (Lambda)', resource: 'orders-receive',
+        source: 'src/orders/receive.py', sourceNote: 'receive_order · mapped via template.yaml (SAM)',
+        resultLabel: 'Last result', result: 'Succeeded', resultColor: '#E7EAF2', resultFont: UI, resultSize: '13px', resultNote: 'Output passed to ValidateOrder',
+        attempts: '1', attemptsNote: 'No retries needed', hasIncident: false, note: 'No incident on this step.'
+      }, okPill),
+      ValidateOrder: Object.assign({
+        title: 'ValidateOrder', status: 'Failed', type: 'Task (Lambda)', resource: 'orders-validate',
+        source: 'src/orders/validate.py:42', sourceNote: 'validate_order · mapped via template.yaml (SAM)',
+        resultLabel: 'Last error', result: "KeyError: 'currency'", resultColor: PINK, resultFont: MONO, resultSize: '12.5px', resultNote: 'TaskFailed in execution history',
+        attempts: '3/3', attemptsNote: 'Retry policy', hasIncident: true, note: ''
+      }, failPill),
+      EnrichItems: Object.assign({
+        title: 'EnrichItems', status: 'Not run', type: 'Map (128 items)', resource: 'ItemProcessor',
+        source: '—', sourceNote: 'Not reached in this execution',
+        resultLabel: 'Last result', result: 'Not run', resultColor: '#A3ACBE', resultFont: UI, resultSize: '13px', resultNote: 'Skipped after the Catch',
+        attempts: '0', attemptsNote: '', hasIncident: false, note: notReached
+      }, idlePill),
+      WriteOrders: Object.assign({
+        title: 'WriteOrders', status: 'Not run', type: 'Task', resource: '—',
+        source: '—', sourceNote: 'Not reached in this execution',
+        resultLabel: 'Last result', result: 'Not run', resultColor: '#A3ACBE', resultFont: UI, resultSize: '13px', resultNote: 'Skipped after the Catch',
+        attempts: '0', attemptsNote: '', hasIncident: false, note: notReached
+      }, idlePill),
+      NotifyOps: Object.assign({
+        title: 'NotifyOps', status: 'Succeeded', type: 'Task (SNS publish)', resource: 'orders-ops-alerts',
+        source: 'No code to map', sourceNote: 'Service integration, no Lambda handler',
+        resultLabel: 'Last result', result: 'Succeeded', resultColor: '#E7EAF2', resultFont: UI, resultSize: '13px', resultNote: 'Entered via Catch: States.ALL',
+        attempts: '1', attemptsNote: '', hasIncident: false, note: 'No incident on this step. It ran because ValidateOrder failed.'
+      }, okPill)
+    };
+    const ins = Object.assign({}, N[node] || N.ValidateOrder);
+    ins.noIncident = !ins.hasIncident;
+    const pressed = (k) => (node === k ? 'true' : 'false');
+
+    return {
+      pipes,
+      countLabel: pipes.length + ' of 5',
+      noResults: pipes.length === 0,
+      onSearch: (e) => this.setState({ q: e && e.target ? e.target.value : '' }),
+      segAll: seg('all'), segAirflow: seg('airflow'), segSfn: seg('sfn'),
+      healedChecked: showHealed ? 'true' : 'false',
+      knobJustify: showHealed ? 'flex-end' : 'flex-start',
+      trackBg: showHealed ? '#2DE2E62E' : '#07090D',
+      trackBorder: showHealed ? '#2DE2E6' : '#2C3446',
+      knobBg: showHealed ? '#2DE2E6' : '#7D879B',
+      knobGlow: showHealed ? '0 0 8px #2DE2E6' : 'none',
+      toggleHealed: () => this.setState({ showHealed: !showHealed }),
+      motion,
+      shimmerCls: motion ? 'dc-shimmer' : '',
+      ringReceive: node === 'ReceiveOrder', ringValidate: node === 'ValidateOrder', ringEnrich: node === 'EnrichItems', ringWrite: node === 'WriteOrders', ringNotify: node === 'NotifyOps',
+      pressReceive: pressed('ReceiveOrder'), pressValidate: pressed('ValidateOrder'), pressEnrich: pressed('EnrichItems'), pressWrite: pressed('WriteOrders'), pressNotify: pressed('NotifyOps'),
+      selReceive: set({ node: 'ReceiveOrder' }),
+      selValidate: set({ node: 'ValidateOrder' }),
+      selEnrich: set({ node: 'EnrichItems' }),
+      selWrite: set({ node: 'WriteOrders' }),
+      selNotify: set({ node: 'NotifyOps' }),
+      ins
+    };
+  }
+}
+</script>
+</body>
+</html>

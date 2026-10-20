@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mobile companion</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#07090D}
+a{color:inherit}
+.m-scroll{scrollbar-width:none}
+.m-scroll::-webkit-scrollbar{display:none}
+.m-icon-btn:hover{background:#151A24 !important;color:#E7EAF2 !important}
+.m-btn:hover{background:#1B2130 !important}
+.m-btn:active{background:#212836 !important}
+.m-tile:hover,.m-card:hover,.m-row:hover{background:#151A24 !important}
+.m-link:hover{text-decoration:underline !important;text-underline-offset:3px}
+.m-tab:hover{color:#E7EAF2 !important}
+.m-tab[aria-current="page"]:hover{color:#2DE2E6 !important}
+:focus-visible{outline:2px solid #2DE2E6;outline-offset:2px}
+.m-row:focus-visible{outline-offset:-2px}
+@keyframes m-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.m-pulse{animation:m-pulse 1.6s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){.m-pulse{animation:none}}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+</helmet>
+<div style="position: relative; width: 390px; height: 844px; overflow: hidden; display: flex; flex-direction: column; background: #07090D; color: #E7EAF2; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 20px; -webkit-font-smoothing: antialiased;">
+
+<main class="m-scroll" style="flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 44px 16px 8px; display: flex; flex-direction: column;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; justify-content: space-between;">
+<div style="display: flex; align-items: center; gap: 8px;">
+<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; overflow: visible;"><path d="M7.2 7.1 L15.4 10.9" style="fill: none; stroke: #5B6578; stroke-width: 1.5; stroke-linecap: round;"></path><path d="M7.2 16.9 L15.4 13.1" style="fill: none; stroke: #5B6578; stroke-width: 1.5; stroke-linecap: round;"></path><circle cx="5" cy="6" r="2.5" style="fill: #0F131B; stroke: #A3ACBE; stroke-width: 1.75;"></circle><circle cx="5" cy="18" r="2.5" style="fill: #0F131B; stroke: #A3ACBE; stroke-width: 1.75;"></circle><circle cx="18" cy="12" r="3" style="fill: #2DE2E6; stroke: none; filter: drop-shadow(0 0 4px #2DE2E6);"></circle></svg>
+<span style="font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em;">dag-healer</span>
+</div>
+<button type="button" class="m-icon-btn" aria-label="Settings" style="flex: none; width: 44px; height: 44px; margin-right: -12px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #A3ACBE; cursor: pointer;"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+</header>
+
+<div style="flex: none;">
+<h1 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em;">Good evening</h1>
+<p style="margin: 0; font-size: 13px; line-height: 20px; color: #A3ACBE;"><span style="color: #B28CFF; font-weight: 500;">1 incident</span> needs you</p>
+</div>
+
+<div style="flex: none; margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+<a href="#incidents-today" class="m-tile" style="height: 60px; box-sizing: border-box; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; background: #0F131B; border: 1px solid #212836; border-radius: 10px; color: #E7EAF2; text-decoration: none;"><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 20px; line-height: 24px; font-weight: 600;">4</span><span style="font-size: 12px; line-height: 16px; color: #A3ACBE; white-space: nowrap;">Incidents today</span></a>
+<a href="#fix-proposed" class="m-tile" style="height: 60px; box-sizing: border-box; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; background: #0F131B; border: 1px solid #212836; border-radius: 10px; color: #E7EAF2; text-decoration: none;"><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 20px; line-height: 24px; font-weight: 600;">1</span><span style="font-size: 12px; line-height: 16px; color: #A3ACBE; white-space: nowrap;">Fix proposed</span></a>
+<a href="#needs-you" class="m-tile" style="height: 60px; box-sizing: border-box; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; background: #0F131B; border: 1px solid #B28CFF; border-radius: 10px; box-shadow: 0 0 0 1px #B28CFF33, 0 0 18px #B28CFF66, inset 0 0 14px #B28CFF22; color: #E7EAF2; text-decoration: none;"><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 20px; line-height: 24px; font-weight: 600; color: #B28CFF; text-shadow: 0 0 12px #B28CFF99;">1</span><span style="font-size: 12px; line-height: 16px; color: #E7EAF2; white-space: nowrap;">Needs you</span></a>
+</div>
+
+<section aria-labelledby="m-sec-needs" style="flex: none; margin-top: 16px;">
+<h2 id="m-sec-needs" style="margin: 0; height: 16px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B;">Needs you <span style="min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #B28CFF1F; color: #B28CFF; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0;">1</span></h2>
+<article style="margin-top: 8px; box-sizing: border-box; padding: 16px 16px 0; background: #0F131B; border: 1px solid #212836; border-radius: 10px; display: flex; flex-direction: column;">
+<div style="height: 20px; display: flex; align-items: center; gap: 8px;">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 8px #B28CFF;"></span>
+<h3 id="m-needs-title" style="margin: 0; flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">inventory_report <span style="color: #7D879B; font-weight: 400;">/</span> build_report</h3>
+<time datetime="PT2M" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">2m</time>
+</div>
+<p style="margin: 4px 0 0; padding-left: 16px; font-size: 13px; line-height: 20px; color: #A3ACBE; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><code style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; color: #FF3EA5;">KeyError: 'qty'</code> · contract is a draft</p>
+<div style="margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;">
+<button type="button" class="m-btn" aria-describedby="m-needs-title" style="height: 44px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; background: #151A24; border: 1px solid #2C3446; border-radius: 6px; color: #E7EAF2; font-family: inherit; font-size: 13px; line-height: 20px; font-weight: 600; cursor: pointer;"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: #FFB547; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"></ellipse><path d="M5 5.5v13c0 1.38 3.13 2.5 7 2.5s7-1.12 7-2.5v-13"></path><path d="M5 12c0 1.38 3.13 2.5 7 2.5s7-1.12 7-2.5"></path></svg><span>Data issue</span></button>
+<button type="button" class="m-btn" aria-describedby="m-needs-title" style="height: 44px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; background: #151A24; border: 1px solid #2C3446; border-radius: 6px; color: #E7EAF2; font-family: inherit; font-size: 13px; line-height: 20px; font-weight: 600; cursor: pointer;"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: #5B9BFF; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="m9 7-5 5 5 5"></path><path d="m15 7 5 5-5 5"></path></svg><span>Code issue</span></button>
+</div>
+<a href="#incident-inventory_report-options" class="m-link" style="height: 44px; display: flex; align-items: center; justify-content: center; font-size: 13px; line-height: 20px; font-weight: 500; color: #2DE2E6; text-decoration: none;">More options</a>
+</article>
+</section>
+
+<section aria-labelledby="m-sec-healing" style="flex: none; margin-top: 16px;">
+<h2 id="m-sec-healing" style="margin: 0; height: 16px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B;">Healing <span style="min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #2DE2E61F; color: #2DE2E6; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0;">1</span></h2>
+<a href="#incident-orders-ingest-ValidateOrder" class="m-card" style="margin-top: 8px; box-sizing: border-box; padding: 12px 16px; display: flex; flex-direction: column; background: #0F131B; border: 1px solid #212836; border-radius: 10px; color: #E7EAF2; text-decoration: none;">
+<span style="height: 20px; display: flex; align-items: center; gap: 8px;">
+<span aria-hidden="true" class="m-pulse" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6;"></span>
+<span style="flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">orders-ingest <span style="color: #7D879B; font-weight: 400;">/</span> ValidateOrder</span>
+<time datetime="PT6M" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">6m</time>
+</span>
+<span style="margin-top: 4px; padding-left: 16px; height: 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+<span style="font-size: 12px; line-height: 16px; color: #A3ACBE;">Writing a failing test</span>
+<span style="font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #5B9BFF;">Code</span>
+</span>
+<span role="progressbar" aria-label="Repair progress" aria-valuemin="0" aria-valuemax="3" aria-valuenow="0" aria-valuetext="Step 1 of 3: writing a failing test. Next: minimal fix, then PR." style="margin-top: 8px; margin-left: 16px; height: 4px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;">
+<span class="m-pulse" style="border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6;"></span>
+<span style="border-radius: 999px; background: #212836;"></span>
+<span style="border-radius: 999px; background: #212836;"></span>
+</span>
+</a>
+</section>
+
+<section aria-labelledby="m-sec-recent" style="flex: none; margin-top: 16px;">
+<h2 id="m-sec-recent" style="margin: 0; height: 16px; display: flex; align-items: center; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B;">Recent</h2>
+<ul role="list" style="margin: 8px 0 0; padding: 0; list-style: none; background: #0F131B; border: 1px solid #212836; border-radius: 10px; overflow: hidden;">
+<li style="margin: 0;"><a href="#incident-customers_sync-transform" class="m-row" style="height: 48px; box-sizing: border-box; padding: 0 12px 0 16px; display: flex; align-items: center; gap: 12px; color: #E7EAF2; text-decoration: none;">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C;"></span>
+<span style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;">
+<span style="font-size: 13px; line-height: 20px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">customers_sync <span style="color: #7D879B; font-weight: 400;">/</span> transform</span>
+<span style="display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: #B6F35C; white-space: nowrap;"><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;"><circle cx="6" cy="6" r="2.25"></circle><circle cx="6" cy="18" r="2.25"></circle><circle cx="18" cy="18" r="2.25"></circle><path d="M6 8.25v7.5"></path><path d="M18 15.75V10a3 3 0 0 0-3-3h-3.5"></path><path d="m13.5 4.5-2.5 2.5 2.5 2.5"></path></svg><span>Fix proposed · PR.md ready</span></span>
+</span>
+<time datetime="PT9M" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">9m</time>
+<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: #5B6578; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="m9 6 6 6-6 6"></path></svg>
+</a></li>
+<li style="margin: 0;"><a href="#incident-sales_daily_etl-transform_sales" class="m-row" style="height: 48px; box-sizing: border-box; padding: 0 12px 0 16px; display: flex; align-items: center; gap: 12px; border-top: 1px solid #212836; color: #E7EAF2; text-decoration: none;">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #FFB547; box-shadow: 0 0 8px #FFB547;"></span>
+<span style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;">
+<span style="font-size: 13px; line-height: 20px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">sales_daily_etl <span style="color: #7D879B; font-weight: 400;">/</span> transform_sales</span>
+<span style="font-size: 12px; line-height: 16px; color: #FFB547; white-space: nowrap;">Data issue reported</span>
+</span>
+<time datetime="PT14M" style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">14m</time>
+<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: #5B6578; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="m9 6 6 6-6 6"></path></svg>
+</a></li>
+</ul>
+</section>
+
+<section aria-labelledby="m-sec-connectors" style="flex: none; margin-top: 16px;">
+<div style="height: 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+<h2 id="m-sec-connectors" style="margin: 0; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B;">Connectors</h2>
+<span style="font-size: 12px; line-height: 16px; color: #7D879B;">2 connected</span>
+</div>
+<ul role="list" style="margin: 8px 0 0; padding: 0; list-style: none; background: #0F131B; border: 1px solid #212836; border-radius: 10px;">
+<li style="margin: 0; height: 36px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; gap: 12px;">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C;"></span>
+<span style="flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Airflow <span style="color: #A3ACBE;">· prod</span></span>
+<span style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">3 DAGs</span>
+</li>
+<li style="margin: 0; height: 36px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; gap: 12px; border-top: 1px solid #212836;">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C;"></span>
+<span style="flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Step Functions <span style="color: #A3ACBE;">· us-east-1</span></span>
+<span style="flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #7D879B;">2 state machines</span>
+</li>
+</ul>
+</section>
+
+</main>
+
+<nav aria-label="Primary" style="flex: none; height: 56px; box-sizing: border-box; padding: 3px 8px 4px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start; background: #0B0E14; border-top: 1px solid #212836;">
+<a href="#home" class="m-tab" aria-current="page" style="position: relative; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; color: #2DE2E6; text-decoration: none; font-size: 12px; line-height: 16px; font-weight: 600;">
+<span aria-hidden="true" style="position: absolute; top: -4px; left: 50%; width: 24px; height: 2px; margin-left: -12px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6;"></span>
+<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 6px #2DE2E699);"><path d="M4 10.5 12 4l8 6.5"></path><path d="M6 9v10a1 1 0 0 0 1 1h3.5v-5.5h3V20H17a1 1 0 0 0 1-1V9"></path></svg>
+<span>Home</span>
+</a>
+<a href="#incidents" class="m-tab" aria-label="Incidents, 4 today" style="position: relative; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; color: #A3ACBE; text-decoration: none; font-size: 12px; line-height: 16px; font-weight: 500;">
+<span style="position: relative; width: 20px; height: 20px; display: flex;">
+<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"></path><path d="M12 9.5v4"></path><path d="M12 17h.01"></path></svg>
+<span aria-hidden="true" style="position: absolute; top: -6px; left: 12px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: #1B2130; border: 1px solid #2C3446; color: #E7EAF2; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 14px; font-weight: 600;">4</span>
+</span>
+<span>Incidents</span>
+</a>
+<a href="#pipelines" class="m-tab" style="position: relative; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; color: #A3ACBE; text-decoration: none; font-size: 12px; line-height: 16px; font-weight: 500;">
+<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><rect x="3" y="3" width="6" height="6" rx="1.5"></rect><rect x="15" y="9" width="6" height="6" rx="1.5"></rect><rect x="3" y="15" width="6" height="6" rx="1.5"></rect><path d="M9 6h2a2 2 0 0 1 2 2v2.5a1.5 1.5 0 0 0 1.5 1.5H15"></path><path d="M9 18h2a2 2 0 0 0 2-2v-2.5a1.5 1.5 0 0 1 1.5-1.5"></path></svg>
+<span>Pipelines</span>
+</a>
+<a href="#settings" class="m-tab" style="position: relative; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; color: #A3ACBE; text-decoration: none; font-size: 12px; line-height: 16px; font-weight: 500;">
+<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+<span>Settings</span>
+</a>
+</nav>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>class Component extends DCLogic { renderVals() { return {}; } }</script>
+</body>
+</html>

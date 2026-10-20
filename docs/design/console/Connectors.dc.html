@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orchestrator connectors</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+body{margin:0;background:#07090D;color:#E7EAF2;font-family:'Geist', ui-sans-serif, system-ui, sans-serif;font-size:13px;line-height:20px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+*,*::before,*::after{box-sizing:border-box}
+a{color:#2DE2E6;text-decoration:none}
+a:hover{color:#E7EAF2}
+button{font:inherit;color:inherit;cursor:pointer}
+code,kbd{font-family:'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace}
+:focus-visible{outline:2px solid #2DE2E6;outline-offset:2px}
+.dc-grid{background-color:#07090D;background-image:radial-gradient(#1A2030 1px, transparent 1px);background-size:20px 20px}
+.dh-nav:hover{background:#151A24 !important;color:#E7EAF2 !important}
+.dh-item:hover{background:#151A24 !important}
+.dh-tab:hover{background:#0F131B !important}
+.dh-icon-btn:hover{background:#1B2130 !important;color:#E7EAF2 !important}
+.dh-btn:hover{background:#1B2130 !important}
+.dh-btn-cyan:hover{background:#2DE2E61A !important}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#212836;border-radius:999px}
+</style>
+</helmet>
+
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: #07090D; color: #E7EAF2; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 20px">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside aria-label="Workspace" style="flex: 1 1 264px; display: flex; flex-direction: column; gap: 16px; padding: 12px 8px; background: #0B0E14; border-right: 1px solid #212836">
+
+    <a href="#" style="display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; color: #E7EAF2; font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em">
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" style="flex: none; overflow: visible"><path d="M5 5.5 15 10M5 14.5 15 10" fill="none" stroke="#5B6578" stroke-width="1.75" stroke-linecap="round"></path><circle cx="5" cy="5.5" r="2.25" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.5"></circle><circle cx="5" cy="14.5" r="2.25" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.5"></circle><circle cx="15" cy="10" r="2.75" fill="#2DE2E6" style="filter: drop-shadow(0 0 4px #2DE2E6)"></circle></svg>
+      <span>dag-healer</span>
+    </a>
+
+    <nav aria-label="Primary" style="display: flex; flex-direction: column; gap: 2px">
+      <a href="#" class="dh-nav" style="display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE; font-size: 13px; line-height: 20px; font-weight: 500">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M7.13 2.5a1 1 0 0 1 1.74 0l5.5 9.75a1 1 0 0 1-.87 1.5H2.5a1 1 0 0 1-.87-1.5Z"></path><path d="M8 6.25v3"></path><path d="M8 11.5h.01"></path></svg>
+        <span>Incidents</span>
+        <span style="margin-left: auto; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; background: #1B2130; color: #E7EAF2; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 18px; text-align: center">4<span class="sr-only"> open</span></span>
+      </a>
+      <a href="#" class="dh-nav" style="display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE; font-size: 13px; line-height: 20px; font-weight: 500">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="3.75" cy="4" r="1.75"></circle><circle cx="3.75" cy="12" r="1.75"></circle><circle cx="12.25" cy="8" r="1.75"></circle><path d="M5.4 4.8 10.6 7.2"></path><path d="M5.4 11.2 10.6 8.8"></path></svg>
+        <span>Pipelines</span>
+      </a>
+      <a href="#" class="dh-nav" style="display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE; font-size: 13px; line-height: 20px; font-weight: 500">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M9.25 1.75h-5a1.5 1.5 0 0 0-1.5 1.5v9.5a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5v-7Z"></path><path d="M9.25 1.75v4h4"></path><path d="m5.75 10 1.5 1.5 3-3"></path></svg>
+        <span>Contracts</span>
+      </a>
+      <a href="#" class="dh-nav" aria-current="page" style="display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; border-radius: 6px; background: #1B2130; color: #2DE2E6; font-size: 13px; line-height: 20px; font-weight: 500">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px #2DE2E666)"><path d="M6 1.75v3"></path><path d="M10 1.75v3"></path><path d="M3.75 4.75h8.5v2.5a4.25 4.25 0 0 1-8.5 0Z"></path><path d="M8 11.5v2.75"></path></svg>
+        <span>Connectors</span>
+      </a>
+      <button type="button" class="dh-nav" style="display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #A3ACBE; font-size: 13px; line-height: 20px; font-weight: 500; text-align: left">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="7" cy="7" r="4.75"></circle><path d="m10.5 10.5 3.5 3.5"></path></svg>
+        <span>Search</span>
+        <kbd style="margin-left: auto; height: 18px; padding: 0 6px; border: 1px solid #2C3446; border-radius: 6px; color: #A3ACBE; font-size: 11px; line-height: 16px">Ctrl K</kbd>
+      </button>
+    </nav>
+
+    <section aria-labelledby="sb-connectors" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-connectors" style="margin: 0; display: flex; align-items: center; height: 24px; padding: 0 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Connectors</h2>
+      <a href="#connector-airflow" class="dh-item" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #E7EAF2; font-size: 13px; line-height: 20px">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">Airflow <span style="color: #7D879B">·</span> prod</span>
+        <span class="sr-only">, connected</span>
+      </a>
+      <a href="#connector-stepfunctions" class="dh-item" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #E7EAF2; font-size: 13px; line-height: 20px">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">Step Functions <span style="color: #7D879B">·</span> us-east-1</span>
+        <span class="sr-only">, connected</span>
+      </a>
+      <a href="#connector-dagster" class="dh-item" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 6px; color: #A3ACBE; font-size: 13px; line-height: 20px">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #5B6578"></span>
+        <span>Dagster</span>
+        <span style="margin-left: auto; font-size: 12px; line-height: 16px; color: #7D879B">not connected</span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-needs" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-needs" style="margin: 0; display: flex; align-items: center; height: 24px; padding: 0 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Needs you<span style="margin-left: auto; height: 16px; padding: 0 6px; border-radius: 999px; background: #B28CFF1F; color: #B28CFF; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0">1</span></h2>
+      <a href="#" class="dh-item" style="display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2">
+        <span aria-hidden="true" style="width: 8px; height: 8px; margin-top: 6px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 8px #B28CFF"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px">inventory_report <span style="color: #7D879B">/</span> build_report</span>
+        <span style="grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: #7D879B"><code style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 6px; background: #151A24; color: #A3ACBE; font-size: 11px; line-height: 16px">analytics-etl</code><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace">2m</span></span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-healing" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-healing" style="margin: 0; display: flex; align-items: center; height: 24px; padding: 0 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Healing<span style="margin-left: auto; height: 16px; padding: 0 6px; border-radius: 999px; background: #2DE2E61A; color: #2DE2E6; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; line-height: 16px; letter-spacing: 0">1</span></h2>
+      <a href="#" class="dh-item" style="display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2">
+        <span aria-hidden="true" style="width: 8px; height: 8px; margin-top: 6px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px">orders-ingest <span style="color: #7D879B">/</span> ValidateOrder</span>
+        <span style="grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: #7D879B"><code style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 6px; background: #151A24; color: #A3ACBE; font-size: 11px; line-height: 16px">src/orders/validate.py</code><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace">6m</span></span>
+      </a>
+    </section>
+
+    <section aria-labelledby="sb-recent" style="display: flex; flex-direction: column; gap: 4px">
+      <h2 id="sb-recent" style="margin: 0; display: flex; align-items: center; height: 24px; padding: 0 8px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Recent</h2>
+      <a href="#" class="dh-item" style="display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2">
+        <span aria-hidden="true" style="width: 8px; height: 8px; margin-top: 6px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px">customers_sync <span style="color: #7D879B">/</span> transform</span>
+        <span style="grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: #7D879B"><span style="flex: none; color: #B6F35C">repaired</span><code title="healer/customers_sync-transform-3f9a2c1d" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 6px; background: #151A24; color: #A3ACBE; font-size: 11px; line-height: 16px">healer/customers_sync-transform-3f9a2c1d</code><svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="PR.md ready" style="flex: none; fill: none; stroke: #A3ACBE; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="4" cy="3.5" r="1.75"></circle><circle cx="4" cy="12.5" r="1.75"></circle><circle cx="12" cy="12.5" r="1.75"></circle><path d="M4 5.25v5.5"></path><path d="M12 10.75V7a2.5 2.5 0 0 0-2.5-2.5H7"></path><path d="m8.75 2.75-1.75 1.75 1.75 1.75"></path></svg><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace">9m</span></span>
+      </a>
+      <a href="#" class="dh-item" style="display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 8px; row-gap: 2px; padding: 6px 8px; border-radius: 6px; color: #E7EAF2">
+        <span aria-hidden="true" style="width: 8px; height: 8px; margin-top: 6px; border-radius: 999px; background: #FFB547; box-shadow: 0 0 8px #FFB547"></span>
+        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px">sales_daily_etl <span style="color: #7D879B">/</span> transform_sales</span>
+        <span style="grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: #7D879B"><span style="flex: none; color: #FFB547">data</span><code style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 6px; background: #151A24; color: #A3ACBE; font-size: 11px; line-height: 16px">analytics-etl</code><span style="margin-left: auto; flex: none; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace">14m</span></span>
+      </a>
+    </section>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+    <!-- Tab strip -->
+    <nav aria-label="Open tabs" style="flex: none; display: flex; align-items: stretch; height: 36px; background: #0B0E14; border-bottom: 1px solid #212836; overflow-x: auto; overflow-y: hidden">
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; background: #07090D; border-right: 1px solid #212836; box-shadow: inset 0 2px 0 #2DE2E6">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>
+        <a href="#" aria-current="page" style="color: #E7EAF2; font-size: 12px; line-height: 16px; font-weight: 500; white-space: nowrap">Connectors</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close Connectors tab" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #7D879B"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="m4 4 8 8"></path><path d="m12 4-8 8"></path></svg></button>
+      </div>
+      <div class="dh-tab" style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; border-right: 1px solid #212836">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #B28CFF; box-shadow: 0 0 8px #B28CFF"></span>
+        <a href="#" style="color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; white-space: nowrap">inventory_report / build_report</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close inventory_report / build_report tab" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #7D879B"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="m4 4 8 8"></path><path d="m12 4-8 8"></path></svg></button>
+      </div>
+      <div class="dh-tab" style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; border-right: 1px solid #212836">
+        <span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 8px #2DE2E6"></span>
+        <a href="#" style="color: #A3ACBE; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; white-space: nowrap">orders-ingest / ValidateOrder</a>
+        <button type="button" class="dh-icon-btn" aria-label="Close orders-ingest / ValidateOrder tab" style="display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #7D879B"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="m4 4 8 8"></path><path d="m12 4-8 8"></path></svg></button>
+      </div>
+      <button type="button" class="dh-icon-btn" aria-label="Open a new tab" style="flex: none; display: flex; align-items: center; justify-content: center; width: 36px; padding: 0; border: 0; background: transparent; color: #7D879B"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="M8 3.25v9.5"></path><path d="M3.25 8h9.5"></path></svg></button>
+    </nav>
+
+    <!-- Content -->
+    <main style="flex: 1 0 auto; display: flex; flex-direction: column; gap: 24px; padding: 24px">
+
+      <header style="display: flex; flex-direction: column; gap: 4px">
+        <h1 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em">Connectors</h1>
+        <p style="margin: 0; font-size: 13px; line-height: 20px; color: #A3ACBE; text-wrap: pretty">dag-healer runs one healing core. Each connector tells it about failures, fetches logs, maps steps to code and retries runs.</p>
+      </header>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: stretch; gap: 16px">
+
+        <!-- Hero diagram -->
+        <section aria-label="How connectors feed the dag-healer core" class="dc-grid" style="flex: 999 1 560px; min-width: 0; border: 1px solid #212836; border-radius: 10px; overflow-x: auto; overflow-y: hidden">
+          <div style="{{glowVars}}">
+            <div style="position: relative; width: 816px; height: 304px; margin: 0 auto">
+
+              <!-- edges: connectors into the core (many to one) -->
+              <svg width="52" height="8" viewBox="0 0 52 8" preserveAspectRatio="none" style="position: absolute; left: 192px; top: 70px; width: 52px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><path d="M 0 4 L 52 4"></path></svg>
+              <svg width="8" height="92" viewBox="0 0 8 92" preserveAspectRatio="none" style="position: absolute; left: 240px; top: 74px; width: 8px; height: 92px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><path d="M 4 0 L 4 92"></path></svg>
+              <svg width="52" height="8" viewBox="0 0 52 8" preserveAspectRatio="none" style="position: absolute; left: 192px; top: 162px; width: 52px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><path d="M 0 4 L 52 4"></path></svg>
+              <svg width="52" height="8" viewBox="0 0 52 8" preserveAspectRatio="none" style="position: absolute; left: 192px; top: 254px; width: 52px; height: 8px; overflow: visible; fill: none; stroke: #5B6578; stroke-width: 2; stroke-dasharray: 6 6; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 52 4"></path></svg>
+              <svg width="8" height="92" viewBox="0 0 8 92" preserveAspectRatio="none" style="position: absolute; left: 240px; top: 166px; width: 8px; height: 92px; overflow: visible; fill: none; stroke: #5B6578; stroke-width: 2; stroke-dasharray: 6 6; stroke-linecap: round; stroke-linejoin: round"><path d="M 4 0 L 4 92"></path></svg>
+              <svg width="51" height="8" viewBox="0 0 51 8" preserveAspectRatio="none" style="position: absolute; left: 244px; top: 162px; width: 51px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><defs><marker id="dc-arrow-head-filled-1" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2DE2E6" stroke="none" style="stroke: none; fill: #2DE2E6; fill: context-stroke"/></marker></defs><path d="M 0 4 L 47 4" marker-end="url(#dc-arrow-head-filled-1)"></path></svg>
+
+              <!-- edges: core to outputs (one to many) -->
+              <svg width="52" height="8" viewBox="0 0 52 8" preserveAspectRatio="none" style="position: absolute; left: 520px; top: 162px; width: 52px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><path d="M 0 4 L 52 4"></path></svg>
+              <svg width="8" height="92" viewBox="0 0 8 92" preserveAspectRatio="none" style="position: absolute; left: 568px; top: 120px; width: 8px; height: 92px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><path d="M 4 0 L 4 92"></path></svg>
+              <svg width="51" height="8" viewBox="0 0 51 8" preserveAspectRatio="none" style="position: absolute; left: 572px; top: 116px; width: 51px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><defs><marker id="dc-arrow-head-filled-2" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2DE2E6" stroke="none" style="stroke: none; fill: #2DE2E6; fill: context-stroke"/></marker></defs><path d="M 0 4 L 47 4" marker-end="url(#dc-arrow-head-filled-2)"></path></svg>
+              <svg width="51" height="8" viewBox="0 0 51 8" preserveAspectRatio="none" style="position: absolute; left: 572px; top: 208px; width: 51px; height: 8px; overflow: visible; fill: none; stroke: #2DE2E6; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 var(--edge-glow, 4px) #2DE2E6)"><defs><marker id="dc-arrow-head-filled-3" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#2DE2E6" stroke="none" style="stroke: none; fill: #2DE2E6; fill: context-stroke"/></marker></defs><path d="M 0 4 L 47 4" marker-end="url(#dc-arrow-head-filled-3)"></path></svg>
+
+              <!-- junctions -->
+              <div aria-hidden="true" style="position: absolute; left: 240px; top: 162px; width: 8px; height: 8px; box-sizing: border-box; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 10px #2DE2E6"></div>
+              <div aria-hidden="true" style="position: absolute; left: 568px; top: 162px; width: 8px; height: 8px; box-sizing: border-box; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 10px #2DE2E6"></div>
+
+              <!-- cards: orchestrators -->
+              <div style="position: absolute; left: 24px; top: 52px; width: 168px; height: 44px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #0F131B; border: 1px solid #B6F35C; border-radius: 10px; box-shadow: 0 0 0 1px #B6F35C33, 0 0 var(--node-glow, 18px) #B6F35C66, inset 0 0 14px #B6F35C22; color: #E7EAF2; font-size: 13px; line-height: 16px"><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Connected" style="flex: none; fill: none; stroke: #B6F35C; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 3px #B6F35C)"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 8.25 1.75 1.75 3.25-3.5"></path></svg><span><b style="font-weight: 600">Airflow</b><br><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">prod</span></span></div>
+              <div style="position: absolute; left: 24px; top: 144px; width: 168px; height: 44px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #0F131B; border: 1px solid #B6F35C; border-radius: 10px; box-shadow: 0 0 0 1px #B6F35C33, 0 0 var(--node-glow, 18px) #B6F35C66, inset 0 0 14px #B6F35C22; color: #E7EAF2; font-size: 13px; line-height: 16px"><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Connected" style="flex: none; fill: none; stroke: #B6F35C; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 3px #B6F35C)"><circle cx="8" cy="8" r="6.25"></circle><path d="m5.5 8.25 1.75 1.75 3.25-3.5"></path></svg><span><b style="font-weight: 600">Step Functions</b><br><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">us-east-1</span></span></div>
+              <div style="position: absolute; left: 24px; top: 236px; width: 168px; height: 44px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #0B0E14; border: 1px dashed #5B6578; border-radius: 10px; color: #A3ACBE; font-size: 13px; line-height: 16px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #5B6578; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="8" cy="8" r="6.25" stroke-dasharray="2.5 2.5"></circle></svg><span><b style="font-weight: 600">Dagster</b><br><span style="font-size: 12px; color: #7D879B">not connected</span></span></div>
+
+              <!-- card: core -->
+              <div style="position: absolute; left: 296px; top: 98px; width: 224px; height: 136px; box-sizing: border-box; padding: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; background: #0F131B; border: 1px solid #2DE2E6; border-radius: 10px; box-shadow: 0 0 0 1px #2DE2E633, 0 0 var(--core-glow, 28px) #2DE2E666, inset 0 0 18px #2DE2E622; color: #E7EAF2"><svg width="28" height="28" viewBox="0 0 20 20" aria-hidden="true" style="flex: none; overflow: visible"><path d="M5 5.5 15 10M5 14.5 15 10" fill="none" stroke="#5B6578" stroke-width="1.5" stroke-linecap="round"></path><circle cx="5" cy="5.5" r="2.25" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.25"></circle><circle cx="5" cy="14.5" r="2.25" fill="#0F131B" stroke="#A3ACBE" stroke-width="1.25"></circle><circle cx="15" cy="10" r="2.75" fill="#2DE2E6" style="filter: drop-shadow(0 0 4px #2DE2E6)"></circle></svg><span><b style="font-size: 15px; line-height: 20px; font-weight: 600">dag-healer core</b><br><span style="display: inline-block; margin-top: 6px; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; color: #A3ACBE">classify · repair<br>contracts · alerts</span></span></div>
+
+              <!-- cards: outputs -->
+              <div style="position: absolute; left: 624px; top: 98px; width: 168px; height: 44px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #0F131B; border: 1px solid #5B9BFF; border-radius: 10px; box-shadow: 0 0 0 1px #5B9BFF33, 0 0 var(--node-glow, 18px) #5B9BFF66, inset 0 0 14px #5B9BFF22; color: #E7EAF2; font-size: 13px; line-height: 16px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #5B9BFF; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="4" cy="3.5" r="1.75"></circle><circle cx="4" cy="12.5" r="1.75"></circle><circle cx="12" cy="12.5" r="1.75"></circle><path d="M4 5.25v5.5"></path><path d="M12 10.75V7a2.5 2.5 0 0 0-2.5-2.5H7"></path><path d="m8.75 2.75-1.75 1.75 1.75 1.75"></path></svg><span><b style="font-weight: 600">Pull requests</b><br><span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: #A3ACBE">PR.md</span></span></div>
+              <div style="position: absolute; left: 624px; top: 190px; width: 168px; height: 44px; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #0F131B; border: 1px solid #FFB547; border-radius: 10px; box-shadow: 0 0 0 1px #FFB54733, 0 0 var(--node-glow, 18px) #FFB54766, inset 0 0 14px #FFB54722; color: #E7EAF2; font-size: 13px; line-height: 16px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #FFB547; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M4 6.75a4 4 0 0 1 8 0c0 3.5 1.5 4.75 1.5 4.75h-11S4 10.25 4 6.75Z"></path><path d="M6.6 13.75a1.5 1.5 0 0 0 2.8 0"></path></svg><span><b style="font-weight: 600">Alerts</b><br><span style="font-size: 12px; color: #A3ACBE">email</span></span></div>
+
+              <!-- labels -->
+              <div style="position: absolute; left: 24px; top: 20px; width: 120px; height: 16px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Orchestrators</div>
+              <div style="position: absolute; left: 296px; top: 20px; width: 112px; height: 16px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Healing core</div>
+              <div style="position: absolute; left: 624px; top: 20px; width: 72px; height: 16px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Outputs</div>
+              <div style="position: absolute; left: 582px; top: 92px; width: 32px; height: 16px; text-align: center; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; font-weight: 600; color: #5B9BFF">CODE</div>
+              <div style="position: absolute; left: 582px; top: 184px; width: 32px; height: 16px; text-align: center; font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; line-height: 16px; font-weight: 600; color: #FFB547">DATA</div>
+              <div style="position: absolute; left: 624px; top: 250px; width: 168px; height: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; font-size: 12px; line-height: 16px; color: #7D879B"><span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="display: inline-block; width: 12px; height: 2px; border-radius: 999px; background: #2DE2E6; box-shadow: 0 0 4px #2DE2E6"></span>live</span><span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="display: inline-block; width: 12px; height: 0; border-top: 2px dashed #5B6578"></span>not connected</span></div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- Access panel -->
+        <aside aria-labelledby="access-title" style="flex: 1 1 288px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 16px; background: #0F131B; border: 1px solid #212836; border-radius: 10px">
+          <div style="display: flex; align-items: center; gap: 8px; height: 20px">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #A3ACBE; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M8 1.75 2.75 3.75v4c0 3.1 2.2 5.4 5.25 6.5 3.05-1.1 5.25-3.4 5.25-6.5v-4Z"></path></svg>
+            <h2 id="access-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600">Access</h2>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; background: #0B0E14; border: 1px solid #212836; border-radius: 6px">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #7D879B; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="5.25" cy="10.75" r="3"></circle><path d="m7.4 8.6 6.1-6.1"></path><path d="m11.25 4.75 1.75 1.75"></path></svg>
+            <span style="font-size: 12px; line-height: 16px; color: #7D879B">Sign-in</span>
+            <span style="margin-left: auto; font-size: 13px; line-height: 20px; font-weight: 500; color: #E7EAF2">SSO (OIDC)</span>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px">
+            <thead>
+              <tr>
+                <th scope="col" style="width: 112px; padding: 0 12px 8px 0; text-align: left; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Role</th>
+                <th scope="col" style="padding: 0 0 8px 0; text-align: left; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7D879B">Can</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row" style="padding: 10px 12px 10px 0; border-top: 1px solid #212836; text-align: left; vertical-align: top; font-weight: 500; color: #E7EAF2"><span style="display: inline-flex; align-items: center; gap: 8px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #7D879B; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M1.75 8s2.25-4.25 6.25-4.25S14.25 8 14.25 8 12 12.25 8 12.25 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="2"></circle></svg>Viewer</span></th>
+                <td style="padding: 10px 0; border-top: 1px solid #212836; vertical-align: top; color: #A3ACBE">View incidents</td>
+              </tr>
+              <tr>
+                <th scope="row" style="padding: 10px 12px 10px 0; border-top: 1px solid #212836; text-align: left; vertical-align: top; font-weight: 500; color: #E7EAF2"><span style="display: inline-flex; align-items: center; gap: 8px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #7D879B; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M13.25 8A5.25 5.25 0 1 1 11.7 4.3"></path><path d="M13.25 2.5v2.75H10.5"></path></svg>Responder</span></th>
+                <td style="padding: 10px 0; border-top: 1px solid #212836; vertical-align: top; color: #A3ACBE">Resolve and retry</td>
+              </tr>
+              <tr>
+                <th scope="row" style="padding: 10px 12px 10px 0; border-top: 1px solid #212836; text-align: left; vertical-align: top; font-weight: 500; color: #E7EAF2"><span style="display: inline-flex; align-items: center; gap: 8px"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #7D879B; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M8 1.75 2.75 3.75v4c0 3.1 2.2 5.4 5.25 6.5 3.05-1.1 5.25-3.4 5.25-6.5v-4Z"></path><path d="m5.75 8 1.5 1.5 3-3"></path></svg>Admin</span></th>
+                <td style="padding: 10px 0; border-top: 1px solid #212836; vertical-align: top; color: #A3ACBE; text-wrap: pretty">Approve contracts and manage connectors</td>
+              </tr>
+            </tbody>
+          </table>
+        </aside>
+      </div>
+
+      <!-- Connector cards -->
+      <section aria-labelledby="connector-list-title" style="display: flex; flex-direction: column; gap: 16px">
+        <h2 id="connector-list-title" class="sr-only">Connector list</h2>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); gap: 16px">
+
+          <!-- Airflow -->
+          <article id="connector-airflow" aria-labelledby="connector-airflow-title" style="min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 16px; background: #0F131B; border: 1px solid #212836; border-radius: 10px">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span aria-hidden="true" style="flex: none; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 6px; background: #151A24; border: 1px solid #212836; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 16 16" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M1.75 5.75h7.5a2 2 0 1 0-2-2"></path><path d="M1.75 10.25h9.5a2 2 0 1 1-2 2"></path><path d="M1.75 8h5.5"></path></svg></span>
+              <div style="flex: 1 1 auto; min-width: 0">
+                <h3 id="connector-airflow-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Airflow <span style="color: #7D879B">·</span> prod</h3>
+                <p style="margin: 0; font-size: 12px; line-height: 16px; color: #A3ACBE">Airflow 3.3.2 <span style="color: #7D879B">·</span> 3 DAGs monitored</p>
+              </div>
+              <span style="flex: none; display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 999px; background: #B6F35C14; border: 1px solid #B6F35C40; color: #B6F35C; font-size: 12px; line-height: 16px; font-weight: 500"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 6px #B6F35C"></span>Connected</span>
+            </div>
+            <dl style="margin: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px 12px">
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Failures</dt>
+              <dd style="margin: 0; color: #E7EAF2">Listener + REST polling</dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Code mapping</dt>
+              <dd style="margin: 0; color: #E7EAF2">repo <code style="padding: 1px 6px; border-radius: 6px; background: #151A24; border: 1px solid #212836; font-size: 12px; line-height: 16px">analytics-etl</code></dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Permissions</dt>
+              <dd style="margin: 0; color: #E7EAF2">Delegated to Airflow roles</dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Plugin</dt>
+              <dd style="margin: 0; display: flex; align-items: center; gap: 6px; color: #E7EAF2"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: #B6F35C; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="m3.25 8.5 3 3 6.5-7"></path></svg><span>Installed: UI also embedded in Airflow</span></dd>
+            </dl>
+            <div style="margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px">
+              <p style="margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.75V8l2.25 1.5"></path></svg>Last event <span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; color: #E7EAF2">2m ago</span></p>
+              <div style="margin-left: auto; display: flex; gap: 8px">
+                <button type="button" class="dh-btn" aria-label="Configure Airflow prod" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: #151A24; border: 1px solid #2C3446; color: #E7EAF2; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M2.5 4.5h6.25"></path><path d="M12.25 4.5h1.25"></path><circle cx="10.5" cy="4.5" r="1.75"></circle><path d="M2.5 11.5h1.25"></path><path d="M7.25 11.5h6.25"></path><circle cx="5.5" cy="11.5" r="1.75"></circle></svg>Configure</button>
+                <button type="button" class="dh-btn" aria-label="Test connection to Airflow prod" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: #151A24; border: 1px solid #2C3446; color: #E7EAF2; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M1.75 8h2.5l1.75-4.5 3.5 9 1.75-4.5h2.5"></path></svg>Test connection</button>
+              </div>
+            </div>
+          </article>
+
+          <!-- Step Functions -->
+          <article id="connector-stepfunctions" aria-labelledby="connector-sf-title" style="min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 16px; background: #0F131B; border: 1px solid #212836; border-radius: 10px">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span aria-hidden="true" style="flex: none; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 6px; background: #151A24; border: 1px solid #212836; color: #A3ACBE"><svg width="16" height="16" viewBox="0 0 16 16" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><rect x="1.75" y="1.75" width="5.5" height="4.5" rx="1"></rect><rect x="8.75" y="9.75" width="5.5" height="4.5" rx="1"></rect><path d="M4.5 6.25v3.5a2 2 0 0 0 2 2h2.25"></path></svg></span>
+              <div style="flex: 1 1 auto; min-width: 0">
+                <h3 id="connector-sf-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Step Functions <span style="color: #7D879B">·</span> us-east-1</h3>
+                <p style="margin: 0; font-size: 12px; line-height: 16px; color: #A3ACBE">2 state machines monitored</p>
+              </div>
+              <span style="flex: none; display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 999px; background: #B6F35C14; border: 1px solid #B6F35C40; color: #B6F35C; font-size: 12px; line-height: 16px; font-weight: 500"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 6px #B6F35C"></span>Connected</span>
+            </div>
+            <dl style="margin: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px 12px">
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Failures</dt>
+              <dd style="margin: 0; color: #E7EAF2">EventBridge rule: execution status <code style="padding: 1px 6px; border-radius: 6px; background: #151A24; border: 1px solid #212836; font-size: 12px; line-height: 16px">FAILED</code>, <code style="padding: 1px 6px; border-radius: 6px; background: #151A24; border: 1px solid #212836; font-size: 12px; line-height: 16px">TIMED_OUT</code></dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Logs</dt>
+              <dd style="margin: 0; color: #E7EAF2">Execution history + CloudWatch Logs</dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Code mapping</dt>
+              <dd style="margin: 0; color: #E7EAF2">SAM <code style="padding: 1px 6px; border-radius: 6px; background: #151A24; border: 1px solid #212836; font-size: 12px; line-height: 16px">template.yaml</code></dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Retry</dt>
+              <dd style="margin: 0; color: #E7EAF2">Redrive enabled (Standard workflows)</dd>
+              <dt style="font-size: 12px; line-height: 20px; color: #7D879B">Permissions</dt>
+              <dd style="margin: 0; color: #E7EAF2">IAM role <code style="font-size: 12px; line-height: 16px; color: #E7EAF2">dag-healer-reader</code> + redrive on 2 state machines</dd>
+            </dl>
+            <div style="margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px">
+              <p style="margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: #7D879B"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 4.75V8l2.25 1.5"></path></svg>Last event <span style="font-family: 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace; color: #E7EAF2">6m ago</span></p>
+              <div style="margin-left: auto; display: flex; gap: 8px">
+                <button type="button" class="dh-btn" aria-label="Configure Step Functions us-east-1" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: #151A24; border: 1px solid #2C3446; color: #E7EAF2; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M2.5 4.5h6.25"></path><path d="M12.25 4.5h1.25"></path><circle cx="10.5" cy="4.5" r="1.75"></circle><path d="M2.5 11.5h1.25"></path><path d="M7.25 11.5h6.25"></path><circle cx="5.5" cy="11.5" r="1.75"></circle></svg>Configure</button>
+                <button type="button" class="dh-btn" aria-label="Test connection to Step Functions us-east-1" style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: #151A24; border: 1px solid #2C3446; color: #E7EAF2; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M1.75 8h2.5l1.75-4.5 3.5 9 1.75-4.5h2.5"></path></svg>Test connection</button>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); gap: 16px">
+
+          <!-- Dagster -->
+          <article id="connector-dagster" aria-labelledby="connector-dagster-title" style="min-width: 0; display: flex; align-items: center; gap: 12px; padding: 16px; background: #0B0E14; border: 1px dashed #2C3446; border-radius: 10px">
+            <span aria-hidden="true" style="flex: none; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 6px; background: #0F131B; border: 1px solid #212836; color: #7D879B"><svg width="16" height="16" viewBox="0 0 16 16" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M8 1.75 13.75 5v6L8 14.25 2.25 11V5Z"></path><path d="m2.25 5 5.75 3.25L13.75 5"></path><path d="M8 8.25v6"></path></svg></span>
+            <div style="flex: 1 1 auto; min-width: 0">
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px">
+                <h3 id="connector-dagster-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: #E7EAF2">Dagster</h3>
+                <span style="display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 999px; background: #151A24; border: 1px solid #2C3446; color: #A3ACBE; font-size: 12px; line-height: 16px; font-weight: 500"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 999px; background: #5B6578"></span>Not connected</span>
+              </div>
+              <p style="margin: 0; font-size: 12px; line-height: 16px; color: #A3ACBE">Run failure sensor + GraphQL API</p>
+            </div>
+            <button type="button" class="dh-btn-cyan" aria-label="Add connector for Dagster" style="flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: transparent; border: 1px solid #2DE2E666; color: #2DE2E6; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="M8 3.25v9.5"></path><path d="M3.25 8h9.5"></path></svg>Add connector</button>
+          </article>
+
+          <!-- Prefect -->
+          <article id="connector-prefect" aria-labelledby="connector-prefect-title" style="min-width: 0; display: flex; align-items: center; gap: 12px; padding: 16px; background: #0B0E14; border: 1px solid #212836; border-radius: 10px">
+            <span aria-hidden="true" style="flex: none; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 6px; background: #0F131B; border: 1px solid #212836; color: #7D879B"><svg width="16" height="16" viewBox="0 0 16 16" style="fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round"><path d="M8 1.75 14.25 5 8 8.25 1.75 5Z"></path><path d="m1.75 8 6.25 3.25L14.25 8"></path><path d="m1.75 11 6.25 3.25L14.25 11"></path></svg></span>
+            <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px">
+              <h3 id="connector-prefect-title" style="margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: #E7EAF2">Prefect</h3>
+              <span style="display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 999px; background: #151A24; border: 1px solid #2C3446; color: #A3ACBE; font-size: 12px; line-height: 16px; font-weight: 500"><span aria-hidden="true" style="width: 6px; height: 6px; box-sizing: border-box; border-radius: 999px; border: 1.5px solid #2DE2E6"></span>Available</span>
+            </div>
+            <button type="button" class="dh-btn-cyan" aria-label="Add connector for Prefect" style="flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 6px; background: transparent; border: 1px solid #2DE2E666; color: #2DE2E6; font-size: 13px; line-height: 20px; font-weight: 500"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round"><path d="M8 3.25v9.5"></path><path d="M3.25 8h9.5"></path></svg>Add connector</button>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <!-- Status bar -->
+    <footer aria-label="Status" style="flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-height: 28px; padding: 0 12px; background: #0B0E14; border-top: 1px solid #212836; font-size: 12px; line-height: 16px; color: #A3ACBE">
+      <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>worker online · polling 5s</span>
+      <span style="display: inline-flex; align-items: center; gap: 8px"><span style="color: #E7EAF2">Claude Opus 5.5</span><span role="meter" aria-label="Daily token budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="41" style="display: inline-block; width: 56px; height: 4px; border-radius: 999px; background: #212836; overflow: hidden"><span style="display: block; width: 41%; height: 100%; border-radius: 999px; background: #2DE2E6"></span></span>41% of daily token budget</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>Airflow<span class="sr-only"> healthy</span></span>
+      <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #B6F35C; box-shadow: 0 0 8px #B6F35C"></span>Step Functions<span class="sr-only"> healthy</span></span>
+      <span style="margin-left: auto">4 incidents · <span style="color: #B28CFF">1 needs you</span></span>
+    </footer>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"glow":"neon","$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const levels = {
+      neon: '--node-glow: 18px; --core-glow: 28px; --edge-glow: 4px',
+      soft: '--node-glow: 8px; --core-glow: 12px; --edge-glow: 2px',
+      off: '--node-glow: 0px; --core-glow: 0px; --edge-glow: 0px'
+    };
+    const glow = this.props && this.props.glow;
+    return { glowVars: levels[glow] || levels.neon };
+  }
+}
+</script>
+</body>
+</html>
