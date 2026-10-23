@@ -31,6 +31,9 @@ from urllib.parse import quote
 
 import httpx
 
+# Moved to dag_healer.core.tracebacks; re-exported here (same objects).
+from dag_healer.core.tracebacks import CAUSE_SEPARATOR, CONTEXT_SEPARATOR, TRACEBACK_HEADER
+
 if TYPE_CHECKING:
     from dag_healer.config import HealerConfig
 
@@ -40,10 +43,6 @@ API_PREFIX = "/api/v2"
 TOKEN_PATH = "/auth/token"
 DEFAULT_TIMEOUT = 10.0
 MAX_DETAIL_CHARS = 500
-
-TRACEBACK_HEADER = "Traceback (most recent call last):"
-CAUSE_SEPARATOR = "The above exception was the direct cause of the following exception:"
-CONTEXT_SEPARATOR = "During handling of the above exception, another exception occurred:"
 
 _GROUP_START = "::group::"
 _GROUP_END = "::endgroup::"
@@ -597,6 +596,9 @@ class AirflowClient:
 
 
 __all__ = [
+    "CAUSE_SEPARATOR",
+    "CONTEXT_SEPARATOR",
+    "TRACEBACK_HEADER",
     "AirflowAPIError",
     "AirflowClient",
     "TaskInstanceInfo",

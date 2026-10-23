@@ -1,0 +1,283 @@
+{
+  "alerts": [
+    {
+      "channel": "log",
+      "error": null,
+      "recipients": [],
+      "sent_at": "<timestamp>",
+      "status": "sent",
+      "subject": "[dag-healer] DATA issue in sales_daily_etl.transform_sales"
+    }
+  ],
+  "allowed_actions": [
+    "resolve_code",
+    "retry_task",
+    "ignore"
+  ],
+  "attempts": 0,
+  "can_edit": true,
+  "category": "data",
+  "confidence": 0.95,
+  "created_at": "2026-10-18T09:00:00Z",
+  "dag_id": "sales_daily_etl",
+  "diagnosis": "Task sales_daily_etl.transform_sales failed with KeyError: 'amount' because its input broke the approved data contract (missing_column: sales.amount). The code is behaving as designed: the upstream delivery must be fixed (or the contract updated and re-approved if the change is intended), then the task can be retried.",
+  "diff": null,
+  "error_summary": "KeyError: 'amount'\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3641, in get_loc\n  File \"pandas/_libs/index.pyx\", line 168, in pandas._libs.index.IndexEngine.get_loc\n  File \"pandas/_libs/hashtable_class_helper.pxi\", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item\nKeyError: 'amount'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/sales.py\", line 25, in transform_sales\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py\", line 4378, in __getitem__\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3648, in get_loc\nKeyError: 'amount'",
+  "events": [
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "dag_id": "sales_daily_etl",
+        "map_index": -1,
+        "run_id": "manual__2026-10-18T09:00:00+00:00",
+        "source": "rest",
+        "task_id": "transform_sales",
+        "try_number": 1
+      },
+      "kind": "created",
+      "message": "Incident created from rest for sales_daily_etl.transform_sales (run manual__2026-10-18T09:00:00+00:00, try 1, map_index -1)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "new",
+        "to": "triaging"
+      },
+      "kind": "status",
+      "message": "Claimed by the worker for triage"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": null,
+      "kind": "triage",
+      "message": "Automatic triage started"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "contract_status": "approved",
+        "dag_file": "dags/sales_daily_etl.py",
+        "datasets_checked": [
+          "sales"
+        ],
+        "draft_violation_count": 0,
+        "exception_message": "'amount'",
+        "exception_type": "KeyError",
+        "notes": [],
+        "repo_frames": [
+          {
+            "file": "src/etl/sales.py",
+            "function": "transform_sales",
+            "line": 25
+          }
+        ],
+        "sample_dataset": "sales",
+        "violation_count": 1
+      },
+      "kind": "context",
+      "message": "Context gathered: KeyError in src/etl/sales.py::transform_sales; contract approved, 1 violation(s)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "category": "data",
+        "confidence": 0.95,
+        "contract_status": "approved",
+        "decided_by": "policy",
+        "error_kind": "data_shape",
+        "llm_category": "data",
+        "llm_confidence": 0.9,
+        "llm_error": null,
+        "needs_llm_confirmation": false,
+        "reason": "The approved contract is violated (missing_column: sales.amount) and the task failed with a data-shaped error (KeyError).",
+        "rule": "a_contract_violated",
+        "tokens_used": 0,
+        "violations": [
+          {
+            "actual": [
+              "amt",
+              "currency",
+              "customer_email",
+              "order_date",
+              "order_id"
+            ],
+            "column": "amount",
+            "contract_status": "approved",
+            "dataset": "sales",
+            "expected": "amount",
+            "message": "Column 'amount' is missing from dataset 'sales'.",
+            "row_indexes": [],
+            "rule": "missing_column"
+          }
+        ]
+      },
+      "kind": "classification",
+      "message": "Classified as data (a_contract_violated): The approved contract is violated (missing_column: sales.amount) and the task failed with a data-shaped error (KeyError)."
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "triaging",
+        "to": "classified"
+      },
+      "kind": "status",
+      "message": "Classified as data (confidence 0.95, rule a_contract_violated)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "classified",
+        "to": "reporting"
+      },
+      "kind": "status",
+      "message": "Reporting the data issue"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "event": "reported",
+        "outcomes": [
+          {
+            "channel": "log",
+            "error": null,
+            "status": "sent"
+          }
+        ]
+      },
+      "kind": "alert",
+      "message": "reported alert: log sent"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "reporting",
+        "to": "reported"
+      },
+      "kind": "status",
+      "message": "Data issue reported (missing_column)"
+    }
+  ],
+  "evidence": [
+    "policy: approved contract, data_shape error",
+    "exception: KeyError: 'amount'",
+    "violations: missing_column: sales.amount",
+    "repository frame: src/etl/sales.py::transform_sales",
+    "innermost repository frame: src/etl/sales.py::transform_sales (line 25)",
+    "column named in the error: amount"
+  ],
+  "has_pr_md": false,
+  "id": "00000000000000000000000000000001",
+  "links": {
+    "dag": "http://localhost:8080/dags/sales_daily_etl/plugin/healer-dag",
+    "healer": "http://localhost:8080/plugin/healer",
+    "task_instance": "http://localhost:8080/dags/sales_daily_etl/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/transform_sales/plugin/healer-ti"
+  },
+  "map_index": -1,
+  "occurrences": 1,
+  "pending_commands": [],
+  "pr_md_url": null,
+  "pr_url": null,
+  "pytest_output": null,
+  "resolution": null,
+  "resolved_by": null,
+  "run_id": "manual__2026-10-18T09:00:00+00:00",
+  "sample": {
+    "columns": [
+      "order_id",
+      "customer_email",
+      "amt",
+      "currency",
+      "order_date"
+    ],
+    "dataset": "sales",
+    "masked": true,
+    "rows": [
+      {
+        "amt": 58.0,
+        "currency": "EUR",
+        "customer_email": "h:038151c9d1",
+        "order_date": "2026-10-02",
+        "order_id": "ORD-50031"
+      },
+      {
+        "amt": null,
+        "currency": "GBP",
+        "customer_email": "h:0f62d3a9dc",
+        "order_date": "2026-10-02",
+        "order_id": "ORD-50032"
+      },
+      {
+        "amt": 1249.0,
+        "currency": "USD",
+        "customer_email": "h:e0efe16d47",
+        "order_date": "2026-10-02",
+        "order_id": "ORD-50033"
+      },
+      {
+        "amt": 36.4,
+        "currency": "USD",
+        "customer_email": "h:ef81261b71",
+        "order_date": "2026-10-02",
+        "order_id": "ORD-50034"
+      },
+      {
+        "amt": null,
+        "currency": "USD",
+        "customer_email": "h:7add03a2da",
+        "order_date": "2026-10-02",
+        "order_id": "ORD-50035"
+      }
+    ]
+  },
+  "source": "rest",
+  "status": "reported",
+  "task_id": "transform_sales",
+  "test_code": null,
+  "test_path": null,
+  "tokens_used": 0,
+  "try_number": 1,
+  "updated_at": "<timestamp>",
+  "violated_rule": {
+    "actual": [
+      "amt",
+      "currency",
+      "customer_email",
+      "order_date",
+      "order_id"
+    ],
+    "column": "amount",
+    "contract_status": "approved",
+    "dataset": "sales",
+    "expected": "amount",
+    "message": "Column 'amount' is missing from dataset 'sales'.",
+    "row_indexes": [],
+    "rule": "missing_column"
+  },
+  "violations": [
+    {
+      "actual": [
+        "amt",
+        "currency",
+        "customer_email",
+        "order_date",
+        "order_id"
+      ],
+      "column": "amount",
+      "contract_status": "approved",
+      "dataset": "sales",
+      "expected": "amount",
+      "message": "Column 'amount' is missing from dataset 'sales'.",
+      "row_indexes": [],
+      "rule": "missing_column"
+    }
+  ]
+}

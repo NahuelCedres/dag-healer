@@ -1086,18 +1086,22 @@ Backends (`hosting/auth/`), each returning `Principal`:
 
 ## 8. Airflow adapter (`dag_healer/airflow/adapter.py`)
 
+The "Today" column was checked against the phase-5 code in step 0 and amended where the code
+differs from the first draft; the details are in `docs/architecture/inventory-phase5.md`.
+
 | Today (phase 0-5) | After | Notes |
 |---|---|---|
 | `airflow/client.py` | unchanged; constants re-exported from `core.tracebacks` | `AirflowAPIError` → `OrchestratorError(transient = status in (None, 429, 5xx))` |
-| worker `reconcile`, REST branch | `AirflowAdapter.poll` → `list_failed_task_instances(updated_since=cursor.watermark - 2 min)` | `Failure(source="rest", is_final=(state == "failed"))`; cursor `{"watermark": max end_date}`; source label stays `rest` so UI badges are identical |
-| worker confirmation of listener/callback events | `AirflowAdapter.confirm` (phase-5 rules moved verbatim: `get_task_instance`; `failed` vs `up_for_retry`; later try exists; 404 → discarded) | |
+| worker `reconcile`, REST branch: `list_failed_task_instances(updated_since=since)` lists `state=failed` only (`updated_at_gte`); `since = watermark - max(60 s, 2 × poll_interval_seconds)`, 24 h back without a watermark, never before the `rest_not_before` floor of `store reset`; the watermark is the **start time of the last successful poll**, kept in `<healer_home>/state.json`; unmonitored DAGs and keys already in the store are skipped, and only for a new key `get_task_log` → `summarize_failure` gives `error_summary` + `signature` | `AirflowAdapter.poll` → the same query and window | `Failure(source="rest", is_final=True)` (the query never returns a retrying try); cursor `{"watermark": <poll start>, "not_before": <floor or null>}`, both imported once from `state.json`; the log is still fetched only for keys the store does not have (the core calls `inspector.logs(ref, None)` for a new key and passes its text on as the RAW `error_summary`), so the API call pattern and the summaries/signatures are unchanged; source label stays `rest` so UI badges are identical |
+| worker confirmation of listener/callback events: `get_task_instance(dag_id, run_id, task_id, map_index)` + `_confirm(ti, try_number, trigger)`; a source missing from `monitor.modes` or an unmonitored DAG → discarded before any call; no client → kept | `AirflowAdapter.confirm` (phase-5 rules moved verbatim: `failed` vs `up_for_retry`; a later try exists; a try Airflow never ran; 404 → discarded; other errors → `retry_later`) | the core keeps the mode/monitored checks and discards a `retry_later` event once `received_at` is older than `PENDING_MAX_AGE = 24 h` (phase 5; the 3.9 sketch says 1 h); a confirmed incident keeps the pushed `error` text for its summary and signature (no log fetch) and the note "The `<source>` event was confirmed by the Airflow API (`<reason>`)." |
 | `api/routers/events.py` `task-failed` | unchanged route; `AirflowAdapter.normalize("task-failed", ...)` also exists for the conformance suite and future generic use | |
-| `agent/context._fetch_log` | `AirflowAdapter.logs` → `get_task_log` rendered by `render_log_content` (`confidence="exact"`) | |
-| error from the structured log | `AirflowAdapter.describe` → `get_task_instance` + `traceback_text` from the rendered `error_detail` | |
-| `agent/context._api_dag_file`, `get_dag_source` | `pipeline_source` → `PipelineSource(path=fileloc, relative_path=relative_fileloc, text=get_dag_source(...) if include_text)` | |
+| `agent/context._fetch_log` → `get_task_log(dag_id, run_id, task_id, try_number, map_index=)` (no client → a note) | `AirflowAdapter.logs` → `get_task_log` rendered by `render_log_content` (`confidence="exact"`) | |
+| error from the structured log: the context makes **no** `get_task_instance` call; `extract_traceback(log)` first, then the explicit `error_text` / `incident.error_summary` | `AirflowAdapter.describe` → `get_task_instance` (state, operator, `max_tries`) with `traceback_text=""` | the traceback keeps coming from the log (`extract_traceback(logs.text)`), so the prompts stay identical; `describe` adds one API call per gathering |
+| `agent/context._api_dag_file` → `get_dag(dag_id)` (`fileloc` mapped into the repo, else `relative_fileloc` under `repo.dags_dir`); `get_dag_source` only when the working-tree DAG file cannot be read | `pipeline_source` → `PipelineSource(path=fileloc, relative_path=relative_fileloc, text=get_dag_source(...) if include_text)` | the core asks for `include_text=True` only when the local file is unreadable (phase-5 call pattern) |
 | `agent/context._path_roots` (Airflow part) | `AirflowCodeLocator.path_mappings` → `("/opt/airflow/repo", "")`, `($AIRFLOW__CORE__DAGS_FOLDER, dags_dir)`, `("/opt/airflow/dags", dags_dir)` | `map_to_repo_path(path, cfg, mappings=None)` defaults to exactly these |
 | `repo/dagscan.scan_dags` | `AirflowCodeLocator.scan(repo_root)` → `scan_dags(repo_root, cfg.repo.dags_dir)` (honours `init --dags-dir`) | dagscan code unchanged |
-| worker `retry_task` → `clear_task_instances` | `remediate(..., RETRY_STEP)` → `clear_task_instances(dag_id, run_id, [task_id], only_failed=True)`; `RERUN_PIPELINE` → `trigger_dag_run` (off by default) | |
+| worker `retry_task` → `clear_task_instances(dag_id, run_id, task_ids, only_failed=True)` with `task_ids = [task_id]`, or `[(task_id, map_index)]` for a mapped task instance (the command payload may override `run_id` / `task_id` / `map_index`); no client → the command fails | `remediate(..., RETRY_STEP)` → `clear_task_instances(dag_id, run_id, [task_id] or [(task_id, map_index)], only_failed=True)`; `RERUN_PIPELINE` → `trigger_dag_run` (off by default; no caller today) | the event text stays "`<actor>` cleared `<task>` in run `<run>` (N task instance(s)); Airflow will run it again." plus the "not merged yet" sentence for a CODE incident with a branch |
+| worker `loop._default_client`: `AirflowClient.from_config(cfg)`, `health()` at start (a warning only), `close()` on exit when the worker built it | `get_adapter(cfg)` (no I/O), `adapter.health()` at start (a warning only), `adapter.close()` on exit | `run_worker(..., client=)` keeps working through `compat.as_adapter` |
 | `policy.INFRA_TYPES` (Airflow names) | stays in the policy; `AIRFLOW_TAXONOMY` repeats them (`AirflowTaskTimeout`, `AirflowTaskTerminated`, `AirflowZombieTaskException`, `TaskDeferralTimeout`) | decisions identical |
 | `pytest_runner.scrubbed_env` Airflow part | `sandbox_env()` returns the `AIRFLOW_HOME` / `UNIT_TEST_MODE` / sqlite overrides; the core keeps the generic scrub plus the new cloud scrub | |
 | `cli/doctor_cmd` `check_airflow_api` / `check_airflow_auth` / `check_plugin_entry_point` | `doctor_checks()` (same functions, same output) | the doctor CLI composes the generic checks with the adapter's |
@@ -1123,6 +1127,11 @@ class AirflowAdapter:  # implements OrchestratorAdapter, FailureFeed, PushIntake
 
 FACTORY = AirflowFactory()   # type "airflow", options_model None (settings stay in cfg.airflow), secret_options ()
 ```
+
+Note (step 0): `OrchestratorAdapter.links` is an attribute of type `NativeLinks`, whose method is
+also named `links`. Pointing `self.links = self` replaces that method on the instance, so
+`adapter.links.links(ref, native)` cannot work; `links` must be a separate small object (for
+example `self.links = AirflowNativeLinks(cfg)`), while the other ports may stay on `self`.
 
 ---
 

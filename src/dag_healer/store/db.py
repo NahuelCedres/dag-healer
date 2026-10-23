@@ -1,4 +1,15 @@
-"""Engine, schema initialisation and session helpers for the dag-healer store."""
+"""Engine, schema initialisation and session helpers for the dag-healer store.
+
+Who creates and who migrates the schema (section 6.4 of ``docs/architecture/orchestrators.md``):
+
+* an **empty** database is created at the latest schema by any process (``create_all`` plus
+  one ``healer_schema_version`` row per version);
+* an **older** schema is migrated only by processes that pass ``allow_migrate=True`` to
+  :func:`init_db` (``dag-healer worker``, ``serve``, ``init`` and ``store migrate``). Every
+  other process (the Airflow api-server plugin) gets :class:`StoreSchemaOutdated` and never
+  rebuilds a table; :func:`ensure_initialized` does not cache that outcome, so it recovers
+  as soon as the worker has migrated the store.
+"""
 
 from __future__ import annotations
 
@@ -11,13 +22,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, select
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from dag_healer.store.models import SCHEMA_VERSION, Base, SchemaVersion
+from dag_healer.store.migrations import current_version, migrate, schema_lock, schema_state, stamp
+from dag_healer.store.models import SCHEMA_VERSION, Base
 
 logger = logging.getLogger(__name__)
 
@@ -126,20 +138,43 @@ def get_engine(url: str | None = None) -> Engine:
         return engine
 
 
-def init_db(engine: Engine) -> None:
-    """Create missing tables and record the schema version (safe to call repeatedly).
+class StoreSchemaOutdated(RuntimeError):
+    """The store schema is older than this dag-healer, and this process may not migrate it.
 
-    Two processes initialising the same PostgreSQL database at once can race on
-    ``CREATE TABLE``; the losing side retries once, after which the tables exist.
+    ``str(exc)`` is the message the API answers with (HTTP 503), for example
+    ``dag-healer store schema v1: start the worker or run 'dag-healer store migrate'``.
+    """
+
+    def __init__(self, current: int, required: int = SCHEMA_VERSION) -> None:
+        self.current = current
+        self.required = required
+        super().__init__(
+            f"dag-healer store schema v{current}: start the worker or run 'dag-healer store migrate'"
+        )
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.current, self.required))
+
+
+def init_db(engine: Engine, *, allow_migrate: bool = False) -> None:
+    """Create or upgrade the store schema to :data:`SCHEMA_VERSION` (safe to call repeatedly).
+
+    * Empty database: ``create_all`` builds the latest schema and records every version
+      (1 and 2), under the schema lock (:func:`dag_healer.store.migrations.schema_lock`), so
+      concurrent processes never see a half-created store.
+    * Older schema: with ``allow_migrate=True`` it runs
+      :func:`dag_healer.store.migrations.migrate`; otherwise it raises
+      :class:`StoreSchemaOutdated` without changing anything.
+    * Up to date: missing tables are created (nothing else runs when every table exists).
+    * Newer schema (written by a newer dag-healer): logged, left alone.
+
+    Raises :class:`dag_healer.store.migrations.MigrationError` when a migration cannot run.
+    Two processes initialising the same database at once can still race on ``CREATE TABLE``
+    on a backend without the lock; the losing side retries once.
     """
     for attempt in (1, 2):
         try:
-            Base.metadata.create_all(engine)
-            with Session(engine) as session, session.begin():
-                query = select(SchemaVersion).where(SchemaVersion.version == SCHEMA_VERSION)
-                current = session.scalar(query)
-                if current is None:
-                    session.add(SchemaVersion(version=SCHEMA_VERSION))
+            _initialise(engine, allow_migrate=allow_migrate)
             break
         except DBAPIError:
             if attempt == 2:
@@ -149,14 +184,46 @@ def init_db(engine: Engine) -> None:
         _initialized.add(engine)
 
 
-def ensure_initialized(engine: Engine) -> None:
-    """Run :func:`init_db` once per engine for the lifetime of the process."""
+def _initialise(engine: Engine, *, allow_migrate: bool) -> None:
+    state = schema_state(engine)
+    if state.version == SCHEMA_VERSION and not state.missing_tables:
+        return
+    if state.version > SCHEMA_VERSION:
+        logger.warning(
+            "dag-healer store schema v%d is newer than this dag-healer (v%d); upgrade dag-healer",
+            state.version,
+            SCHEMA_VERSION,
+        )
+        return
+    if 0 < state.version < SCHEMA_VERSION:
+        if not allow_migrate:
+            raise StoreSchemaOutdated(state.version)
+        migrate(engine)
+    with schema_lock(engine) as conn:
+        version = current_version(conn)
+        if 0 < version < SCHEMA_VERSION:  # replaced by an older store meanwhile
+            raise StoreSchemaOutdated(version)
+        if version > SCHEMA_VERSION:  # pragma: no cover - a newer dag-healer migrated meanwhile
+            return
+        Base.metadata.create_all(conn)
+        if version == 0:
+            for number in range(1, SCHEMA_VERSION + 1):
+                stamp(conn, number)
+            logger.info("dag-healer store: created schema v%d", SCHEMA_VERSION)
+
+
+def ensure_initialized(engine: Engine, *, allow_migrate: bool = False) -> None:
+    """Run :func:`init_db` once per engine for the lifetime of the process.
+
+    A failure (for example :class:`StoreSchemaOutdated`) is not remembered: the next call
+    checks the schema again.
+    """
     if engine in _initialized:
         return
     with _lock:
         if engine in _initialized:
             return
-        init_db(engine)
+        init_db(engine, allow_migrate=allow_migrate)
 
 
 def get_sessionmaker(engine: Engine) -> sessionmaker[Session]:
@@ -170,15 +237,17 @@ def get_sessionmaker(engine: Engine) -> sessionmaker[Session]:
 
 
 @contextmanager
-def session_scope(url: str | None = None) -> Iterator[Session]:
+def session_scope(url: str | None = None, *, allow_migrate: bool = False) -> Iterator[Session]:
     """Yield a session that commits on success and rolls back on error.
 
     The schema is created on first use of each engine, so API processes and the
     worker can start in any order. Objects stay usable after the scope closes
-    (``expire_on_commit=False``).
+    (``expire_on_commit=False``). ``allow_migrate=True`` (the worker's sessions) also
+    upgrades an older schema, see :func:`init_db`; otherwise an older schema raises
+    :class:`StoreSchemaOutdated`.
     """
     engine = get_engine(url)
-    ensure_initialized(engine)
+    ensure_initialized(engine, allow_migrate=allow_migrate)
     session = get_sessionmaker(engine)()
     try:
         yield session

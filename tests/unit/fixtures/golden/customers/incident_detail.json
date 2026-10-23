@@ -1,0 +1,262 @@
+{
+  "alerts": [
+    {
+      "channel": "log",
+      "error": null,
+      "recipients": [],
+      "sent_at": "<timestamp>",
+      "status": "sent",
+      "subject": "[dag-healer] Fix proposed for customers_sync.transform"
+    }
+  ],
+  "allowed_actions": [
+    "retry_task"
+  ],
+  "attempts": 2,
+  "can_edit": true,
+  "category": "code",
+  "confidence": 0.9,
+  "created_at": "2026-10-18T09:00:00Z",
+  "dag_id": "customers_sync",
+  "diagnosis": "Task customers_sync.transform failed with ValueError: unconverted data remains: T08:30:00Z raised in src/etl/customers.py::parse_signup_date (line 19). The input data satisfies the approved contract, so this is a defect in the code: it does not handle input that the contract allows. A minimal fix plus a regression test should resolve it.",
+  "diff": "diff --git a/src/etl/customers.py b/src/etl/customers.py\nindex 2ef48ac..fb429d4 100644\n--- a/src/etl/customers.py\n+++ b/src/etl/customers.py\n@@ -15,8 +15,11 @@ def extract_customers(**kwargs):\n \n \n def parse_signup_date(value):\n-    \"\"\"Parse the signup date sent by the CRM export (always YYYY-MM-DD).\"\"\"\n-    return datetime.strptime(value.strip(), \"%Y-%m-%d\").date()\n+    \"\"\"Parse the signup date sent by the CRM export (YYYY-MM-DD or an ISO-8601 timestamp).\"\"\"\n+    value = value.strip()\n+    if value.endswith(\"Z\"):  # fromisoformat() only accepts \"Z\" from Python 3.11\n+        value = value[:-1] + \"+00:00\"\n+    return datetime.fromisoformat(value).date()\n \n \n def normalize_phone(value):\ndiff --git a/tests/test_customers_signup_date.py b/tests/test_customers_signup_date.py\nnew file mode 100644\nindex 0000000..3cd3a10\n--- /dev/null\n+++ b/tests/test_customers_signup_date.py\n@@ -0,0 +1,14 @@\n+\"\"\"Regression test for customers_sync: the CRM export may send ISO-8601 signup timestamps.\"\"\"\n+\n+from datetime import date\n+\n+from src.etl.customers import parse_signup_date\n+\n+\n+def test_parse_signup_date_accepts_iso_timestamp_with_z():\n+    assert parse_signup_date(\"2026-10-02T14:03:00Z\") == date(2026, 10, 2)\n+\n+\n+def test_parse_signup_date_still_accepts_plain_dates():\n+    assert parse_signup_date(\"2025-01-14\") == date(2025, 1, 14)\n+    assert parse_signup_date(\" 2025-02-03 \") == date(2025, 2, 3)\n",
+  "error_summary": "ValueError: unconverted data remains: T08:30:00Z\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2234, in _execute_task\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 36, in transform_customers\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py\", line 5084, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1520, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1578, in apply_standard\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py\", line 1020, in _map_values\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py\", line 1770, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py\", line 2745, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py\", line 1715, in map_array\n  File \"/opt/airflow/pandas/_libs/lib.pyx\", line 3071, in pandas._libs.lib.map_infer\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 19, in parse_signup_date\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 789, in _strptime_datetime\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 558, in _strptime\nValueError: unconverted data remains: T08:30:00Z",
+  "events": [
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "dag_id": "customers_sync",
+        "map_index": -1,
+        "run_id": "manual__2026-10-18T09:00:00+00:00",
+        "source": "rest",
+        "task_id": "transform",
+        "try_number": 1
+      },
+      "kind": "created",
+      "message": "Incident created from rest for customers_sync.transform (run manual__2026-10-18T09:00:00+00:00, try 1, map_index -1)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "new",
+        "to": "triaging"
+      },
+      "kind": "status",
+      "message": "Claimed by the worker for triage"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": null,
+      "kind": "triage",
+      "message": "Automatic triage started"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "contract_status": "approved",
+        "dag_file": "dags/customers_sync.py",
+        "datasets_checked": [
+          "customers"
+        ],
+        "draft_violation_count": 0,
+        "exception_message": "unconverted data remains: T08:30:00Z",
+        "exception_type": "ValueError",
+        "notes": [],
+        "repo_frames": [
+          {
+            "file": "src/etl/customers.py",
+            "function": "transform_customers",
+            "line": 36
+          },
+          {
+            "file": "src/etl/customers.py",
+            "function": "parse_signup_date",
+            "line": 19
+          }
+        ],
+        "sample_dataset": "customers",
+        "violation_count": 0
+      },
+      "kind": "context",
+      "message": "Context gathered: ValueError in src/etl/customers.py::parse_signup_date; contract approved, 0 violation(s)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "category": "code",
+        "confidence": 0.9,
+        "contract_status": "approved",
+        "decided_by": "fake",
+        "error_kind": "code",
+        "llm_category": "code",
+        "llm_confidence": 0.9,
+        "llm_error": null,
+        "needs_llm_confirmation": true,
+        "reason": "The data satisfies the approved contract, the traceback points into src/etl/customers.py::parse_signup_date and the LLM confirmed a code defect.",
+        "rule": "b_code_with_valid_data",
+        "tokens_used": 0,
+        "violations": []
+      },
+      "kind": "classification",
+      "message": "Classified as code (b_code_with_valid_data): The data satisfies the approved contract, the traceback points into src/etl/customers.py::parse_signup_date and the LLM confirmed a code defect."
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "triaging",
+        "to": "classified"
+      },
+      "kind": "status",
+      "message": "Classified as code (confidence 0.90, rule b_code_with_valid_data)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "classified",
+        "to": "repairing"
+      },
+      "kind": "status",
+      "message": "Reproducing the failure and fixing the code in a clone"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "attempts": 2,
+        "branch": "healer/customers_sync-transform-[number]",
+        "created_tests_dir": true,
+        "error": null,
+        "notes": [
+          "Branch `healer/customers_sync-transform-[number]` was pushed to the local repository."
+        ],
+        "patch_path": "<HEALER_HOME>/prs/[number]/fix.patch",
+        "pr_md_path": "<HEALER_HOME>/prs/[number]/PR.md",
+        "pr_url": null,
+        "status": "repaired",
+        "test_path": "tests/test_customers_signup_date.py",
+        "tokens_used": 0
+      },
+      "kind": "repair",
+      "message": "Fix proposed on branch healer/customers_sync-transform-[number] (PR.md and fix.patch written)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "repairing",
+        "to": "repaired"
+      },
+      "kind": "status",
+      "message": "Fix proposed on branch healer/customers_sync-transform-[number] (PR.md and fix.patch written)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "event": "repaired",
+        "outcomes": [
+          {
+            "channel": "log",
+            "error": null,
+            "status": "sent"
+          }
+        ]
+      },
+      "kind": "alert",
+      "message": "repaired alert: log sent"
+    }
+  ],
+  "evidence": [
+    "policy: approved contract, code error",
+    "exception: ValueError: unconverted data remains: T08:30:00Z",
+    "repository frame: src/etl/customers.py::parse_signup_date",
+    "innermost repository frame: src/etl/customers.py::parse_signup_date (line 19)"
+  ],
+  "has_pr_md": true,
+  "id": "00000000000000000000000000000002",
+  "links": {
+    "dag": "http://localhost:8080/dags/customers_sync/plugin/healer-dag",
+    "healer": "http://localhost:8080/plugin/healer",
+    "task_instance": "http://localhost:8080/dags/customers_sync/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/transform/plugin/healer-ti"
+  },
+  "map_index": -1,
+  "occurrences": 1,
+  "pending_commands": [],
+  "pr_md_url": "http://localhost:8080/healer/api/v1/dags/customers_sync/incidents/00000000000000000000000000000002/pr.md",
+  "pr_url": null,
+  "pytest_output": "=== pytest before the fix (the new test must fail) ===\n$ pytest tests/test_customers_signup_date.py\nexit code 1: 1 passed, 1 failed, 0 errors, 0 skipped, 2 collected in 0.0s\n[pytest output reduced by the golden snapshot test to its E/FAILED/ERROR lines]\nE           ValueError: unconverted data remains: T14:03:00Z\nFAILED tests/test_customers_signup_date.py::test_parse_signup_date_accepts_iso_timestamp_with_z\n1 failed, 1 passed\n\n=== pytest after the fix ===\n$ pytest tests/test_customers_signup_date.py\nexit code 0: 2 passed, 0 failed, 0 errors, 0 skipped, 2 collected in 0.0s\n[pytest output reduced by the golden snapshot test to its E/FAILED/ERROR lines]\n2 passed",
+  "resolution": null,
+  "resolved_by": null,
+  "run_id": "manual__2026-10-18T09:00:00+00:00",
+  "sample": {
+    "columns": [
+      "customer_id",
+      "full_name",
+      "email",
+      "phone",
+      "country",
+      "signup_date"
+    ],
+    "dataset": "customers",
+    "masked": true,
+    "rows": [
+      {
+        "country": "US",
+        "customer_id": "CUS-1001",
+        "email": "h:c6fb5d88d5",
+        "full_name": "h:cf69f11c45",
+        "phone": "h:254376e6dd",
+        "signup_date": "2025-01-14"
+      },
+      {
+        "country": "US",
+        "customer_id": "CUS-1002",
+        "email": "h:a8e4d0db67",
+        "full_name": "h:c269336eda",
+        "phone": "h:d7d83dda0f",
+        "signup_date": "2025-02-03"
+      },
+      {
+        "country": "US",
+        "customer_id": "CUS-1003",
+        "email": "h:9219c065c9",
+        "full_name": "h:0aba4dce56",
+        "phone": "h:31508d7fa0",
+        "signup_date": "2025-02-21"
+      },
+      {
+        "country": "CA",
+        "customer_id": "CUS-1004",
+        "email": "h:ea3c235946",
+        "full_name": "h:8af4c50f05",
+        "phone": "h:c9bc9af038",
+        "signup_date": "2025-03-09"
+      },
+      {
+        "country": "US",
+        "customer_id": "CUS-1005",
+        "email": "h:8cd2c7e2ce",
+        "full_name": "h:13336026ef",
+        "phone": "h:93bdca9c1f",
+        "signup_date": "2025-03-30"
+      }
+    ]
+  },
+  "source": "rest",
+  "status": "repaired",
+  "task_id": "transform",
+  "test_code": "\"\"\"Regression test for customers_sync: the CRM export may send ISO-8601 signup timestamps.\"\"\"\n\nfrom datetime import date\n\nfrom src.etl.customers import parse_signup_date\n\n\ndef test_parse_signup_date_accepts_iso_timestamp_with_z():\n    assert parse_signup_date(\"2026-10-02T14:03:00Z\") == date(2026, 10, 2)\n\n\ndef test_parse_signup_date_still_accepts_plain_dates():\n    assert parse_signup_date(\"2025-01-14\") == date(2025, 1, 14)\n    assert parse_signup_date(\" 2025-02-03 \") == date(2025, 2, 3)\n",
+  "test_path": "tests/test_customers_signup_date.py",
+  "tokens_used": 0,
+  "try_number": 1,
+  "updated_at": "<timestamp>",
+  "violated_rule": null,
+  "violations": []
+}

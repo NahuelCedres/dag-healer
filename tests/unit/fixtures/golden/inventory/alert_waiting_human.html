@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>[dag-healer] Human decision needed: inventory_report.build_report</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f3f4f6;">Human decision needed: inventory_report.build_report</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f3f4f6;">
+  <tr>
+    <td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;max-width:680px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+        <tr>
+          <td style="padding:14px 24px;border-bottom:3px solid #7c3aed;">
+            <span style="font-size:14px;font-weight:700;color:#111827;letter-spacing:0.02em;">dag-healer</span>
+            <span style="float:right;font-size:12px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:0.05em;">Human decision needed</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px;">
+            <h1 style="margin:0 0 8px 0;font-size:20px;line-height:26px;color:#111827;">Human decision needed</h1>
+            <p style="margin:0 0 4px 0;font-size:13px;color:#6b7280;"><code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">inventory_report.build_report</code></p>
+            <p style="margin:12px 0 20px 0;font-size:14px;line-height:21px;color:#1f2937;">dag-healer could not safely decide whether this failure is caused by the input data or by the code, so it is waiting for a human decision. Nothing has been changed.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px 0;">
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">DAG</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">inventory_report</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Task</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">build_report</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Run</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">manual__2026-10-18T09:00:00+00:00</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Try</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">1</td>
+</tr>
+
+  <tr>
+    <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;">Classification</td>
+    <td style="padding:4px 0;font-size:13px;color:#111827;"><span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:700;letter-spacing:0.03em;color:#5b21b6;background:#ede9fe;">AMBIGUOUS</span>
+ <span style="color:#6b7280;">confidence 50%</span></td>
+  </tr>
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Status</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">waiting_human</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Incident</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">00000000000000000000000000000003</td>
+</tr>
+
+</table>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Why a human is needed</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong.</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Diagnosis</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">Task inventory_report.build_report failed with KeyError: &#39;qty&#39;, a data-shaped error, but there is no approved data contract (status: draft) to tell whether the input is wrong. The draft contract reports missing_column. If the upstream change is a mistake, resolve the incident as data; if the new shape is intended, resolve it as code so the code is adapted.</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Error</h2>
+  <pre style="margin:0;padding:12px;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;font-size:12px;line-height:18px;color:#111827;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;white-space:pre-wrap;word-break:break-word;">KeyError: &#39;qty&#39;
+
+Traceback (most recent call last):
+  File &#34;/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py&#34;, line 465, in _execute_task
+    result = _execute_callable(context=context, **execute_callable_kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &#34;/opt/airflow/repo/dags/../src/etl/inventory.py&#34;, line 28, in buildReport
+    df[&#34;qty&#34;] = df[&#34;qty&#34;].fillna(0).astype(int)
+                ~~^^^^^^^
+  File &#34;/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py&#34;, line 4102, in __getitem__
+    indexer = self.columns.get_loc(key)
+KeyError: &#39;qty&#39;</pre>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Contract checks (evidence)</h2>
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+  <tr><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Rule</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Column</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Details</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Expected / actual</th></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">missing_column</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">inventory.qty</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;">Column &#39;qty&#39; is missing from dataset &#39;inventory&#39;.</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">qty / [&#34;quantity&#34;, &#34;sku&#34;, &#34;updated_at&#34;, &#34;warehouse&#34;, &#34;warehouse_code&#34;]</td></tr>
+</table>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Masked data sample (inventory)</h2>
+  <div style="overflow-x:auto;">
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+  <tr><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">sku</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">warehouse</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">warehouse_code</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">quantity</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">updated_at</th></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">SKU-1001</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">Reno</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">RNO-1</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">128</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">SKU-1001</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">Dallas</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">DFW-2</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">31</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">SKU-1001</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">Newark</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">EWR-1</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">12</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">SKU-1002</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">Reno</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">RNO-1</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">150</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">SKU-1002</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">Dallas</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">DFW-2</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">4</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+</table>
+</div>
+<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">Sensitive values are masked (<code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:&hellip;</code> = salted hash, <code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">***</code> = redacted).</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Evidence</h2>
+  <ul style="margin:0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+<li style="margin:0 0 4px 0;">policy: draft contract, data_shape error</li><li style="margin:0 0 4px 0;">exception: KeyError: &#39;qty&#39;</li><li style="margin:0 0 4px 0;">repository frame: src/etl/inventory.py::buildReport</li><li style="margin:0 0 4px 0;">draft contract findings (not enforced): missing_column</li><li style="margin:0 0 4px 0;">innermost repository frame: src/etl/inventory.py::buildReport (line 28)</li><li style="margin:0 0 4px 0;">column named in the error: qty</li></ul>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">What you can do</h2>
+  <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+  <li style="margin:0 0 4px 0;"><strong>Resolve as data</strong>: report it as a data issue and alert the data owners (no code change).</li>
+  <li style="margin:0 0 4px 0;"><strong>Resolve as code</strong>: dag-healer writes a failing test and proposes a minimal fix.</li>
+  <li style="margin:0 0 4px 0;"><strong>Ignore</strong>: close the incident without further action.</li>
+</ul>
+<a href="http://localhost:8080/dags/inventory_report/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/build_report/plugin/healer-ti" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:#7c3aed;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Decide in the Healer incident tab</a>
+
+<p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;">
+  <a href="http://localhost:8080/dags/inventory_report/plugin/healer-dag" style="color:#2563eb;text-decoration:underline;">DAG incidents</a> &middot;
+  <a href="http://localhost:8080/plugin/healer" style="color:#2563eb;text-decoration:underline;">Healer page</a>
+</p>
+
+
+</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;line-height:18px;color:#6b7280;">
+            Generated by dag-healer on <generated_at> for incident <code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">00000000</code>.
+            Sample values and error text are masked before they leave the worker.
+            <a href="http://localhost:8080/plugin/healer" style="color:#6b7280;text-decoration:underline;">Open the Healer page</a>.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

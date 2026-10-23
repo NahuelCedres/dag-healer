@@ -1,0 +1,88 @@
+# Effective dag-healer configuration (<REPO>/healer.yaml); secrets are shown as ***
+version: 1
+repo:
+  path: <REPO>
+  base_branch: main
+  dags_dir: dags
+  tests_dir: null
+  test_command: python -m pytest -q
+  allowed_paths:
+  - src/
+  - dags/
+  pytest_timeout: 600
+airflow:
+  api_url: http://localhost:8080
+  username: null
+  password: null
+monitor:
+  dags:
+  - '*'
+  modes:
+  - rest
+  - listener
+  poll_interval_seconds: 30
+  trigger: final_failure
+contracts:
+  dir: healer/contracts
+datasets:
+  customers_sync:
+    extract:
+      type: csv
+      path: data/incoming/customers.csv
+      options: {}
+  inventory_report:
+    get_inventory:
+      type: csv
+      path: data/incoming/inventory.csv
+      options: {}
+  sales_daily_etl:
+    extract_sales:
+      type: csv
+      path: data/incoming/sales.csv
+      options: {}
+classification:
+  min_confidence: 0.75
+notify:
+  email: null
+  events:
+  - waiting_human
+  - reported
+  - repaired
+  - repair_failed
+github:
+  repo: null
+  pr_base: main
+  token: null
+llm:
+  provider: anthropic
+  model: claude-opus-5-5
+  effort: high
+  max_tokens: 16000
+  fallbacks: true
+limits:
+  max_fix_attempts: 3
+  max_incidents_per_hour: 10
+  max_tokens_per_incident: 400000
+  max_diff_files: 10
+  max_diff_lines: 400
+masking:
+  default: hash
+  columns: []
+  allow: []
+  hook: null
+  sample_rows: 5
+store:
+  url: sqlite:///<HEALER_HOME>/healer.db
+ingest:
+  token: null
+  api_url: null
+debug: false
+derived:
+  source_path: <REPO>/healer.yaml
+  repo_root: <REPO>
+  dags_path: <REPO>/dags
+  contracts_dir: <REPO>/healer/contracts
+  healer_home: <HEALER_HOME>
+  database_url: sqlite:///<HEALER_HOME>/healer.db
+
+Configuration is valid.

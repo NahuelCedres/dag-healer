@@ -1,0 +1,201 @@
+Classify the failed Airflow task described below.
+
+<incident>
+{
+ "incident_id": "00000000000000000000000000000003",
+ "dag_id": "inventory_report",
+ "run_id": "manual__2026-10-18T09:00:00+00:00",
+ "task_id": "build_report",
+ "map_index": -1,
+ "try_number": 1,
+ "error_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py\", line 465, in _execute_task\n    result = _execute_callable(context=context, **execute_callable_kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/airflow/repo/dags/../src/etl/inventory.py\", line 28, in buildReport\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n                ~~^^^^^^^\n  File \"/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'qty'",
+ "exception_type": "KeyError",
+ "exception_message": "'qty'",
+ "traceback_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py\", line 465, in _execute_task\n    result = _execute_callable(context=context, **execute_callable_kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/airflow/repo/dags/../src/etl/inventory.py\", line 28, in buildReport\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n                ~~^^^^^^^\n  File \"/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'qty'",
+ "repo_frames": [
+  {
+   "file": "src/etl/inventory.py",
+   "line": 28,
+   "function": "buildReport"
+  }
+ ],
+ "log_excerpt": "[2026-10-18, 07:00:01 UTC] {taskinstance.py:1157} INFO - Dependencies all met for <TaskInstance: inventory_report.build_report manual__2026-10-18T07:00:00+00:00 [queued]>\n[2026-10-18, 07:00:02 UTC] {common.py:31} INFO - reading /opt/airflow/repo/data/incoming/inventory.csv\n[2026-10-18, 07:00:02 UTC] {taskinstance.py:2905} ERROR - Task failed with exception\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py\", line 465, in _execute_task\n    result = _execute_callable(context=context, **execute_callable_kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/airflow/repo/dags/../src/etl/inventory.py\", line 28, in buildReport\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n                ~~^^^^^^^\n  File \"/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'qty'\n[2026-10-18, 07:00:02 UTC] {taskinstance.py:1206} INFO - Marking task as FAILED. dag_id=inventory_report, task_id=build_report, contact [email] or [phone]",
+ "dag_file": "dags/inventory_report.py",
+ "dag_source": "import sys\nimport os\n\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom datetime import datetime\n\nfrom airflow.sdk import DAG\nfrom airflow.providers.standard.operators.python import PythonOperator\n\nimport src.etl.inventory as inv\n\nargs = {\n    \"owner\": \"ops\",\n    \"retries\": 0,\n}\n\ndag = DAG(\n    dag_id=\"inventory_report\",\n    default_args=args,\n    description=\"Inventory per SKU + low stock flags\",\n    schedule=None,  # TODO hourly again once the warehouse feed is stable\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n)\n\ngetInventory = PythonOperator(\n    task_id=\"get_inventory\",\n    python_callable=inv.getInventory,\n    dag=dag,\n)\n\nbuildReport = PythonOperator(\n    task_id=\"build_report\",\n    python_callable=inv.buildReport,\n    op_kwargs={\"low_stock_threshold\": 25},  # purchasing asked for 25 instead of 20\n    dag=dag,\n)\n\npublish = PythonOperator(task_id=\"publish_report\", python_callable=inv.publishReport, dag=dag)\n\ngetInventory >> buildReport >> publish\n",
+ "task": {
+  "task_id": "build_report",
+  "operator": "PythonOperator",
+  "callable_name": "buildReport",
+  "callable_module": "src.etl.inventory",
+  "callable_file": "src/etl/inventory.py",
+  "lineno": 34
+ },
+ "code_snippets": {
+  "dags/inventory_report.py": "import sys\nimport os\n\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom datetime import datetime\n\nfrom airflow.sdk import DAG\nfrom airflow.providers.standard.operators.python import PythonOperator\n\nimport src.etl.inventory as inv\n\nargs = {\n    \"owner\": \"ops\",\n    \"retries\": 0,\n}\n\ndag = DAG(\n    dag_id=\"inventory_report\",\n    default_args=args,\n    description=\"Inventory per SKU + low stock flags\",\n    schedule=None,  # TODO hourly again once the warehouse feed is stable\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n)\n\ngetInventory = PythonOperator(\n    task_id=\"get_inventory\",\n    python_callable=inv.getInventory,\n    dag=dag,\n)\n\nbuildReport = PythonOperator(\n    task_id=\"build_report\",\n    python_callable=inv.buildReport,\n    op_kwargs={\"low_stock_threshold\": 25},  # purchasing asked for 25 instead of 20\n    dag=dag,\n)\n\npublish = PythonOperator(task_id=\"publish_report\", python_callable=inv.publishReport, dag=dag)\n\ngetInventory >> buildReport >> publish\n",
+  "src/etl/inventory.py": "# inventory report - stock per sku across all the warehouses\n# originally a cron script from ops, moved to airflow in 2023\nimport logging\nimport os\n\nfrom src.etl import common\n\nlog = logging.getLogger(__name__)\n\nINVENTORY_CSV = os.path.join(common.BASE_DIR, \"data/incoming/inventory.csv\")\nLOW_STOCK = 20\nREORDER_TO = 150  # units, agreed with purchasing\n\n\ndef _load():\n    return common.read_csv(INVENTORY_CSV)\n\n\ndef getInventory(**kwargs):\n    df = _load()\n    log.info(\"inventory rows: %s, warehouses: %s\", len(df), sorted(df[\"warehouse\"].unique()))\n    if df.empty:\n        raise Exception(\"no inventory data today\")\n    return len(df)\n\n\ndef buildReport(low_stock_threshold=LOW_STOCK, **kwargs):\n    df = _load()  # file is small, just read it again\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n    stock = df[[\"sku\", \"qty\"]].groupby(\"sku\").sum().reset_index()\n    stock[\"low_stock\"] = stock[\"qty\"] < low_stock_threshold\n    stock[\"reorder_qty\"] = (REORDER_TO - stock[\"qty\"]).clip(lower=0).where(stock[\"low_stock\"], 0)\n    common.write_output(stock, \"inventory_by_sku\")\n    return len(stock)\n\n\ndef publishReport(**kwargs):\n    stock = common.read_output(\"inventory_by_sku\")\n    stock = stock.sort_values([\"low_stock\", \"qty\"], ascending=[False, True])\n    common.write_output(stock, \"inventory_report\")\n    n_low = int(stock[\"low_stock\"].sum())\n    if n_low:\n        log.warning(\"%s skus below the low stock threshold\", n_low)\n    return n_low\n"
+ },
+ "contract": {
+  "version": 1,
+  "dag_id": "inventory_report",
+  "status": "draft",
+  "review": "required",
+  "approved_by": null,
+  "approved_at": null,
+  "source_hash": null,
+  "inferred_from": [
+   "data/incoming/inventory.csv (30 rows)"
+  ],
+  "notes": "Inferred automatically from sample data. Review dtypes, nullability, numeric ranges (inferred with a 10x headroom) and row-count bands before approving.",
+  "datasets": [
+   {
+    "name": "inventory",
+    "task_id": "get_inventory",
+    "locator": {
+     "type": "csv",
+     "path": "data/incoming/inventory.csv"
+    },
+    "row_count": {
+     "min": 15,
+     "max": 100
+    },
+    "allow_extra_columns": true,
+    "columns": [
+     {
+      "name": "sku",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "warehouse",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "qty",
+      "dtype": "integer",
+      "nullable": false,
+      "min": 0.0,
+      "max": 3100.0,
+      "pii": false
+     },
+     {
+      "name": "updated_at",
+      "dtype": "datetime",
+      "nullable": false,
+      "pii": false
+     }
+    ]
+   }
+  ]
+ },
+ "contract_status": "draft",
+ "violations": [],
+ "draft_violations": [
+  {
+   "rule": "missing_column",
+   "dataset": "inventory",
+   "column": "qty",
+   "message": "Column 'qty' is missing from dataset 'inventory'.",
+   "expected": "qty",
+   "actual": [
+    "quantity",
+    "sku",
+    "updated_at",
+    "warehouse",
+    "warehouse_code"
+   ],
+   "row_indexes": []
+  }
+ ],
+ "sample_dataset": "inventory",
+ "masked_sample": {
+  "dataset": "inventory",
+  "columns": [
+   "sku",
+   "warehouse",
+   "warehouse_code",
+   "quantity",
+   "updated_at"
+  ],
+  "rows": [
+   {
+    "sku": "SKU-1001",
+    "warehouse": "Reno",
+    "warehouse_code": "RNO-1",
+    "quantity": 128,
+    "updated_at": "2026-10-02"
+   },
+   {
+    "sku": "SKU-1001",
+    "warehouse": "Dallas",
+    "warehouse_code": "DFW-2",
+    "quantity": 31,
+    "updated_at": "2026-10-02"
+   },
+   {
+    "sku": "SKU-1001",
+    "warehouse": "Newark",
+    "warehouse_code": "EWR-1",
+    "quantity": 12,
+    "updated_at": "2026-10-02"
+   },
+   {
+    "sku": "SKU-1002",
+    "warehouse": "Reno",
+    "warehouse_code": "RNO-1",
+    "quantity": 150,
+    "updated_at": "2026-10-02"
+   },
+   {
+    "sku": "SKU-1002",
+    "warehouse": "Dallas",
+    "warehouse_code": "DFW-2",
+    "quantity": 4,
+    "updated_at": "2026-10-02"
+   }
+  ],
+  "masked": true
+ },
+ "datasets_checked": [
+  "inventory"
+ ],
+ "notes": [
+  "The contract is a draft: its violations are evidence only."
+ ]
+}
+</incident>
+
+<signals>
+{
+ "contract_status": "draft",
+ "violation_rules": [],
+ "violation_columns": [],
+ "draft_violation_rules": [
+  "missing_column"
+ ],
+ "exception_type": "KeyError",
+ "error_kind": "data_shape",
+ "repo_frames_present": true,
+ "top_repo_frame": {
+  "file": "src/etl/inventory.py",
+  "line": 28,
+  "function": "buildReport"
+ },
+ "missing_column_in_error": "qty",
+ "columns_in_error": [],
+ "violation_details": [],
+ "exception_message": "'qty'",
+ "infra_marker": null,
+ "dag_id": "inventory_report",
+ "task_id": "build_report",
+ "min_confidence": 0.75,
+ "policy_hint": {
+  "category": "ambiguous",
+  "rule": "c_no_approved_contract",
+  "reason": "There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong.",
+  "llm_decides": false
+ }
+}
+</signals>

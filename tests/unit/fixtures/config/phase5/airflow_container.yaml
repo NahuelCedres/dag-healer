@@ -1,0 +1,4 @@
+version: 1
+repo: {path: ., dags_dir: dags}
+monitor: {dags: ["*"]}
+contracts: {dir: healer/contracts}

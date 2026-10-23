@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>[dag-healer] DATA issue in sales_daily_etl.transform_sales</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f3f4f6;">Data issue reported: sales_daily_etl.transform_sales</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f3f4f6;">
+  <tr>
+    <td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;max-width:680px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+        <tr>
+          <td style="padding:14px 24px;border-bottom:3px solid #d97706;">
+            <span style="font-size:14px;font-weight:700;color:#111827;letter-spacing:0.02em;">dag-healer</span>
+            <span style="float:right;font-size:12px;font-weight:700;color:#d97706;text-transform:uppercase;letter-spacing:0.05em;">Data issue reported</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px;">
+            <h1 style="margin:0 0 8px 0;font-size:20px;line-height:26px;color:#111827;">Data issue detected</h1>
+            <p style="margin:0 0 4px 0;font-size:13px;color:#6b7280;"><code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">sales_daily_etl.transform_sales</code></p>
+            <p style="margin:12px 0 20px 0;font-size:14px;line-height:21px;color:#1f2937;">The input data of this task does not match its data contract. The code was not changed.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px 0;">
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">DAG</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">sales_daily_etl</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Task</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">transform_sales</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Run</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">manual__2026-10-18T09:00:00+00:00</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Try</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">1</td>
+</tr>
+
+  <tr>
+    <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;">Classification</td>
+    <td style="padding:4px 0;font-size:13px;color:#111827;"><span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:700;letter-spacing:0.03em;color:#92400e;background:#fef3c7;">DATA</span>
+ <span style="color:#6b7280;">confidence 95%</span></td>
+  </tr>
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Status</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">reported</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Incident</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">00000000000000000000000000000001</td>
+</tr>
+
+</table>
+
+<div style="margin:0 0 20px 0;padding:12px 14px;border-left:4px solid #d97706;background:#fffbeb;border-radius:4px;">
+  <div style="font-size:12px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:0.04em;">Violated rule</div>
+  <div style="margin-top:4px;font-size:14px;color:#111827;"><code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;font-size:13px;">missing_column</code> on <code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;font-size:13px;">sales.amount</code></div>
+<div style="margin-top:4px;font-size:13px;color:#374151;">Column &#39;amount&#39; is missing from dataset &#39;sales&#39;.</div><div style="margin-top:4px;font-size:12px;color:#6b7280;">expected: <code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">amount</code> &middot; actual: <code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">[&#34;amt&#34;, &#34;currency&#34;, &#34;customer_email&#34;, &#34;order_date&#34;, &#34;order_id&#34;]</code></div></div>
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Diagnosis</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">Task sales_daily_etl.transform_sales failed with KeyError: &#39;amount&#39; because its input broke the approved data contract (missing_column: sales.amount). The code is behaving as designed: the upstream delivery must be fixed (or the contract updated and re-approved if the change is intended), then the task can be retried.</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Contract violations</h2>
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+  <tr><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Rule</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Column</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Details</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">Expected / actual</th></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">missing_column</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">sales.amount</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;">Column &#39;amount&#39; is missing from dataset &#39;sales&#39;.</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">amount / [&#34;amt&#34;, &#34;currency&#34;, &#34;customer_email&#34;, &#34;order_date&#34;, &#34;order_id&#34;]</td></tr>
+</table>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Masked data sample (sales)</h2>
+  <div style="overflow-x:auto;">
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+  <tr><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">order_id</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">customer_email</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">amt</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">currency</th><th align="left" style="padding:6px 8px;font-size:12px;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;text-align:left;">order_date</th></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">ORD-50031</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:038151c9d1</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">58.0</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">EUR</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">ORD-50032</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:0f62d3a9dc</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">null</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">GBP</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">ORD-50033</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:e0efe16d47</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">1249.0</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">USD</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">ORD-50034</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:ef81261b71</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">36.4</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">USD</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+  <tr><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">ORD-50035</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:7add03a2da</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">null</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">USD</td><td style="padding:6px 8px;font-size:12px;color:#111827;border:1px solid #e5e7eb;vertical-align:top;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">2026-10-02</td></tr>
+</table>
+</div>
+<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">Sensitive values are masked (<code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">h:&hellip;</code> = salted hash, <code style="font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">***</code> = redacted).</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Error</h2>
+  <pre style="margin:0;padding:12px;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;font-size:12px;line-height:18px;color:#111827;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;white-space:pre-wrap;word-break:break-word;">KeyError: &#39;amount&#39;
+
+Traceback (most recent call last):
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py&#34;, line 3641, in get_loc
+  File &#34;pandas/_libs/index.pyx&#34;, line 168, in pandas._libs.index.IndexEngine.get_loc
+  File &#34;pandas/_libs/hashtable_class_helper.pxi&#34;, line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: &#39;amount&#39;
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py&#34;, line 1579, in _run_task_and_map_outcome
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py&#34;, line 2192, in _run_execute_callable
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py&#34;, line 462, in wrapper
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py&#34;, line 231, in execute
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py&#34;, line 254, in execute_callable
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py&#34;, line 97, in run
+  File &#34;/opt/airflow/repo/src/etl/sales.py&#34;, line 25, in transform_sales
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py&#34;, line 4378, in __getitem__
+  File &#34;/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py&#34;, line 3648, in get_loc
+KeyError: &#39;amount&#39;</pre>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Evidence</h2>
+  <ul style="margin:0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+<li style="margin:0 0 4px 0;">policy: approved contract, data_shape error</li><li style="margin:0 0 4px 0;">exception: KeyError: &#39;amount&#39;</li><li style="margin:0 0 4px 0;">violations: missing_column: sales.amount</li><li style="margin:0 0 4px 0;">repository frame: src/etl/sales.py::transform_sales</li><li style="margin:0 0 4px 0;">innermost repository frame: src/etl/sales.py::transform_sales (line 25)</li><li style="margin:0 0 4px 0;">column named in the error: amount</li></ul>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Next steps</h2>
+  <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+  <li style="margin:0 0 4px 0;">Fix or re-deliver the input data, then retry the task from the Healer incident tab.</li>
+  <li style="margin:0 0 4px 0;">If the change in the data is intended, update the data contract and approve it again.</li>
+</ul>
+<a href="http://localhost:8080/dags/sales_daily_etl/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/transform_sales/plugin/healer-ti" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:#d97706;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Open the Healer incident</a>
+
+<p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;">
+  <a href="http://localhost:8080/dags/sales_daily_etl/plugin/healer-dag" style="color:#2563eb;text-decoration:underline;">DAG incidents</a> &middot;
+  <a href="http://localhost:8080/plugin/healer" style="color:#2563eb;text-decoration:underline;">Healer page</a>
+</p>
+
+
+</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;line-height:18px;color:#6b7280;">
+            Generated by dag-healer on <generated_at> for incident <code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">00000000</code>.
+            Sample values and error text are masked before they leave the worker.
+            <a href="http://localhost:8080/plugin/healer" style="color:#6b7280;text-decoration:underline;">Open the Healer page</a>.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

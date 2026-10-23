@@ -1,0 +1,3 @@
+version: 1
+repo: {path: .}
+contracts: {dir: healer/contracts}

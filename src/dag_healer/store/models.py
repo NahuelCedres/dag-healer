@@ -5,6 +5,16 @@ other applications. The schema is portable between SQLite (single process,
 tests) and PostgreSQL (multi-container deployments): JSON columns use the
 generic :class:`sqlalchemy.JSON` type and timestamps are always timezone-aware
 UTC values on the Python side (see :class:`UTCDateTime`).
+
+Schema v2 (section 6 of ``docs/architecture/orchestrators.md``) keeps the phase-5
+physical columns (``dag_id``, ``run_id``, ``task_id``, ``map_index``, ``try_number``)
+and adds the orchestrator instance id (``orchestrator``) to the incident key, so
+several orchestrator instances can share one store. The neutral names
+(``pipeline_id``, ``step_id``, ``attempt``) are ORM synonyms of the physical
+columns. The columns added by v2 come last in each table, in the order in which
+:mod:`dag_healer.store.migrations` adds them, so a migrated v1 store and a new v2
+store have the same layout. A v1 store is upgraded by
+:func:`dag_healer.store.migrations.migrate`.
 """
 
 from __future__ import annotations
@@ -21,15 +31,23 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.engine import Dialect
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, MappedColumn, mapped_column, relationship, synonym
 from sqlalchemy.types import TypeDecorator
 
-SCHEMA_VERSION = 1
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
+
+SCHEMA_VERSION = 2
+
+#: Length of the ``orchestrator`` (instance id) columns (``OrchestratorConfig.instance``).
+ORCHESTRATOR_LENGTH = 64
+#: Push channel of the phase-5 events (Airflow listener and failure callback).
+DEFAULT_CHANNEL = "task-failed"
 
 # --------------------------------------------------------------------------- #
 # Status constants
@@ -62,7 +80,9 @@ FINAL_STATUSES: tuple[str, ...] = (REPORTED, REPAIRED, REPAIR_FAILED, IGNORED, E
 ALL_STATUSES: tuple[str, ...] = OPEN_STATUSES + FINAL_STATUSES
 
 CATEGORIES: tuple[str, ...] = ("data", "code", "ambiguous")
-SOURCES: tuple[str, ...] = ("listener", "callback", "rest", "cli")
+#: Incident sources (``String(16)``): the phase-5 Airflow names, then the neutral ones.
+#: Adapters declare ``capabilities.sources`` as a subset of these.
+SOURCES: tuple[str, ...] = ("listener", "callback", "rest", "cli", "poll", "push", "eventbridge", "sqs")
 
 COMMAND_KINDS: tuple[str, ...] = ("resolve", "retry_repair", "retry_task", "approve_contract")
 COMMAND_PENDING = "pending"
@@ -148,20 +168,41 @@ class Base(DeclarativeBase):
         }
 
 
+def _orchestrator_column() -> MappedColumn[Any]:
+    """The ``orchestrator`` (instance id) column; ``'airflow'`` for rows written before v2."""
+    return mapped_column(
+        String(ORCHESTRATOR_LENGTH),
+        nullable=False,
+        default=DEFAULT_ORCHESTRATOR,
+        server_default=DEFAULT_ORCHESTRATOR,
+    )
+
+
 class Incident(Base):
-    """One failed task instance try (or a deduplicated group of them)."""
+    """One failed attempt of a step (Airflow: a task instance try), or a deduplicated group of them.
+
+    The key is ``(orchestrator, dag_id, run_id, task_id, map_index, try_number)``; the
+    neutral attribute names ``pipeline_id``, ``step_id`` and ``attempt`` are synonyms of
+    ``dag_id``, ``task_id`` and ``try_number``.
+    """
 
     __tablename__ = "healer_incidents"
     __table_args__ = (
         UniqueConstraint(
-            "dag_id", "run_id", "task_id", "map_index", "try_number", name="uq_healer_incidents_ti"
+            "orchestrator",
+            "dag_id",
+            "run_id",
+            "task_id",
+            "map_index",
+            "try_number",
+            name="uq_healer_incidents_key",
         ),
         Index("ix_healer_incidents_status", "status"),
-        Index("ix_healer_incidents_dag_created", "dag_id", "created_at"),
-        Index("ix_healer_incidents_signature", "dag_id", "task_id", "signature"),
+        Index("ix_healer_incidents_orch_dag_created", "orchestrator", "dag_id", "created_at"),
+        Index("ix_healer_incidents_signature", "orchestrator", "dag_id", "task_id", "signature"),
     )
 
-    #: Large fields left out of ``to_dict(summary=True)``.
+    #: Large fields left out of ``to_dict(summary=True)`` (``native_ref`` is small by contract).
     HEAVY_FIELDS = frozenset({"test_code", "diff", "pytest_output", "sample", "evidence"})
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -196,6 +237,16 @@ class Incident(Base):
         UTCDateTime(), nullable=False, default=utcnow, onupdate=utcnow
     )
     claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # schema v2
+    orchestrator: Mapped[str] = _orchestrator_column()
+    #: Adapter-owned JSON-safe pointers (execution ARN, event ids...); never payloads, <= 4 KB.
+    native_ref: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    #: Native error name reported by the orchestrator ("KeyError", "States.Timeout").
+    error_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    pipeline_id: Mapped[str] = synonym("dag_id")
+    step_id: Mapped[str] = synonym("task_id")
+    attempt: Mapped[int] = synonym("try_number")
 
     events: Mapped[list[IncidentEvent]] = relationship(
         back_populates="incident",
@@ -244,11 +295,15 @@ class IncidentEvent(Base):
 
 
 class ContractState(Base):
-    """Cached state of a DAG contract (the YAML file stays the source of truth)."""
+    """Cached state of a pipeline (DAG) contract (the YAML file stays the source of truth).
+
+    The primary key is ``(orchestrator, dag_id)`` (schema v2).
+    """
 
     __tablename__ = "healer_contracts"
+    __table_args__ = (PrimaryKeyConstraint("orchestrator", "dag_id"),)
 
-    dag_id: Mapped[str] = mapped_column(String(250), primary_key=True)
+    dag_id: Mapped[str] = mapped_column(String(250), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     approved_by: Mapped[str | None] = mapped_column(String(250), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -257,6 +312,10 @@ class ContractState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, default=utcnow, onupdate=utcnow
     )
+    # schema v2
+    orchestrator: Mapped[str] = _orchestrator_column()
+
+    pipeline_id: Mapped[str] = synonym("dag_id")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict."""
@@ -303,6 +362,8 @@ class Command(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
     applied_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # schema v2: the instance whose worker applies the command
+    orchestrator: Mapped[str] = _orchestrator_column()
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict."""
@@ -310,7 +371,12 @@ class Command(Base):
 
 
 class PendingEvent(Base):
-    """A failure event pushed by the listener/callback, waiting for REST confirmation."""
+    """A pushed failure hint (Airflow listener/callback, EventBridge...), waiting for confirmation.
+
+    ``task_id`` is ``""`` (:data:`dag_healer.core.ids.UNRESOLVED_STEP`) while the failing
+    step of a run-level hint is not known yet; ``channel`` is the push channel that
+    delivered it (``task-failed`` for the phase-5 Airflow events).
+    """
 
     __tablename__ = "healer_pending_events"
     __table_args__ = (Index("ix_healer_pending_events_status", "status", "id"),)
@@ -324,6 +390,32 @@ class PendingEvent(Base):
     payload: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=PENDING_CHECK)
+    # schema v2
+    orchestrator: Mapped[str] = _orchestrator_column()
+    channel: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL
+    )
+    native_ref: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+
+    pipeline_id: Mapped[str] = synonym("dag_id")
+    step_id: Mapped[str] = synonym("task_id")
+    attempt: Mapped[int] = synonym("try_number")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe dict."""
+        return self._columns_dict()
+
+
+class KeyValue(Base):
+    """Small durable worker state (schema v2), e.g. ``cursor:<instance>`` = the poll cursor."""
+
+    __tablename__ = "healer_kv"
+
+    key: Mapped[str] = mapped_column(String(250), primary_key=True)
+    value: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=utcnow, onupdate=utcnow
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict."""
@@ -331,7 +423,7 @@ class PendingEvent(Base):
 
 
 class SchemaVersion(Base):
-    """Single-row table recording the store schema version."""
+    """One row per applied store schema version (a new v2 store records 1 and 2)."""
 
     __tablename__ = "healer_schema_version"
 

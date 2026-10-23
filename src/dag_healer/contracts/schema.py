@@ -8,14 +8,19 @@ enforced by the classification policy.
 
 This module is intentionally light: it only depends on pydantic, so it can be imported by
 ``dag_healer.config`` without pulling pandas in.
+
+``dag_id`` and ``task_id`` stay the canonical keys. The orchestrator-neutral names
+``pipeline_id`` and ``step_id`` are accepted as input aliases only: contracts are always
+written with the canonical keys, so ``compute_source_hash`` (and every approval) is unchanged.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 LogicalDtype = Literal["string", "integer", "float", "boolean", "datetime", "date", "unknown"]
 """Logical column types. They are storage-independent: pandas 2 ``object`` columns and pandas 3
@@ -45,6 +50,13 @@ class _StrictModel(BaseModel):
     """Base for user-authored models: unknown keys are rejected so YAML typos surface."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+def _one_of(data: Any, name: str, alias: str) -> Any:
+    """Refuse a mapping that sets both the canonical key ``name`` and its input ``alias``."""
+    if isinstance(data, Mapping) and name in data and alias in data:
+        raise ValueError(f"'{name}' and '{alias}' are the same field ('{alias}' is an alias): set only one")
+    return data
 
 
 class DatasetLocator(_StrictModel):
@@ -117,14 +129,22 @@ class RowCountRule(_StrictModel):
 
 
 class DatasetContract(_StrictModel):
-    """Contract for one dataset (usually the input or output of one task)."""
+    """Contract for one dataset (usually the input or output of one task).
+
+    ``task_id`` also accepts the input alias ``step_id``.
+    """
 
     name: str
-    task_id: str | None = None
+    task_id: str | None = Field(default=None, validation_alias=AliasChoices("task_id", "step_id"))
     locator: DatasetLocator
     columns: list[ColumnRule] = Field(default_factory=list)
     row_count: RowCountRule = Field(default_factory=RowCountRule)
     allow_extra_columns: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _single_task_key(cls, data: Any) -> Any:
+        return _one_of(data, "task_id", "step_id")
 
     def column(self, name: str) -> ColumnRule | None:
         """Return the rule for column ``name`` or ``None``."""
@@ -135,10 +155,10 @@ class DatasetContract(_StrictModel):
 
 
 class Contract(_StrictModel):
-    """Data contract of one DAG (one YAML file)."""
+    """Data contract of one DAG (one YAML file); ``dag_id`` also accepts the alias ``pipeline_id``."""
 
     version: int = 1
-    dag_id: str
+    dag_id: str = Field(validation_alias=AliasChoices("dag_id", "pipeline_id"))
     status: Literal["draft", "approved"] = "draft"
     review: str = "required"
     approved_by: str | None = None
@@ -147,6 +167,11 @@ class Contract(_StrictModel):
     inferred_from: list[str] = Field(default_factory=list)
     notes: str | None = None
     datasets: list[DatasetContract] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _single_dag_key(cls, data: Any) -> Any:
+        return _one_of(data, "dag_id", "pipeline_id")
 
     @field_validator("dag_id")
     @classmethod

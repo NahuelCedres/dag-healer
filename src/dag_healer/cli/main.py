@@ -48,6 +48,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "dag_healer.cli.doctor_cmd",
     "dag_healer.cli.worker_cmd",
     "dag_healer.cli.store_cmd",
+    "dag_healer.cli.orchestrators_cmd",
 )
 
 

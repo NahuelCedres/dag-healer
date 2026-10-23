@@ -1,0 +1,50 @@
+# Data contract enforced by dag-healer. Editing it after approval marks it stale
+# until it is approved again.
+version: 1
+dag_id: customers_sync
+status: approved
+review: required
+approved_by: demo
+approved_at: '2026-10-20T01:42:37.452088+00:00'
+source_hash: f01a683db4d36f15d8ab4c145e10fc44c8bb5ad73886eaa91104a6d8be2a33b3
+inferred_from:
+  - data/incoming/customers.csv (25 rows)
+notes: Inferred automatically from sample data. Review dtypes, nullability, numeric ranges (inferred with
+  a 10x headroom) and row-count bands before approving.
+datasets:
+  - name: customers
+    task_id: extract
+    locator:
+      type: csv
+      path: data/incoming/customers.csv
+    row_count:
+      min: 12
+      max: 85
+    allow_extra_columns: true
+    columns:
+      - name: customer_id
+        dtype: string
+        nullable: false
+        pii: false
+      - name: full_name
+        dtype: string
+        nullable: false
+        pii: true
+      - name: email
+        dtype: string
+        nullable: false
+        pii: true
+      - name: phone
+        dtype: string
+        nullable: false
+        pii: true
+      - name: country
+        dtype: string
+        nullable: false
+        pii: false
+      - name: signup_date
+        dtype: string
+        nullable: false
+        pii: false
+        note: looks like a date (YYYY-MM-DD); inferred as 'string' so other date/time formats are not
+          rejected. Change dtype to 'date' or 'datetime' to require ISO-8601 parseable values.

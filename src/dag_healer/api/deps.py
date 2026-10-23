@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from dag_healer.api import auth
 from dag_healer.config import ConfigError, HealerConfig, load_config
-from dag_healer.store.db import session_scope
+from dag_healer.store.db import StoreSchemaOutdated, ensure_initialized, get_engine, session_scope
 
 log = logging.getLogger(__name__)
 
@@ -83,8 +83,14 @@ def get_session(cfg: HealerConfig = Depends(get_config)) -> Iterator[Session]:
     """Dependency: a store session (``store.db.session_scope``) for the request.
 
     Write handlers commit explicitly before answering; the scope commits again (no-op)
-    or rolls back when the handler raised.
+    or rolls back when the handler raised. A store whose schema is older than this
+    dag-healer answers 503: web processes never migrate it (the worker does).
     """
+    try:
+        ensure_initialized(get_engine(cfg.database_url))
+    except StoreSchemaOutdated as exc:
+        log.warning("dag-healer: %s", exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None
     with session_scope(cfg.database_url) as session:
         yield session
 

@@ -1,0 +1,285 @@
+# Phase 2 of 2: make the failing test pass with a minimal fix
+
+An Airflow task of this repository failed because of a CODE bug. In phase 1 a pytest test was
+written that reproduces the failure: `tests/test_customers_signup_date.py`. It currently fails like this:
+
+```text
+$ pytest tests/test_customers_signup_date.py
+exit code 1: 1 passed, 1 failed, 0 errors, 0 skipped, 2 collected in 0.0s
+[pytest output reduced by the golden snapshot test to its E/FAILED/ERROR lines]
+E           ValueError: unconverted data remains: T14:03:00Z
+FAILED tests/test_customers_signup_date.py::test_parse_signup_date_accepts_iso_timestamp_with_z
+1 failed, 1 passed
+```
+
+Your job now is the smallest correct fix of the application code.
+
+## What to do
+
+1. Read the failing test (below) and the code under test with `read_file`, `search` and
+   `list_files`. Find the root cause; do not just silence the symptom.
+2. Apply a minimal fix, preferably with `replace_in_file` (one focused edit per call):
+   - the smallest diff that fixes the root cause for every input the test and the evidence
+     describe, not only the exact test value; do not special-case the test's inputs and do not
+     detect that a test is running;
+   - keep the function names, signatures, return types and the module's public API;
+   - keep the surrounding style (naming, quotes, indentation, comments, line endings); no
+     reformatting, no reordering of imports, no renames, no unrelated clean-ups;
+   - no new dependencies: only the standard library and the packages the module already
+     imports; never edit requirements, lockfiles or packaging files;
+   - do not swallow exceptions or return placeholder values just to make the test pass; invalid
+     input that the old code rejected should still be rejected.
+3. Run the new test with `run_tests(["tests/test_customers_signup_date.py"])`, then the whole suite with
+   `run_tests()`. Both must pass. If something fails, read the output, adjust the fix and run
+   the tests again.
+4. Finish with a short plain-text summary: the root cause, the change you made and the final
+   test results.
+
+## Rules (the tools enforce them and return an error message when you break one)
+
+- You may change files ONLY under: `src/`, `dags/`.
+- The new test and everything under `tests/` are read-only in this phase, as is any other
+  test file or conftest.py: never change a test to make it pass.
+- Paths are relative to the repository root. Absolute paths and `..` are rejected.
+- Never written: `healer.yaml`, `healer/**`, `.github/**`, `.git/**`, lockfiles and dependency
+  manifests (`requirements*.txt`, `pyproject.toml`, `setup.py`, `setup.cfg`, ...), `.env*`,
+  `data/**`, `fixtures/**` and data files (`.csv`, `.parquet`, `.jsonl`, ...).
+- Never read: `.git/**`, `.env*`, `healer.yaml`, `data/**`, `fixtures/**` and data files.
+- Size limit of the change: at most 10 changed files and at most 400 changed lines in total, the new test included. A larger change is rejected.
+- Masked values such as `h:1a2b3c4d5e`, `***`, `[email]`, `[phone]` or `[number]` are
+  placeholders for personal data; never hard-code them in the fix.
+
+## Tools
+
+You have these tools: `list_files`, `read_file`, `search`, `write_file`, `replace_in_file`, `run_tests`.
+
+- `list_files(path, pattern)`: list repository files (recursively) under a folder.
+- `read_file(path, start_line, end_line)`: read a text file; lines come prefixed with their
+  number and a `|`, which is not part of the file.
+- `search(pattern, path)`: regular-expression search over the repository's text files.
+- `write_file(path, content)`: create or overwrite a whole file (prefer `replace_in_file`).
+- `replace_in_file(path, old, new)`: replace exactly one occurrence of `old` (copied verbatim
+  from the file, without the line-number prefix) with `new`.
+- `run_tests(paths)`: run pytest on the given files (default: the tests folder) and get a
+  summary plus the output tail.
+
+## The failing test: `tests/test_customers_signup_date.py`
+
+```python
+"""Regression test for customers_sync: the CRM export may send ISO-8601 signup timestamps."""
+
+from datetime import date
+
+from src.etl.customers import parse_signup_date
+
+
+def test_parse_signup_date_accepts_iso_timestamp_with_z():
+    assert parse_signup_date("2026-10-02T14:03:00Z") == date(2026, 10, 2)
+
+
+def test_parse_signup_date_still_accepts_plain_dates():
+    assert parse_signup_date("2025-01-14") == date(2025, 1, 14)
+    assert parse_signup_date(" 2025-02-03 ") == date(2025, 2, 3)
+```
+
+## Evidence (masked)
+
+- DAG / task: `customers_sync` / `transform` (run `manual__2026-10-18T09:00:00+00:00`, try 1, map index -1)
+- Exception: `ValueError`: unconverted data remains: T08:30:00Z
+- Most likely location: `src/etl/customers.py`, `parse_signup_date` (line 19)
+- Task definition: operator `PythonOperator`, callable `src.etl.customers.transform_customers` in `src/etl/customers.py`
+- DAG file: `dags/customers_sync.py`
+- Classifier diagnosis: Task customers_sync.transform failed with ValueError: unconverted data remains: T08:30:00Z raised in src/etl/customers.py::parse_signup_date (line 19). The input data satisfies the approved contract, so this is a defect in the code: it does not handle input that the contract allows. A minimal fix plus a regression test should resolve it.
+- Classifier evidence:
+  - policy: approved contract, code error
+  - exception: ValueError: unconverted data remains: T08:30:00Z
+  - repository frame: src/etl/customers.py::parse_signup_date
+  - innermost repository frame: src/etl/customers.py::parse_signup_date (line 19)
+
+### Traceback (masked)
+```text
+Traceback (most recent call last):
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 1579, in _run_task_and_map_outcome
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 197, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 2234, in _execute_task
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 197, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 2192, in _run_execute_callable
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py", line 462, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py", line 231, in execute
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py", line 254, in execute_callable
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py", line 97, in run
+  File "/opt/airflow/repo/src/etl/customers.py", line 36, in transform_customers
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py", line 5084, in apply
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py", line 1520, in apply
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py", line 1578, in apply_standard
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py", line 1020, in _map_values
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py", line 1770, in map
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py", line 2745, in map
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py", line 1715, in map_array
+  File "/opt/airflow/pandas/_libs/lib.pyx", line 3071, in pandas._libs.lib.map_infer
+  File "/opt/airflow/repo/src/etl/customers.py", line 19, in parse_signup_date
+  File "/usr/python/lib/python3.13/_strptime.py", line 789, in _strptime_datetime
+  File "/usr/python/lib/python3.13/_strptime.py", line 558, in _strptime
+ValueError: unconverted data remains: T08:30:00Z
+```
+
+### Repository frames (outermost first)
+- `src/etl/customers.py` line 36 in `transform_customers`
+- `src/etl/customers.py` line 19 in `parse_signup_date`
+
+### Data contract
+Contract status: approved.
+- dataset `customers` (task `extract`, csv `data/incoming/customers.csv`)
+  - {"name": "customer_id", "dtype": "string", "nullable": false, "pii": false}
+  - {"name": "full_name", "dtype": "string", "nullable": false, "pii": true}
+  - {"name": "email", "dtype": "string", "nullable": false, "pii": true}
+  - {"name": "phone", "dtype": "string", "nullable": false, "pii": true}
+  - {"name": "country", "dtype": "string", "nullable": false, "pii": false}
+  - {"name": "signup_date", "dtype": "string", "nullable": false, "pii": false, "note": "looks like a date (YYYY-MM-DD); inferred as 'string' so other date/time formats are not rejected. Change dtype to 'date' or 'datetime' to require ISO-8601 parseable values."}
+
+Datasets checked against the contract: customers
+
+### Masked sample of dataset `customers` (columns: customer_id, full_name, email, phone, country, signup_date)
+Already masked; placeholders stand for personal data. One JSON object per row:
+```json
+{"customer_id": "CUS-1001", "full_name": "h:cf69f11c45", "email": "h:c6fb5d88d5", "phone": "h:254376e6dd", "country": "US", "signup_date": "2025-01-14"}
+{"customer_id": "CUS-1002", "full_name": "h:c269336eda", "email": "h:a8e4d0db67", "phone": "h:d7d83dda0f", "country": "US", "signup_date": "2025-02-03"}
+{"customer_id": "CUS-1003", "full_name": "h:0aba4dce56", "email": "h:9219c065c9", "phone": "h:31508d7fa0", "country": "US", "signup_date": "2025-02-21"}
+{"customer_id": "CUS-1004", "full_name": "h:8af4c50f05", "email": "h:ea3c235946", "phone": "h:c9bc9af038", "country": "CA", "signup_date": "2025-03-09"}
+{"customer_id": "CUS-1005", "full_name": "h:13336026ef", "email": "h:8cd2c7e2ce", "phone": "h:93bdca9c1f", "country": "US", "signup_date": "2025-03-30"}
+```
+
+### Task log excerpt (last 33 lines, masked)
+```text
+Log message source details
+/opt/airflow/logs/dag_id=customers_sync/run_id=manual__2026-10-17T18:48:46.093857+00:00/task_id=transform/attempt=1.log
+[2026-10-17T18:48:52.483872Z] INFO - Pre Execute
+[2026-10-17T18:48:52.503600Z] INFO - DAG bundles loaded: dags-folder
+[2026-10-17T18:48:52.507928Z] INFO - Filling up the DagBag from /opt/airflow/repo/dags/customers_sync.py
+[2026-10-17T18:48:53.043437Z] INFO - Worker startup parse complete
+[2026-10-17T18:48:53.070047Z] INFO - reading /opt/airflow/repo/data/processed/customers_raw.csv
+[2026-10-17T18:48:53.084907Z] ERROR - Task failed with exception
+Traceback (most recent call last):
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 1579, in _run_task_and_map_outcome
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 197, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 2234, in _execute_task
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 197, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py", line 2192, in _run_execute_callable
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py", line 462, in wrapper
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py", line 231, in execute
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py", line 254, in execute_callable
+  File "/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py", line 97, in run
+  File "/opt/airflow/repo/src/etl/customers.py", line 36, in transform_customers
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py", line 5084, in apply
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py", line 1520, in apply
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py", line 1578, in apply_standard
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py", line 1020, in _map_values
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py", line 1770, in map
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py", line 2745, in map
+  File "/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py", line 1715, in map_array
+  File "/opt/airflow/pandas/_libs/lib.pyx", line 3071, in pandas._libs.lib.map_infer
+  File "/opt/airflow/repo/src/etl/customers.py", line 19, in parse_signup_date
+  File "/usr/python/lib/python3.13/_strptime.py", line 789, in _strptime_datetime
+  File "/usr/python/lib/python3.13/_strptime.py", line 558, in _strptime
+ValueError: unconverted data remains: T08:30:00Z
+[2026-10-17T18:48:53.085307Z] INFO - Post Execute
+[2026-10-17T18:48:53.135488Z] WARNING - dag-healer: failure report rejected with HTTP 404
+```
+
+### Source code from the repository
+#### `dags/customers_sync.py`
+```python
+# customers_sync - CRM export -> customers dim
+# maintained by crm-team
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from datetime import datetime
+
+from airflow.sdk import DAG
+from airflow.providers.standard.operators.python import PythonOperator
+
+from src.etl.customers import extract_customers, transform_customers, load_customers
+
+
+with DAG(
+    dag_id="customers_sync",
+    default_args={"owner": "crm-team", "retries": 0},
+    schedule=None,
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    tags=["legacy"],
+    doc_md="Syncs the CRM customers export into the customers dim. See README.",
+):
+    t1 = PythonOperator(task_id="extract", python_callable=extract_customers)
+
+    t2 = PythonOperator(task_id="transform", python_callable=transform_customers)
+
+    t3 = PythonOperator(
+        task_id="load",
+        python_callable=load_customers,
+        op_kwargs={"target": "customers_dim"},
+    )
+
+    t1 >> t2 >> t3
+```
+
+#### `src/etl/customers.py`
+```python
+"""CRM customers sync: CRM export -> customers dim."""
+import re
+from datetime import datetime
+
+from src.etl.common import read_csv, read_output, write_output
+
+US = "US"
+
+
+def extract_customers(**kwargs):
+    df = read_csv("data/incoming/customers.csv", dtype=str)
+    df = df.drop_duplicates("customer_id", keep="last")
+    write_output(df, "customers_raw")
+    return len(df)
+
+
+def parse_signup_date(value):
+    """Parse the signup date sent by the CRM export (always YYYY-MM-DD)."""
+    return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+
+
+def normalize_phone(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    digits = re.sub(r"\D", "", value)
+    if len(digits) == 10:  # US/CA number without the country code
+        digits = "1" + digits
+    return "+" + digits
+
+
+def transform_customers(**kwargs):
+    df = read_output("customers_raw", dtype=str)
+    df["email"] = df["email"].str.strip().str.lower()
+    df["phone"] = df["phone"].apply(normalize_phone)
+    df["country"] = df["country"].str.strip().str.upper()
+    df["signup_date"] = df["signup_date"].apply(parse_signup_date)
+    df["signup_month"] = df["signup_date"].apply(lambda d: d.strftime("%Y-%m"))
+    df["is_domestic"] = df["country"] == US
+    write_output(df, "customers_clean")
+    return len(df)
+
+
+def load_customers(target="customers_dim", **kwargs):
+    df = read_output("customers_clean", dtype=str)
+    cols = [
+        "customer_id",
+        "full_name",
+        "email",
+        "phone",
+        "country",
+        "signup_date",
+        "signup_month",
+        "is_domestic",
+    ]
+    write_output(df[cols], target)
+    return len(df)
+```

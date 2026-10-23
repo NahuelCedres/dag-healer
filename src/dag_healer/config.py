@@ -12,35 +12,51 @@ directory ``$HEALER_CONFIG`` points into (if set) or to the current directory.
 String values support ``${VAR}`` and ``${VAR:-default}`` (``$${`` writes a
 literal ``${``). A value that is exactly ``${VAR}`` with ``VAR`` unset or empty
 becomes ``None`` for optional fields, the field default for fields that have
-one, and an empty string otherwise; inside lists such items are dropped.
+one, and an empty string otherwise; inside lists such items are dropped. In the
+free-form ``orchestrator.options`` such an option is left out, so the adapter's
+own default applies.
+
+``version: 1`` stays: the orchestrator abstraction (section 5 of
+``docs/architecture/orchestrators.md``) only adds sections. ``orchestrator:`` selects
+the adapter (absent: Airflow, configured by the ``airflow:`` section as before) and
+``serve:`` configures the standalone host ``dag-healer serve``. Both are left out of
+dumps while they hold their defaults, so ``dag-healer check`` prints an existing
+``healer.yaml`` exactly as before.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import json
 import logging
 import os
 import re
+import threading
 import types
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 from urllib.parse import urlsplit
 
 import yaml
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializerFunctionWrapHandler,
     ValidationError,
+    ValidationInfo,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.fields import FieldInfo
 
 from dag_healer.contracts.schema import DatasetLocator
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +66,9 @@ HEALER_HOME_ENV = "HEALER_HOME"
 DATABASE_URL_ENV = "HEALER_DATABASE_URL"
 SUPPORTED_VERSION = 1
 
-#: Dotted paths of fields that hold secrets (they should be ``${ENV}`` references).
+#: Dotted paths of fields that hold secrets (they should be ``${ENV}`` references). Loading a
+#: configuration adds ``orchestrator.options.<name>`` for each secret option its orchestrator
+#: adapter declares (``factory.secret_options``); see :attr:`HealerConfig.secret_fields`.
 SECRET_FIELDS: tuple[str, ...] = (
     "airflow.password",
     "notify.email.password",
@@ -59,10 +77,43 @@ SECRET_FIELDS: tuple[str, ...] = (
 )
 ALERT_EVENTS: tuple[str, ...] = ("waiting_human", "reported", "repaired", "repair_failed")
 
+#: ``orchestrator.instance``, and the type when it serves as the instance id: lowercase letters,
+#: digits, ``.``, ``_`` and ``-``, at most 64 characters (the store's ``orchestrator`` column).
+INSTANCE_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+#: ``monitor.modes`` values (kept verbatim): Airflow's ``rest``/``listener``/``callback`` and the
+#: neutral ``poll``/``push``/``queue`` of the other orchestrators.
+MONITOR_MODES: tuple[str, ...] = ("rest", "listener", "callback", "poll", "push", "queue")
+#: What each mode turns on (:meth:`MonitorConfig.wants`): ``poll`` (list failures through the
+#: adapter's feed), ``push`` (confirm pushed failure hints) or ``queue`` (drain the hint queue).
+MODE_KINDS: Mapping[str, str] = types.MappingProxyType(
+    {"rest": "poll", "poll": "poll", "listener": "push", "callback": "push", "push": "push", "queue": "queue"}
+)
+#: The orchestrators :func:`default_config_yaml` has a ``healer.yaml`` template for.
+TEMPLATE_ORCHESTRATORS: tuple[str, ...] = ("airflow", "stepfunctions")
+
+MonitorMode = Literal["rest", "listener", "callback", "poll", "push", "queue"]
+RbacAction = Literal["read", "act", "approve_contract"]
+ServeAuthBackend = Literal["dev", "token", "trusted_header", "alb_oidc"]
+
+_BASE_SECRET_FIELDS: tuple[str, ...] = SECRET_FIELDS
+_secret_fields_lock = threading.Lock()
+
 _ENV_PATTERN = re.compile(r"\$\$\{|\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 _WHOLE_REFERENCE = re.compile(r"^\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _HOOK = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
+_INSTANCE = re.compile(INSTANCE_PATTERN)
+_FACTORY_TARGET = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
+_ENTRY_POINT_NAME = re.compile(r"^[^\s:=\[][^\s:=]*$")
+_PRINCIPAL = re.compile(r"^(?:\*|authenticated|(?:user|group):\S(?:.*\S)?)$")
+_SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
+_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_REGION = r"[a-z]{2}(?:-[a-z]+)+-\d{1,2}"
+_AWS_REGION = re.compile(rf"^{_REGION}$")
+_ALB_ARN = re.compile(
+    rf"^arn:aws[a-z-]*:elasticloadbalancing:(?P<region>{_REGION}):\d{{12}}:loadbalancer/app/[^/\s]+/[^/\s]+$"
+)
+_TOKEN_KEYS = frozenset({"name", "sha256", "groups"})
 _warned_missing: set[str] = set()
 
 
@@ -131,6 +182,17 @@ def _interpolate_tree(node: Any, path: str, refs: set[str], env: Mapping[str, st
     return node
 
 
+def _drop_unset_env(node: Any) -> Any:
+    """Leave unset ``${VAR}`` markers out of a free-form tree (mapping values and list items)."""
+    if isinstance(node, dict):
+        return {
+            key: _drop_unset_env(value) for key, value in node.items() if not isinstance(value, _UnsetEnv)
+        }
+    if isinstance(node, list):
+        return [_drop_unset_env(item) for item in node if not isinstance(item, _UnsetEnv)]
+    return node
+
+
 def _allows_none(annotation: Any) -> bool:
     if annotation is None or annotation is type(None):
         return True
@@ -140,12 +202,22 @@ def _allows_none(annotation: Any) -> bool:
     return False
 
 
+def _validation_aliases(info: FieldInfo) -> tuple[str, ...]:
+    """The plain-string input aliases of a field (``validation_alias``, ``AliasChoices``)."""
+    alias = info.validation_alias
+    if isinstance(alias, str):
+        return (alias,)
+    if isinstance(alias, AliasChoices):
+        return tuple(choice for choice in alias.choices if isinstance(choice, str))
+    return ()
+
+
 def _lookup_field(model: type[BaseModel], key: Any) -> FieldInfo | None:
     fields = model.model_fields
     if key in fields:
         return fields[key]
     for info in fields.values():
-        if info.alias == key:
+        if info.alias == key or key in _validation_aliases(info):
             return info
     return None
 
@@ -192,6 +264,13 @@ def _as_list(value: Any) -> Any:
     return [value] if isinstance(value, str) else value
 
 
+def _blank_to_none(value: Any) -> Any:
+    """Strip a string; a blank one becomes ``None``."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
 class RepoConfig(_Model):
     """The user's repository (the one holding the DAGs)."""
 
@@ -232,18 +311,69 @@ class AirflowConfig(_Model):
         return value.strip().rstrip("/") or "http://localhost:8080"
 
 
-class MonitorConfig(_Model):
-    """Which DAGs are watched and how failures are detected."""
+def _modes_of(kind: str) -> frozenset[str]:
+    return frozenset(mode for mode, mode_kind in MODE_KINDS.items() if mode_kind == kind)
 
-    dags: list[str] = Field(default_factory=lambda: ["*"])
-    modes: list[Literal["rest", "listener", "callback"]] = Field(default_factory=lambda: ["rest", "listener"])
+
+#: The modes that turn on each detection kind and each pushed-event source (see ``wants``).
+_ENABLED_BY: Mapping[str, frozenset[str]] = types.MappingProxyType(
+    {
+        "poll": _modes_of("poll"),
+        "push": _modes_of("push"),
+        "queue": _modes_of("queue"),
+        "rest": _modes_of("poll"),
+        "listener": frozenset({"listener", "push"}),
+        "callback": frozenset({"callback", "push"}),
+        "eventbridge": frozenset({"push"}),
+        "sqs": frozenset({"queue"}),
+    }
+)
+
+
+class MonitorConfig(_Model):
+    """Which pipelines (DAGs) are watched and how failures are detected.
+
+    ``dags`` is the canonical key; ``pipelines`` is accepted as an input alias (one of them).
+    ``modes`` are kept verbatim; :meth:`wants` normalises them.
+    """
+
+    dags: list[str] = Field(default_factory=lambda: ["*"], validation_alias=AliasChoices("dags", "pipelines"))
+    modes: list[MonitorMode] = Field(default_factory=lambda: ["rest", "listener"])
     poll_interval_seconds: int = Field(default=30, ge=1)
     trigger: Literal["final_failure", "every_failure"] = "final_failure"
+
+    @classmethod
+    def _preprocess(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Apply the base rules, then refuse ``dags`` and its alias ``pipelines`` together."""
+        data = super()._preprocess(data)
+        if "dags" in data and "pipelines" in data:
+            raise ValueError(
+                "'dags' and 'pipelines' are the same setting ('pipelines' is an alias): set only one"
+            )
+        return data
 
     @field_validator("dags", "modes", mode="before")
     @classmethod
     def _listify(cls, value: Any) -> Any:
         return _as_list(value)
+
+    def wants(self, kind: str) -> bool:
+        """True when ``modes`` turn ``kind`` on.
+
+        ``kind`` is a detection kind: ``"poll"`` (modes ``rest``/``poll``: list failures through
+        the adapter's feed), ``"push"`` (``listener``/``callback``/``push``: confirm pushed
+        hints) or ``"queue"`` (``queue``: drain the adapter's hint queue). It may also be the
+        source of a pushed event, for the per-source check: ``listener`` and ``callback`` each
+        need their own mode (as before) or the neutral ``push``, ``eventbridge`` needs ``push``,
+        ``sqs`` needs ``queue`` and ``rest`` is ``poll``. Manual (``cli``) incidents need no
+        mode. Anything else raises ``ValueError``.
+        """
+        if kind == "cli":
+            return True
+        enabling = _ENABLED_BY.get(kind)
+        if enabling is None:
+            raise ValueError(f"unknown detection kind or incident source {kind!r}")
+        return any(mode in enabling for mode in self.modes)
 
 
 class ContractsConfig(_Model):
@@ -389,11 +519,314 @@ class IngestConfig(_Model):
     api_url: str | None = None
 
 
+class OrchestratorConfig(_Model):
+    """The orchestrator dag-healer watches (``orchestrator:``; absent: Airflow).
+
+    ``type`` is an entry-point name of the ``dag_healer.orchestrators`` group (``airflow``,
+    ``stepfunctions``, ``fake`` or a third-party name) or an explicit
+    ``"package.module:factory"`` string. ``instance`` is stored on every incident; it
+    defaults to the type, so a type that is not a valid instance id needs an explicit one.
+    ``options`` are validated by the adapter's ``options_model`` when the adapter is built;
+    Airflow keeps using the top-level ``airflow:`` section and takes none.
+    """
+
+    type: str = DEFAULT_ORCHESTRATOR
+    instance: str | None = Field(default=None, pattern=INSTANCE_PATTERN, validate_default=True)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _type_text(cls, value: Any) -> Any:
+        """Strip the type; a blank one means the default (Airflow)."""
+        if isinstance(value, str):
+            return value.strip() or DEFAULT_ORCHESTRATOR
+        return value
+
+    @field_validator("type")
+    @classmethod
+    def _type_format(cls, value: str) -> str:
+        valid = _FACTORY_TARGET.match(value) if ":" in value else _ENTRY_POINT_NAME.match(value)
+        if not valid:
+            raise ValueError(
+                "expected an entry-point name of the dag_healer.orchestrators group (such as "
+                "'airflow' or 'stepfunctions') or 'package.module:factory'"
+            )
+        return value
+
+    @field_validator("instance", mode="before")
+    @classmethod
+    def _instance_text(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator("instance")
+    @classmethod
+    def _instance_required(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """Without ``instance`` the type is the instance id, so it must be a valid one."""
+        type_ = info.data.get("type")
+        if value is None and isinstance(type_, str) and not _INSTANCE.match(type_):
+            raise ValueError(
+                f"required because the type {type_!r} is not a valid instance id (lowercase "
+                "letters, digits, '.', '_' and '-', at most 64 characters)"
+            )
+        return value
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _options_tree(cls, value: Any) -> Any:
+        return _drop_unset_env(value) if isinstance(value, dict) else value
+
+    @field_validator("options")
+    @classmethod
+    def _airflow_takes_no_options(cls, value: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
+        if value and info.data.get("type") == DEFAULT_ORCHESTRATOR:
+            raise ValueError(
+                "the airflow orchestrator takes no options: its settings are the top-level 'airflow:' section"
+            )
+        return value
+
+    @property
+    def instance_id(self) -> str:
+        """The instance id stored on incidents: ``instance``, else the type."""
+        return self.instance or self.type
+
+
+class RbacRule(_Model):
+    """One allow rule of the standalone host (``serve.auth.rules``); any matching rule allows.
+
+    ``principals``: ``user:<name>``, ``group:<name>``, ``authenticated`` or ``*``.
+    ``pipelines``: fnmatch patterns of pipeline (DAG) ids; a ``!`` prefix excludes.
+    """
+
+    principals: list[str]
+    pipelines: list[str] = Field(default_factory=lambda: ["*"])
+    actions: list[RbacAction] = Field(default_factory=lambda: ["read"])
+
+    @field_validator("principals", "pipelines", "actions", mode="before")
+    @classmethod
+    def _listify(cls, value: Any) -> Any:
+        return _as_list(value)
+
+    @field_validator("principals")
+    @classmethod
+    def _principal_format(cls, value: list[str]) -> list[str]:
+        principals = [item.strip() for item in value]
+        for principal in principals:
+            if not _PRINCIPAL.match(principal):
+                raise ValueError(
+                    f"invalid principal {principal!r}: expected 'user:<name>', 'group:<name>', "
+                    "'authenticated' or '*'"
+                )
+        return principals
+
+    @field_validator("pipelines")
+    @classmethod
+    def _pattern_text(cls, value: list[str]) -> list[str]:
+        patterns = [item.strip() for item in value]
+        if any(pattern in ("", "!") for pattern in patterns):
+            raise ValueError("pipeline patterns must not be empty")
+        return patterns
+
+
+def _token_groups(where: str, value: Any) -> list[str]:
+    if value is None:
+        return []
+    items = _as_list(value)
+    if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+        raise ValueError(f"{where}: groups must be a list of strings")
+    return [item.strip() for item in items if not isinstance(item, _UnsetEnv) and item.strip()]
+
+
+def _token_entry(index: int, item: Any) -> dict[str, Any] | None:
+    """One ``serve.auth.tokens`` entry as ``{name, sha256, groups}``; ``None`` when unset here."""
+    where = f"item {index}"
+    if not isinstance(item, Mapping):
+        raise ValueError(f"{where}: expected a mapping with name, sha256 and groups")
+    unknown = sorted(str(key) for key in item if key not in _TOKEN_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{where}: unknown key(s) {', '.join(unknown)}; a token is configured by the sha256 hex "
+            "digest of its value only (name, sha256, groups), never by the token itself"
+        )
+    digest = item.get("sha256")
+    if isinstance(digest, _UnsetEnv):
+        return None  # sha256: ${VAR} with VAR unset: this token is not configured here
+    if not isinstance(digest, str) or not _SHA256_HEX.match(digest.strip()):
+        raise ValueError(f"{where}: sha256 must be the 64-character hex sha256 digest of the token")
+    name = item.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{where}: name must be a non-empty string")
+    return {
+        "name": name.strip(),
+        "sha256": digest.strip().lower(),
+        "groups": _token_groups(where, item.get("groups")),
+    }
+
+
+class ServeAuthConfig(_Model):
+    """Authentication and permissions of ``dag-healer serve`` (``serve.auth``).
+
+    Backends: ``dev`` (a fixed local user, loopback only), ``token`` (bearer tokens listed by
+    their sha256 hex digest only), ``trusted_header`` (a user header set by a proxy listed in
+    ``trusted_proxies``) and ``alb_oidc`` (the ALB-signed ``x-amzn-oidc-data`` JWT).
+    """
+
+    backend: ServeAuthBackend = "dev"
+    tokens: list[dict[str, Any]] = Field(default_factory=list)  # [{name, sha256, groups}] (hashes only)
+    user_header: str = "X-Forwarded-User"
+    groups_header: str | None = "X-Forwarded-Groups"
+    trusted_proxies: list[str] = Field(default_factory=list)  # CIDRs (required for trusted_header)
+    alb_arn: str | None = None
+    region: str | None = None
+    user_claim: str = "email"
+    groups_claim: str | None = None
+    rules: list[RbacRule] = Field(default_factory=list)
+
+    @field_validator("tokens", mode="before")
+    @classmethod
+    def _token_hashes(cls, value: Any) -> Any:
+        """Accept ``{name, sha256, groups}`` entries: hashes only, a hash listed once."""
+        if not isinstance(value, list):
+            return value
+        tokens: list[dict[str, Any]] = []
+        owners: dict[str, str] = {}
+        for index, item in enumerate(value):
+            token = _token_entry(index, item)
+            if token is None:
+                continue
+            if token["sha256"] in owners:
+                raise ValueError(
+                    f"tokens {owners[token['sha256']]!r} and {token['name']!r} have the same sha256"
+                )
+            owners[token["sha256"]] = token["name"]
+            tokens.append(token)
+        return tokens
+
+    @field_validator("user_header", mode="before")
+    @classmethod
+    def _user_header_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip() or "X-Forwarded-User"
+        return value
+
+    @field_validator("groups_header", "alb_arn", "region", "groups_claim", mode="before")
+    @classmethod
+    def _optional_text(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator("user_header", "groups_header")
+    @classmethod
+    def _header_name(cls, value: str | None) -> str | None:
+        if value is not None and not _HEADER_NAME.match(value):
+            raise ValueError(f"{value!r} is not an HTTP header name")
+        return value
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def _listify(cls, value: Any) -> Any:
+        return _as_list(value)
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _networks(cls, value: list[str]) -> list[str]:
+        """Each item is an IP address or a CIDR, normalised (``10.0.0.7`` -> ``10.0.0.7/32``)."""
+        networks: list[str] = []
+        for item in value:
+            try:
+                networks.append(str(ipaddress.ip_network(item.strip(), strict=False)))
+            except ValueError:
+                raise ValueError(f"{item!r} is not an IP address or a CIDR such as 10.0.0.0/8") from None
+        return networks
+
+    @field_validator("alb_arn")
+    @classmethod
+    def _alb_arn_format(cls, value: str | None) -> str | None:
+        if value is not None and not _ALB_ARN.match(value):
+            raise ValueError(
+                "expected an Application Load Balancer ARN "
+                "(arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>)"
+            )
+        return value
+
+    @field_validator("region")
+    @classmethod
+    def _region_format(cls, value: str | None) -> str | None:
+        if value is not None and not _AWS_REGION.match(value):
+            raise ValueError("expected an AWS region such as eu-west-1")
+        return value
+
+    @field_validator("user_claim", mode="before")
+    @classmethod
+    def _user_claim_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip() or "email"
+        return value
+
+    @model_validator(mode="after")
+    def _backend_requirements(self) -> ServeAuthConfig:
+        """``trusted_header`` needs ``trusted_proxies``; ``alb_oidc`` needs ``alb_arn`` (region from it)."""
+        if self.backend == "trusted_header" and not self.trusted_proxies:
+            raise ValueError(
+                "the trusted_header backend requires trusted_proxies (the CIDRs of the proxies that "
+                "set the user header)"
+            )
+        if self.backend == "alb_oidc":
+            match = _ALB_ARN.match(self.alb_arn or "")
+            if match is None:
+                raise ValueError(
+                    "the alb_oidc backend requires alb_arn (the load balancer that signs the users' JWT)"
+                )
+            if self.region is None:
+                self.region = match.group("region")
+            elif self.region != match.group("region"):
+                raise ValueError(
+                    f"region {self.region!r} is not the region of alb_arn ({match.group('region')!r})"
+                )
+        return self
+
+
+class ServeConfig(_Model):
+    """The standalone host ``dag-healer serve`` (``serve:``; ignored inside Airflow)."""
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=8090, ge=1, le=65535)
+    public_url: str | None = None
+    auth: ServeAuthConfig = Field(default_factory=ServeAuthConfig)
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def _host_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip() or "127.0.0.1"
+        return value
+
+    @field_validator("public_url", mode="before")
+    @classmethod
+    def _public_url_text(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator("public_url")
+    @classmethod
+    def _absolute_url(cls, value: str | None) -> str | None:
+        """An absolute http(s) URL, without the trailing slash."""
+        if value is None:
+            return None
+        url = value.rstrip("/")
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("expected an absolute http(s) URL such as https://healer.example.com")
+        return url
+
+
+#: Sections that dumps leave out while they hold their defaults (phase-5 dumps stay identical).
+_OPTIONAL_SECTIONS: tuple[str, ...] = ("orchestrator", "serve")
+
+
 class HealerConfig(_Model):
     """The whole ``healer.yaml``."""
 
     version: int = SUPPORTED_VERSION
     repo: RepoConfig = Field(default_factory=RepoConfig)
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     airflow: AirflowConfig = Field(default_factory=AirflowConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     contracts: ContractsConfig = Field(default_factory=ContractsConfig)
@@ -404,12 +837,14 @@ class HealerConfig(_Model):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     masking: MaskingConfig = Field(default_factory=MaskingConfig)
+    serve: ServeConfig = Field(default_factory=ServeConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
     debug: bool = False
 
     _source_path: Path | None = PrivateAttr(default=None)
     _env_refs: frozenset[str] = PrivateAttr(default_factory=frozenset)
+    _secret_options: tuple[str, ...] = PrivateAttr(default=())
 
     @classmethod
     def _preprocess(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -423,6 +858,20 @@ class HealerConfig(_Model):
         if value != SUPPORTED_VERSION:
             raise ValueError(f"unsupported config version {value}; expected {SUPPORTED_VERSION}")
         return value
+
+    @model_serializer(mode="wrap")
+    def _leave_out_default_sections(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Dump as usual, without ``orchestrator``/``serve`` while they hold their defaults.
+
+        An existing ``healer.yaml`` therefore dumps exactly as before (``dag-healer check``
+        output, content digests); a section that differs from its default is always shown.
+        """
+        data = handler(self)
+        if isinstance(data, dict):
+            for name in _OPTIONAL_SECTIONS:
+                if name in data and _holds_default(self, name):
+                    del data[name]
+        return data
 
     # ------------------------------------------------------------------ paths
     @property
@@ -493,21 +942,40 @@ class HealerConfig(_Model):
         """True if the loaded value at ``field_path`` (dotted) came from ``${...}``."""
         return field_path in self._env_refs
 
+    @property
+    def secret_fields(self) -> tuple[str, ...]:
+        """Dotted paths of this configuration's secret fields.
+
+        The fixed secret fields plus ``orchestrator.options.<name>`` for each secret option of
+        the configured adapter, found when the configuration was loaded.
+        """
+        return tuple(dict.fromkeys((*_BASE_SECRET_FIELDS, *self._secret_options)))
+
     def secret_literals(self) -> list[str]:
         """Dotted paths of secret fields set to literal values instead of ``${ENV}`` references."""
-        literals = [path for path in SECRET_FIELDS if _get_path(self, path) and path not in self._env_refs]
+        literals = [
+            path for path in self.secret_fields if _get_path(self, path) and path not in self._env_refs
+        ]
         url = self.store.url
         if url and "store.url" not in self._env_refs and _url_has_password(url):
             literals.append("store.url")
         return literals
 
 
-def _get_path(model: BaseModel, dotted: str) -> Any:
+def _holds_default(cfg: BaseModel, name: str) -> bool:
+    """True when the section ``name`` of ``cfg`` equals its field default."""
+    info = type(cfg).model_fields.get(name)
+    if info is None:
+        return False
+    return bool(getattr(cfg, name) == info.get_default(call_default_factory=True))
+
+
+def _get_path(model: Any, dotted: str) -> Any:
     value: Any = model
     for part in dotted.split("."):
         if value is None:
             return None
-        value = getattr(value, part, None)
+        value = value.get(part) if isinstance(value, Mapping) else getattr(value, part, None)
     return value
 
 
@@ -516,6 +984,33 @@ def _url_has_password(url: str) -> bool:
         return bool(urlsplit(url).password)
     except ValueError:
         return False
+
+
+def _register_secret_fields(paths: Iterable[str]) -> None:
+    """Add ``paths`` to :data:`SECRET_FIELDS` (idempotent; the first-seen order is kept)."""
+    global SECRET_FIELDS
+    with _secret_fields_lock:
+        extra = tuple(path for path in dict.fromkeys(paths) if path not in SECRET_FIELDS)
+        if extra:
+            SECRET_FIELDS = (*SECRET_FIELDS, *extra)
+
+
+def _orchestrator_secret_options(section: OrchestratorConfig) -> tuple[str, ...]:
+    """``orchestrator.options.<name>`` of each secret option of the configured adapter.
+
+    The adapter factory is imported only when ``options`` are set, so loading a configuration
+    without them (every Airflow one) imports nothing new. A factory that cannot be loaded adds
+    nothing here; building the adapter reports why.
+    """
+    if not section.options:
+        return ()
+    try:
+        from dag_healer.orchestrators import registry
+
+        return tuple(registry.secret_option_paths(registry.load_factory(section.type)))
+    except Exception as exc:  # an adapter that is not installed must not make healer.yaml unreadable
+        logger.debug("dag-healer: no secret options known for orchestrator type %r: %s", section.type, exc)
+        return ()
 
 
 # --------------------------------------------------------------------------- #
@@ -543,7 +1038,9 @@ def config_from_mapping(
 ) -> HealerConfig:
     """Build a :class:`HealerConfig` from raw (not yet interpolated) YAML data.
 
-    ``repo.path`` is resolved against ``base_dir`` when relative.
+    ``repo.path`` is resolved against ``base_dir`` when relative. The secret options of the
+    configured orchestrator adapter are added to :data:`SECRET_FIELDS` and to the
+    configuration's :attr:`~HealerConfig.secret_fields`.
     """
     refs: set[str] = set()
     interpolated = _interpolate_tree(dict(data), "", refs, env)
@@ -553,6 +1050,9 @@ def config_from_mapping(
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(exc, source)) from None
     config._env_refs = frozenset(refs)
+    config._secret_options = _orchestrator_secret_options(config.orchestrator)
+    if config._secret_options:
+        _register_secret_fields(config._secret_options)
     config.source_path = source
     if base_dir is not None:
         repo_path = Path(config.repo.path).expanduser()
@@ -652,7 +1152,10 @@ def _yaml_str(value: str | Path | None) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
-_TEMPLATE = """\
+# The templates are str.format strings: literal braces are doubled. The Airflow template is the
+# phase-5 one plus the commented ``orchestrator:`` block; both share the sections between
+# ``classification:`` and ``masking:``.
+_AIRFLOW_HEAD = """\
 # dag-healer configuration (healer.yaml), generated by `dag-healer init`.
 # Review it and commit it next to your DAGs.
 #
@@ -673,6 +1176,13 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["src/", "dags/"]   # the repair agent may only edit files under these prefixes
   pytest_timeout: 600            # seconds per pytest run
+
+# Orchestrator (optional). Without this section dag-healer watches Airflow, configured by
+# the airflow: section below; `dag-healer orchestrators list` shows the installed types.
+# orchestrator:
+#   type: airflow                # airflow | stepfunctions | fake | "package.module:factory"
+#   instance: null               # stored on every incident (default: the type); unique per store
+#   options: {{}}                  # adapter settings; Airflow takes none (they are in airflow:)
 
 airflow:
   api_url: "${{HEALER_API_URL:-http://localhost:8080}}"   # Airflow api-server (REST API v2)
@@ -695,6 +1205,9 @@ contracts:
 #     my_task: {{type: csv, path: data/incoming/input.csv}}
 {datasets_block}
 
+"""
+
+_SHARED_SECTIONS = """\
 classification:
   min_confidence: 0.75           # below this the incident waits for a human decision
 
@@ -736,6 +1249,9 @@ masking:
   hook: null                     # "package.module:function", called as function(df, context) -> df
   sample_rows: 5
 
+"""
+
+_AIRFLOW_TAIL = """\
 store:
   url: "${{HEALER_DATABASE_URL}}"  # null: SQLite under $HEALER_HOME (single process only)
 
@@ -745,6 +1261,107 @@ ingest:
 
 debug: "${{HEALER_DEBUG:-false}}"
 """
+
+_TEMPLATE = _AIRFLOW_HEAD + _SHARED_SECTIONS + _AIRFLOW_TAIL
+
+# AWS Step Functions (section 9.14 of the design). The ARNs, the region, the instance and the
+# pipeline are examples to replace.
+_SFN_HEAD = """\
+# dag-healer configuration (healer.yaml) for AWS Step Functions, generated by `dag-healer init`.
+# Review it, replace the example ARNs, region and pipeline ids, and commit it next to your
+# state machines and Lambda functions.
+#
+# - Relative paths are resolved against the directory of this file.
+# - Secrets must be ${{ENV_VAR}} references, never literal values (`dag-healer doctor`
+#   flags literals). ${{VAR:-default}} provides a fallback. A value that is exactly
+#   ${{VAR}} becomes null (or the field default) when VAR is unset or empty.
+# - Top-level keys starting with "x-" are ignored: use them for your own notes.
+version: 1
+
+# Repository that contains your state machine definitions and Lambda code. dags_dir and
+# tests_dir are relative to repo.path; tests_dir null means a minimal tests/ folder is
+# created when a fix needs one.
+repo:
+  path: {repo_path}
+  base_branch: main              # branch that fixes are based on
+  dags_dir: {dags_dir}
+  tests_dir: {tests_dir}
+  test_command: "python -m pytest -q"
+  allowed_paths: ["functions/", "src/"]   # the repair agent edits files under these prefixes only
+  pytest_timeout: 600            # seconds per pytest run
+
+# One orchestrator instance is one AWS account and region (`dag-healer orchestrators list`).
+orchestrator:
+  type: stepfunctions
+  instance: sfn-prod-euw1        # stored on every incident; unique per store
+  options:
+    region: eu-west-1
+    profile: null                # local development; null: the default boto3 credential chain
+    role_arn: null               # optional AssumeRole (+ role_external_id, a secret option)
+    endpoint_url: null           # VPC endpoint / LocalStack (not Step Functions Local)
+    template: template.yaml      # SAM template that maps Task states to Lambda code
+    pipelines:                   # pipeline id -> state machine; contracts and datasets use the id
+      sales_daily_etl:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:sales-daily-etl-AbC123
+        logical_id: SalesDailyEtlStateMachine
+    discover: false              # true: also watch every STANDARD state machine (id = its name)
+    statuses: [FAILED, TIMED_OUT]   # add ABORTED to report executions a person stopped
+    lookback_hours: 24
+    history_max_events: 5000
+    max_histories_per_poll: 50
+    queue_url: "${{HEALER_SFN_QUEUE_URL}}"   # SQS queue of the EventBridge rule (modes: queue)
+    log_lookup: true             # add the Lambda's CloudWatch log excerpt to the evidence
+    retry_strategy: redrive      # redrive | disabled
+    rerun: false                 # true: also offer a new execution with the same input
+    code_map: {{}}                 # {{FunctionLogicalId: {{path: functions/x, handler: app.handler}}}}
+    links: {{}}                    # overrides of the AWS console link templates
+
+monitor:
+  dags: ["*"]                    # pipeline ids (fnmatch; "!" excludes); "pipelines" is an alias
+  modes: [poll, queue]           # poll: ListExecutions; queue: SQS; push: /events/eventbridge
+  poll_interval_seconds: 60
+  trigger: final_failure         # every_failure is not supported (retries are not visible)
+
+contracts:
+  dir: healer/contracts          # data contracts, relative to repo.path
+
+# Dataset locators per pipeline and state (`init` fills in the ones it discovered); a path
+# may be an s3:// URI. Add the inputs it could not resolve by hand:
+# datasets:
+#   sales_daily_etl:
+#     TransformSales: {{type: csv, path: "s3://acme-landing/incoming/sales.csv"}}
+{datasets_block}
+
+"""
+
+_SFN_TAIL = """\
+# Standalone host (`dag-healer serve`): the Healer API and UI behind your load balancer.
+serve:
+  host: 127.0.0.1                # 0.0.0.0 in a container behind the load balancer
+  port: 8090
+  public_url: null               # e.g. https://healer.example.com; HEALER_PUBLIC_URL overrides it
+  auth:
+    backend: alb_oidc            # dev | token | trusted_header | alb_oidc
+    alb_arn: arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/healer/abc
+    region: eu-west-1
+    user_claim: email
+    groups_claim: "cognito:groups"
+    rules:                       # any matching rule allows; no match answers 403
+      - {{principals: ["group:data-eng"], pipelines: ["*"], actions: [read, act, approve_contract]}}
+      - {{principals: ["authenticated"], pipelines: ["sales_*"], actions: [read]}}
+
+store:
+  url: "${{HEALER_DATABASE_URL}}"  # null: SQLite under $HEALER_HOME (single process only)
+
+ingest:
+  token: "${{HEALER_INGEST_TOKEN}}"   # X-Healer-Token of POST /events/eventbridge (API destination)
+
+debug: "${{HEALER_DEBUG:-false}}"
+"""
+
+_SFN_TEMPLATE = _SFN_HEAD + _SHARED_SECTIONS + _SFN_TAIL
+
+_TEMPLATES: Mapping[str, str] = types.MappingProxyType({"airflow": _TEMPLATE, "stepfunctions": _SFN_TEMPLATE})
 
 
 _PLAIN_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -788,13 +1405,23 @@ def default_config_yaml(
     dags_dir: str = "dags",
     tests_dir: str | None = None,
     datasets: Mapping[str, Mapping[str, DatasetLocator | Mapping[str, Any]]] | None = None,
+    orchestrator: str = "airflow",
 ) -> str:
     """Return a commented ``healer.yaml`` template (secrets only as ``${ENV}`` references).
 
-    ``datasets`` (dag_id -> task_id -> locator) pre-fills the ``datasets`` section; the
-    default leaves it empty.
+    ``orchestrator`` picks the template (:data:`TEMPLATE_ORCHESTRATORS`): ``"airflow"`` (the
+    phase-5 template plus a commented ``orchestrator:`` block) or ``"stepfunctions"`` (the
+    AWS Step Functions template of section 9.14 of the design, whose ARNs, region and
+    pipeline ids are examples to replace). ``datasets`` (pipeline/DAG id -> step/task id ->
+    locator) pre-fills the ``datasets`` section; the default leaves it empty.
     """
-    return _TEMPLATE.format(
+    template = _TEMPLATES.get(orchestrator)
+    if template is None:
+        raise ValueError(
+            f"no healer.yaml template for orchestrator {orchestrator!r}; "
+            f"expected one of: {', '.join(TEMPLATE_ORCHESTRATORS)}"
+        )
+    return template.format(
         repo_path=_yaml_str(repo_path),
         dags_dir=_yaml_str(dags_dir),
         tests_dir=_yaml_str(tests_dir),
@@ -803,6 +1430,10 @@ def default_config_yaml(
 
 
 __all__ = [
+    "INSTANCE_PATTERN",
+    "MODE_KINDS",
+    "MONITOR_MODES",
+    "TEMPLATE_ORCHESTRATORS",
     "AirflowConfig",
     "ClassificationConfig",
     "ConfigError",
@@ -816,7 +1447,11 @@ __all__ = [
     "MaskingConfig",
     "MonitorConfig",
     "NotifyConfig",
+    "OrchestratorConfig",
+    "RbacRule",
     "RepoConfig",
+    "ServeAuthConfig",
+    "ServeConfig",
     "StoreConfig",
     "config_candidates",
     "config_from_mapping",

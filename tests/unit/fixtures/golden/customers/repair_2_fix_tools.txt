@@ -1,0 +1,99 @@
+## list_files(path: 'str' = '.', pattern: 'str' = '*') -> 'str'
+
+List the files of the repository recursively, as paths relative to the repository root.
+
+Caches, virtualenvs and .git are skipped; at most 300 paths are returned.
+
+Args:
+    path: Folder (or single file) to list, relative to the repository root, for example "src/etl".
+        Defaults to the root ".".
+    pattern: Shell-style wildcard matched against the file name or the relative path, for example
+        "*.py" or "src/etl/*.py". Defaults to "*".
+
+Returns:
+    One relative path per line, or a message starting with "Error:".
+
+## read_file(path: 'str', start_line: 'int' = 1, end_line: 'int' = 400) -> 'str'
+
+Read a text file of the repository; every returned line is prefixed with its number and "| ".
+
+The prefix is not part of the file: never copy it into replace_in_file. At most 400 lines are
+returned per call. Data files (.csv, .parquet, ...), data/**, fixtures/**, .env* and healer.yaml
+cannot be read: use the masked sample from the prompt instead.
+
+Args:
+    path: File path relative to the repository root, for example "src/etl/customers.py".
+    start_line: First line to return (1-based). Defaults to 1.
+    end_line: Last line to return (inclusive). Defaults to 400.
+
+Returns:
+    A header with the line range and the total line count followed by the numbered lines, or a
+    message starting with "Error:".
+
+## search(pattern: 'str', path: 'str' = '.') -> 'str'
+
+Search the repository's text files for a Python regular expression, line by line.
+
+Data files and denied paths are skipped; at most 100 matches are returned.
+
+Args:
+    pattern: Python regular expression, for example "def parse_signup_date" or "strptime\(".
+    path: Folder or file to search, relative to the repository root. Defaults to the root ".".
+
+Returns:
+    One match per line as "path:line: text", or a message starting with "Error:" (for example for an
+    invalid regular expression).
+
+## write_file(path: 'str', content: 'str') -> 'str'
+
+Create a text file or overwrite it completely with the given content.
+
+Allowed only under src/, dags/ (this is the fix phase: tests/ and every test file are read-only);
+healer.yaml, healer/**, .github/**, .git/**, lockfiles, dependency manifests (requirements*.txt,
+pyproject.toml, setup.py, setup.cfg), .env*, data/**, fixtures/** and data files (.csv, .parquet,
+.jsonl, ...) are always denied. Parent folders are created. An existing file keeps its line endings
+(CRLF or LF). Prefer replace_in_file for small changes to existing files.
+
+Args:
+    path: File path relative to the repository root. Absolute paths and ".." are rejected.
+    content: The complete new content of the file.
+
+Returns:
+    "OK: ..." on success, or a message starting with "Error:" explaining why the write was refused.
+
+## replace_in_file(path: 'str', old: 'str', new: 'str') -> 'str'
+
+Replace exactly one occurrence of a text fragment in an existing file.
+
+The old text must occur exactly once: copy it verbatim from read_file, without the line-number
+prefixes, and include surrounding lines to make it unique. Allowed only under src/, dags/ (this is
+the fix phase: tests/ and every test file are read-only); healer.yaml, healer/**, .github/**,
+.git/**, lockfiles, dependency manifests (requirements*.txt, pyproject.toml, setup.py, setup.cfg),
+.env*, data/**, fixtures/** and data files (.csv, .parquet, .jsonl, ...) are always denied. The file
+keeps its line endings.
+
+Args:
+    path: File path relative to the repository root.
+    old: The exact text to replace; it must occur exactly once in the file.
+    new: The replacement text.
+
+Returns:
+    "OK: ..." on success, or a message starting with "Error:" (text not found, found several times,
+    or path refused).
+
+## run_tests(paths: 'list[str] | None' = None) -> 'str'
+
+Run pytest from the repository root and return a summary line plus the tail of the output.
+
+Without paths it runs the tests folder tests/ (or the whole suite while that folder does not exist).
+Each run is limited to 600 seconds and at most 20 runs are allowed per session. The output is
+masked.
+
+Args:
+    paths: Test files, folders or node ids relative to the repository root, for example
+        ["tests/test_customers.py"] or ["tests/test_customers.py::test_parse"]. Defaults to the
+        tests folder.
+
+Returns:
+    "exit code N: X passed, Y failed, ..." followed by the pytest output tail, or a message starting
+    with "Error:".

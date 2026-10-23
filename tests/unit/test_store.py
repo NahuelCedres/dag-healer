@@ -85,7 +85,8 @@ def test_init_db_creates_tables_and_schema_version_idempotently(db_url: str) -> 
         "healer_schema_version",
     } <= tables
     with Session(engine) as s:
-        assert s.scalars(select(SchemaVersion.version)).all() == [models.SCHEMA_VERSION]
+        # A new store records every schema version (section 6.4 of the orchestrator design).
+        assert s.scalars(select(SchemaVersion.version)).all() == list(range(1, models.SCHEMA_VERSION + 1))
 
 
 def test_in_memory_sqlite_is_shared_between_sessions() -> None:

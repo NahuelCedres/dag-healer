@@ -1,0 +1,203 @@
+Classify the failed Airflow task described below.
+
+<incident>
+{
+ "incident_id": "00000000000000000000000000000002",
+ "dag_id": "customers_sync",
+ "run_id": "manual__2026-10-18T09:00:00+00:00",
+ "task_id": "transform",
+ "map_index": -1,
+ "try_number": 1,
+ "error_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2234, in _execute_task\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 36, in transform_customers\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py\", line 5084, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1520, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1578, in apply_standard\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py\", line 1020, in _map_values\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py\", line 1770, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py\", line 2745, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py\", line 1715, in map_array\n  File \"/opt/airflow/pandas/_libs/lib.pyx\", line 3071, in pandas._libs.lib.map_infer\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 19, in parse_signup_date\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 789, in _strptime_datetime\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 558, in _strptime\nValueError: unconverted data remains: T08:30:00Z",
+ "exception_type": "ValueError",
+ "exception_message": "unconverted data remains: T08:30:00Z",
+ "traceback_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2234, in _execute_task\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 36, in transform_customers\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py\", line 5084, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1520, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1578, in apply_standard\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py\", line 1020, in _map_values\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py\", line 1770, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py\", line 2745, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py\", line 1715, in map_array\n  File \"/opt/airflow/pandas/_libs/lib.pyx\", line 3071, in pandas._libs.lib.map_infer\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 19, in parse_signup_date\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 789, in _strptime_datetime\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 558, in _strptime\nValueError: unconverted data remains: T08:30:00Z",
+ "repo_frames": [
+  {
+   "file": "src/etl/customers.py",
+   "line": 36,
+   "function": "transform_customers"
+  },
+  {
+   "file": "src/etl/customers.py",
+   "line": 19,
+   "function": "parse_signup_date"
+  }
+ ],
+ "log_excerpt": "Log message source details\n/opt/airflow/logs/dag_id=customers_sync/run_id=manual__2026-10-17T18:48:46.093857+00:00/task_id=transform/attempt=1.log\n[2026-10-17T18:48:52.483872Z] INFO - Pre Execute\n[2026-10-17T18:48:52.503600Z] INFO - DAG bundles loaded: dags-folder\n[2026-10-17T18:48:52.507928Z] INFO - Filling up the DagBag from /opt/airflow/repo/dags/customers_sync.py\n[2026-10-17T18:48:53.043437Z] INFO - Worker startup parse complete\n[2026-10-17T18:48:53.070047Z] INFO - reading /opt/airflow/repo/data/processed/customers_raw.csv\n[2026-10-17T18:48:53.084907Z] ERROR - Task failed with exception\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2234, in _execute_task\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 197, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 36, in transform_customers\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/series.py\", line 5084, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1520, in apply\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/apply.py\", line 1578, in apply_standard\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/base.py\", line 1020, in _map_values\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/arrow/array.py\", line 1770, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/arrays/base.py\", line 2745, in map\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/algorithms.py\", line 1715, in map_array\n  File \"/opt/airflow/pandas/_libs/lib.pyx\", line 3071, in pandas._libs.lib.map_infer\n  File \"/opt/airflow/repo/src/etl/customers.py\", line 19, in parse_signup_date\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 789, in _strptime_datetime\n  File \"/usr/python/lib/python3.13/_strptime.py\", line 558, in _strptime\nValueError: unconverted data remains: T08:30:00Z\n[2026-10-17T18:48:53.085307Z] INFO - Post Execute\n[2026-10-17T18:48:53.135488Z] WARNING - dag-healer: failure report rejected with HTTP 404",
+ "dag_file": "dags/customers_sync.py",
+ "dag_source": "# customers_sync - CRM export -> customers dim\n# maintained by crm-team\nimport os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom datetime import datetime\n\nfrom airflow.sdk import DAG\nfrom airflow.providers.standard.operators.python import PythonOperator\n\nfrom src.etl.customers import extract_customers, transform_customers, load_customers\n\n\nwith DAG(\n    dag_id=\"customers_sync\",\n    default_args={\"owner\": \"crm-team\", \"retries\": 0},\n    schedule=None,\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n    doc_md=\"Syncs the CRM customers export into the customers dim. See README.\",\n):\n    t1 = PythonOperator(task_id=\"extract\", python_callable=extract_customers)\n\n    t2 = PythonOperator(task_id=\"transform\", python_callable=transform_customers)\n\n    t3 = PythonOperator(\n        task_id=\"load\",\n        python_callable=load_customers,\n        op_kwargs={\"target\": \"customers_dim\"},\n    )\n\n    t1 >> t2 >> t3\n",
+ "task": {
+  "task_id": "transform",
+  "operator": "PythonOperator",
+  "callable_name": "transform_customers",
+  "callable_module": "src.etl.customers",
+  "callable_file": "src/etl/customers.py",
+  "lineno": 25
+ },
+ "code_snippets": {
+  "dags/customers_sync.py": "# customers_sync - CRM export -> customers dim\n# maintained by crm-team\nimport os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom datetime import datetime\n\nfrom airflow.sdk import DAG\nfrom airflow.providers.standard.operators.python import PythonOperator\n\nfrom src.etl.customers import extract_customers, transform_customers, load_customers\n\n\nwith DAG(\n    dag_id=\"customers_sync\",\n    default_args={\"owner\": \"crm-team\", \"retries\": 0},\n    schedule=None,\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n    doc_md=\"Syncs the CRM customers export into the customers dim. See README.\",\n):\n    t1 = PythonOperator(task_id=\"extract\", python_callable=extract_customers)\n\n    t2 = PythonOperator(task_id=\"transform\", python_callable=transform_customers)\n\n    t3 = PythonOperator(\n        task_id=\"load\",\n        python_callable=load_customers,\n        op_kwargs={\"target\": \"customers_dim\"},\n    )\n\n    t1 >> t2 >> t3\n",
+  "src/etl/customers.py": "\"\"\"CRM customers sync: CRM export -> customers dim.\"\"\"\nimport re\nfrom datetime import datetime\n\nfrom src.etl.common import read_csv, read_output, write_output\n\nUS = \"US\"\n\n\ndef extract_customers(**kwargs):\n    df = read_csv(\"data/incoming/customers.csv\", dtype=str)\n    df = df.drop_duplicates(\"customer_id\", keep=\"last\")\n    write_output(df, \"customers_raw\")\n    return len(df)\n\n\ndef parse_signup_date(value):\n    \"\"\"Parse the signup date sent by the CRM export (always YYYY-MM-DD).\"\"\"\n    return datetime.strptime(value.strip(), \"%Y-%m-%d\").date()\n\n\ndef normalize_phone(value):\n    if not isinstance(value, str) or not value.strip():\n        return None\n    digits = re.sub(r\"\\D\", \"\", value)\n    if len(digits) == 10:  # US/CA number without the country code\n        digits = \"1\" + digits\n    return \"+\" + digits\n\n\ndef transform_customers(**kwargs):\n    df = read_output(\"customers_raw\", dtype=str)\n    df[\"email\"] = df[\"email\"].str.strip().str.lower()\n    df[\"phone\"] = df[\"phone\"].apply(normalize_phone)\n    df[\"country\"] = df[\"country\"].str.strip().str.upper()\n    df[\"signup_date\"] = df[\"signup_date\"].apply(parse_signup_date)\n    df[\"signup_month\"] = df[\"signup_date\"].apply(lambda d: d.strftime(\"%Y-%m\"))\n    df[\"is_domestic\"] = df[\"country\"] == US\n    write_output(df, \"customers_clean\")\n    return len(df)\n\n\ndef load_customers(target=\"customers_dim\", **kwargs):\n    df = read_output(\"customers_clean\", dtype=str)\n    cols = [\n        \"customer_id\",\n        \"full_name\",\n        \"email\",\n        \"phone\",\n        \"country\",\n        \"signup_date\",\n        \"signup_month\",\n        \"is_domestic\",\n    ]\n    write_output(df[cols], target)\n    return len(df)\n"
+ },
+ "contract": {
+  "version": 1,
+  "dag_id": "customers_sync",
+  "status": "approved",
+  "review": "required",
+  "approved_by": "data-lead",
+  "approved_at": "2026-10-18T09:00:00+00:00",
+  "source_hash": "f01a683db4d36f15d8ab4c145e10fc44c8bb5ad73886eaa91104a6d8be2a33b3",
+  "inferred_from": [
+   "data/incoming/customers.csv (25 rows)"
+  ],
+  "notes": "Inferred automatically from sample data. Review dtypes, nullability, numeric ranges (inferred with a 10x headroom) and row-count bands before approving.",
+  "datasets": [
+   {
+    "name": "customers",
+    "task_id": "extract",
+    "locator": {
+     "type": "csv",
+     "path": "data/incoming/customers.csv"
+    },
+    "row_count": {
+     "min": 12,
+     "max": 85
+    },
+    "allow_extra_columns": true,
+    "columns": [
+     {
+      "name": "customer_id",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "full_name",
+      "dtype": "string",
+      "nullable": false,
+      "pii": true
+     },
+     {
+      "name": "email",
+      "dtype": "string",
+      "nullable": false,
+      "pii": true
+     },
+     {
+      "name": "phone",
+      "dtype": "string",
+      "nullable": false,
+      "pii": true
+     },
+     {
+      "name": "country",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "signup_date",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false,
+      "note": "looks like a date (YYYY-MM-DD); inferred as 'string' so other date/time formats are not rejected. Change dtype to 'date' or 'datetime' to require ISO-8601 parseable values."
+     }
+    ]
+   }
+  ]
+ },
+ "contract_status": "approved",
+ "violations": [],
+ "draft_violations": [],
+ "sample_dataset": "customers",
+ "masked_sample": {
+  "dataset": "customers",
+  "columns": [
+   "customer_id",
+   "full_name",
+   "email",
+   "phone",
+   "country",
+   "signup_date"
+  ],
+  "rows": [
+   {
+    "customer_id": "CUS-1001",
+    "full_name": "h:cf69f11c45",
+    "email": "h:c6fb5d88d5",
+    "phone": "h:254376e6dd",
+    "country": "US",
+    "signup_date": "2025-01-14"
+   },
+   {
+    "customer_id": "CUS-1002",
+    "full_name": "h:c269336eda",
+    "email": "h:a8e4d0db67",
+    "phone": "h:d7d83dda0f",
+    "country": "US",
+    "signup_date": "2025-02-03"
+   },
+   {
+    "customer_id": "CUS-1003",
+    "full_name": "h:0aba4dce56",
+    "email": "h:9219c065c9",
+    "phone": "h:31508d7fa0",
+    "country": "US",
+    "signup_date": "2025-02-21"
+   },
+   {
+    "customer_id": "CUS-1004",
+    "full_name": "h:8af4c50f05",
+    "email": "h:ea3c235946",
+    "phone": "h:c9bc9af038",
+    "country": "CA",
+    "signup_date": "2025-03-09"
+   },
+   {
+    "customer_id": "CUS-1005",
+    "full_name": "h:13336026ef",
+    "email": "h:8cd2c7e2ce",
+    "phone": "h:93bdca9c1f",
+    "country": "US",
+    "signup_date": "2025-03-30"
+   }
+  ],
+  "masked": true
+ },
+ "datasets_checked": [
+  "customers"
+ ],
+ "notes": []
+}
+</incident>
+
+<signals>
+{
+ "contract_status": "approved",
+ "violation_rules": [],
+ "violation_columns": [],
+ "draft_violation_rules": [],
+ "exception_type": "ValueError",
+ "error_kind": "code",
+ "repo_frames_present": true,
+ "top_repo_frame": {
+  "file": "src/etl/customers.py",
+  "line": 19,
+  "function": "parse_signup_date"
+ },
+ "missing_column_in_error": null,
+ "columns_in_error": [],
+ "violation_details": [],
+ "exception_message": "unconverted data remains: T08:30:00Z",
+ "infra_marker": null,
+ "dag_id": "customers_sync",
+ "task_id": "transform",
+ "min_confidence": 0.75,
+ "policy_hint": {
+  "category": "code",
+  "rule": "b_code_with_valid_data",
+  "reason": "The data satisfies the approved contract and the traceback (ValueError) points into src/etl/customers.py::parse_signup_date: candidate code defect, to be confirmed by the LLM.",
+  "llm_decides": true
+ }
+}
+</signals>

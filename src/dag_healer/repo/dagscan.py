@@ -28,10 +28,13 @@ import logging
 import posixpath
 import re
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
+# TaskInfo / DatasetRef / DagInfo moved to dag_healer.core.specs unchanged; importing them here
+# re-exports the same objects (dag_healer.repo.dagscan.TaskInfo is dag_healer.core.specs.TaskInfo).
+from dag_healer.core.specs import DagInfo, DatasetRef, TaskInfo
 from dag_healer.repo.profile import iter_repo_files
 
 logger = logging.getLogger(__name__)
@@ -78,52 +81,6 @@ _GLOB_CHARS = frozenset("*?[]")
 
 
 # =========================================================================== public API
-
-
-@dataclass
-class TaskInfo:
-    """One task of a DAG as found in the source."""
-
-    task_id: str
-    operator: str
-    callable_name: str | None = None
-    callable_module: str | None = None
-    callable_file: str | None = None
-    lineno: int = 0
-
-
-@dataclass
-class DatasetRef:
-    """A dataset path referenced by a DAG (or one of its tasks).
-
-    ``resolved`` is True when the repo-relative location is known: the path was computed
-    from ``__file__`` into the repository, or a literal was matched to an existing file.
-    """
-
-    task_id: str | None
-    path: str
-    type: str  # "csv" | "parquet" | "json"
-    resolved: bool
-    source: str  # "<repo-relative file>:<line>"
-
-
-@dataclass
-class DagInfo:
-    """A DAG discovered in the repository."""
-
-    dag_id: str
-    file: str
-    tasks: list[TaskInfo] = field(default_factory=list)
-    datasets: list[DatasetRef] = field(default_factory=list)
-    imports: list[str] = field(default_factory=list)
-
-    def task(self, task_id: str) -> TaskInfo | None:
-        """Return the task with ``task_id`` or None."""
-        return next((t for t in self.tasks if t.task_id == task_id), None)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe dict view."""
-        return asdict(self)
 
 
 def scan_dags(repo_root: str | Path, dags_dir: str = "dags") -> list[DagInfo]:

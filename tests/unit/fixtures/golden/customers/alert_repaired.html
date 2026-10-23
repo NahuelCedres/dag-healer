@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>[dag-healer] Fix proposed for customers_sync.transform</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f3f4f6;">Fix proposed: customers_sync.transform</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f3f4f6;">
+  <tr>
+    <td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;max-width:680px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+        <tr>
+          <td style="padding:14px 24px;border-bottom:3px solid #059669;">
+            <span style="font-size:14px;font-weight:700;color:#111827;letter-spacing:0.02em;">dag-healer</span>
+            <span style="float:right;font-size:12px;font-weight:700;color:#059669;text-transform:uppercase;letter-spacing:0.05em;">Fix proposed</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px;">
+            <h1 style="margin:0 0 8px 0;font-size:20px;line-height:26px;color:#111827;">Fix proposed</h1>
+            <p style="margin:0 0 4px 0;font-size:13px;color:#6b7280;"><code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">customers_sync.transform</code></p>
+            <p style="margin:12px 0 20px 0;font-size:14px;line-height:21px;color:#1f2937;">dag-healer reproduced this failure with a new test and proposed a minimal code fix. The new test fails without the fix and passes with it. Nothing is merged automatically.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px 0;">
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">DAG</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">customers_sync</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Task</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">transform</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Run</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">manual__2026-10-18T09:00:00+00:00</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Try</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">1</td>
+</tr>
+
+  <tr>
+    <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;">Classification</td>
+    <td style="padding:4px 0;font-size:13px;color:#111827;"><span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:700;letter-spacing:0.03em;color:#1e40af;background:#dbeafe;">CODE</span>
+ <span style="color:#6b7280;">confidence 90%</span></td>
+  </tr>
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Status</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">repaired</td>
+</tr>
+
+  <tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Incident</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">00000000000000000000000000000002</td>
+</tr>
+
+</table>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Root cause</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">Task customers_sync.transform failed with ValueError: unconverted data remains: T08:30:00Z raised in src/etl/customers.py::parse_signup_date (line 19). The input data satisfies the approved contract, so this is a defect in the code: it does not handle input that the contract allows. A minimal fix plus a regression test should resolve it.</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">The fix</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">Make parse_signup_date handle the input that triggers ValueError with a minimal change, and cover it with a regression test.</p>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Changes</h2>
+  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+<tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">New test</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">tests/test_customers_signup_date.py</td>
+</tr>
+<tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Branch</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">healer/customers_sync-transform-00000000</td>
+</tr>
+<tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Changed files</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;font-family:SFMono-Regular,Consolas,&#39;Liberation Mono&#39;,Menlo,monospace;">src/etl/customers.py, tests/test_customers_signup_date.py</td>
+</tr>
+<tr>
+  <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Attempts</td>
+  <td style="padding:4px 0;font-size:13px;color:#111827;word-break:break-all;">2</td>
+</tr>
+</table>
+
+</div>
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Notes</h2>
+  <ul style="margin:0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
+<li style="margin:0 0 4px 0;">Branch `healer/customers_sync-transform-[number]` was pushed to the local repository.</li></ul>
+
+</div>
+
+<div style="margin:0 0 20px 0;">
+  <h2 style="margin:0 0 8px 0;font-size:15px;line-height:20px;color:#111827;">Review</h2>
+  <p style="margin:0 0 8px 0;font-size:14px;line-height:21px;color:#1f2937;white-space:pre-wrap;">No GitHub pull request was opened (no GitHub token or repository configured): the fix was saved as PR.md and fix.patch and pushed to the local branch healer/customers_sync-transform-00000000. Once the fix is merged and deployed, retry the task from the Healer incident tab.</p>
+
+<a href="http://localhost:8080/healer/api/v1/dags/customers_sync/incidents/00000000000000000000000000000002/pr.md" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:#059669;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Review PR.md</a>
+
+<a href="http://localhost:8080/dags/customers_sync/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/transform/plugin/healer-ti" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:#374151;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Open the Healer incident</a>
+
+<p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;">
+  <a href="http://localhost:8080/dags/customers_sync/plugin/healer-dag" style="color:#2563eb;text-decoration:underline;">DAG incidents</a> &middot;
+  <a href="http://localhost:8080/plugin/healer" style="color:#2563eb;text-decoration:underline;">Healer page</a>
+</p>
+
+
+</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;line-height:18px;color:#6b7280;">
+            Generated by dag-healer on <generated_at> for incident <code style="font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;">00000000</code>.
+            Sample values and error text are masked before they leave the worker.
+            <a href="http://localhost:8080/plugin/healer" style="color:#6b7280;text-decoration:underline;">Open the Healer page</a>.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

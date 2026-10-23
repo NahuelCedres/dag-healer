@@ -1,0 +1,275 @@
+{
+  "alerts": [
+    {
+      "channel": "log",
+      "error": null,
+      "recipients": [],
+      "sent_at": "<timestamp>",
+      "status": "sent",
+      "subject": "[dag-healer] Human decision needed: inventory_report.build_report"
+    }
+  ],
+  "allowed_actions": [
+    "resolve_data",
+    "resolve_code",
+    "ignore"
+  ],
+  "attempts": 0,
+  "can_edit": true,
+  "category": "ambiguous",
+  "confidence": 0.5,
+  "created_at": "2026-10-18T09:00:00Z",
+  "dag_id": "inventory_report",
+  "diagnosis": "Task inventory_report.build_report failed with KeyError: 'qty', a data-shaped error, but there is no approved data contract (status: draft) to tell whether the input is wrong. The draft contract reports missing_column. If the upstream change is a mistake, resolve the incident as data; if the new shape is intended, resolve it as code so the code is adapted.",
+  "diff": null,
+  "error_summary": "KeyError: 'qty'\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py\", line 465, in _execute_task\n    result = _execute_callable(context=context, **execute_callable_kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/airflow/repo/dags/../src/etl/inventory.py\", line 28, in buildReport\n    df[\"qty\"] = df[\"qty\"].fillna(0).astype(int)\n                ~~^^^^^^^\n  File \"/home/airflow/.local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'qty'",
+  "events": [
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "dag_id": "inventory_report",
+        "map_index": -1,
+        "run_id": "manual__2026-10-18T09:00:00+00:00",
+        "source": "rest",
+        "task_id": "build_report",
+        "try_number": 1
+      },
+      "kind": "created",
+      "message": "Incident created from rest for inventory_report.build_report (run manual__2026-10-18T09:00:00+00:00, try 1, map_index -1)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "new",
+        "to": "triaging"
+      },
+      "kind": "status",
+      "message": "Claimed by the worker for triage"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": null,
+      "kind": "triage",
+      "message": "Automatic triage started"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "contract_status": "draft",
+        "dag_file": "dags/inventory_report.py",
+        "datasets_checked": [
+          "inventory"
+        ],
+        "draft_violation_count": 1,
+        "exception_message": "'qty'",
+        "exception_type": "KeyError",
+        "notes": [
+          "The contract is a draft: its violations are evidence only."
+        ],
+        "repo_frames": [
+          {
+            "file": "src/etl/inventory.py",
+            "function": "buildReport",
+            "line": 28
+          }
+        ],
+        "sample_dataset": "inventory",
+        "violation_count": 0
+      },
+      "kind": "context",
+      "message": "Context gathered: KeyError in src/etl/inventory.py::buildReport; contract draft, 1 violation(s)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "category": "ambiguous",
+        "confidence": 0.5,
+        "contract_status": "draft",
+        "decided_by": "policy",
+        "error_kind": "data_shape",
+        "llm_category": "ambiguous",
+        "llm_confidence": 0.5,
+        "llm_error": null,
+        "needs_llm_confirmation": false,
+        "reason": "There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong.",
+        "rule": "c_no_approved_contract",
+        "tokens_used": 0,
+        "violations": [
+          {
+            "actual": [
+              "quantity",
+              "sku",
+              "updated_at",
+              "warehouse",
+              "warehouse_code"
+            ],
+            "column": "qty",
+            "contract_status": "draft",
+            "dataset": "inventory",
+            "expected": "qty",
+            "message": "Column 'qty' is missing from dataset 'inventory'.",
+            "row_indexes": [],
+            "rule": "missing_column"
+          }
+        ]
+      },
+      "kind": "classification",
+      "message": "Classified as ambiguous (c_no_approved_contract): There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong."
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "triaging",
+        "to": "classified"
+      },
+      "kind": "status",
+      "message": "Classified as ambiguous (confidence 0.50, rule c_no_approved_contract)"
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "from": "classified",
+        "to": "waiting_human"
+      },
+      "kind": "status",
+      "message": "Waiting for a human decision: There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong."
+    },
+    {
+      "actor": "dag-healer",
+      "at": "<timestamp>",
+      "data": {
+        "event": "waiting_human",
+        "outcomes": [
+          {
+            "channel": "log",
+            "error": null,
+            "status": "sent"
+          }
+        ]
+      },
+      "kind": "alert",
+      "message": "waiting_human alert: log sent"
+    }
+  ],
+  "evidence": [
+    "policy: draft contract, data_shape error",
+    "exception: KeyError: 'qty'",
+    "repository frame: src/etl/inventory.py::buildReport",
+    "draft contract findings (not enforced): missing_column",
+    "innermost repository frame: src/etl/inventory.py::buildReport (line 28)",
+    "column named in the error: qty"
+  ],
+  "has_pr_md": false,
+  "id": "00000000000000000000000000000003",
+  "links": {
+    "dag": "http://localhost:8080/dags/inventory_report/plugin/healer-dag",
+    "healer": "http://localhost:8080/plugin/healer",
+    "task_instance": "http://localhost:8080/dags/inventory_report/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/build_report/plugin/healer-ti"
+  },
+  "map_index": -1,
+  "occurrences": 1,
+  "pending_commands": [],
+  "pr_md_url": null,
+  "pr_url": null,
+  "pytest_output": null,
+  "resolution": null,
+  "resolved_by": null,
+  "run_id": "manual__2026-10-18T09:00:00+00:00",
+  "sample": {
+    "columns": [
+      "sku",
+      "warehouse",
+      "warehouse_code",
+      "quantity",
+      "updated_at"
+    ],
+    "dataset": "inventory",
+    "masked": true,
+    "rows": [
+      {
+        "quantity": 128,
+        "sku": "SKU-1001",
+        "updated_at": "<timestamp>",
+        "warehouse": "Reno",
+        "warehouse_code": "RNO-1"
+      },
+      {
+        "quantity": 31,
+        "sku": "SKU-1001",
+        "updated_at": "<timestamp>",
+        "warehouse": "Dallas",
+        "warehouse_code": "DFW-2"
+      },
+      {
+        "quantity": 12,
+        "sku": "SKU-1001",
+        "updated_at": "<timestamp>",
+        "warehouse": "Newark",
+        "warehouse_code": "EWR-1"
+      },
+      {
+        "quantity": 150,
+        "sku": "SKU-1002",
+        "updated_at": "<timestamp>",
+        "warehouse": "Reno",
+        "warehouse_code": "RNO-1"
+      },
+      {
+        "quantity": 4,
+        "sku": "SKU-1002",
+        "updated_at": "<timestamp>",
+        "warehouse": "Dallas",
+        "warehouse_code": "DFW-2"
+      }
+    ]
+  },
+  "source": "rest",
+  "status": "waiting_human",
+  "task_id": "build_report",
+  "test_code": null,
+  "test_path": null,
+  "tokens_used": 0,
+  "try_number": 1,
+  "updated_at": "<timestamp>",
+  "violated_rule": {
+    "actual": [
+      "quantity",
+      "sku",
+      "updated_at",
+      "warehouse",
+      "warehouse_code"
+    ],
+    "column": "qty",
+    "contract_status": "draft",
+    "dataset": "inventory",
+    "expected": "qty",
+    "message": "Column 'qty' is missing from dataset 'inventory'.",
+    "row_indexes": [],
+    "rule": "missing_column"
+  },
+  "violations": [
+    {
+      "actual": [
+        "quantity",
+        "sku",
+        "updated_at",
+        "warehouse",
+        "warehouse_code"
+      ],
+      "column": "qty",
+      "contract_status": "draft",
+      "dataset": "inventory",
+      "expected": "qty",
+      "message": "Column 'qty' is missing from dataset 'inventory'.",
+      "row_indexes": [],
+      "rule": "missing_column"
+    }
+  ]
+}

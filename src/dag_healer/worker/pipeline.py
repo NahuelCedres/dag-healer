@@ -121,8 +121,13 @@ FORCED_CATEGORIES: tuple[str, ...] = ("data", "code")
 
 
 def default_session_factory(cfg: HealerConfig) -> SessionFactory:
-    """Sessions on the configured store (``cfg.database_url``)."""
-    return partial(session_scope, cfg.database_url)
+    """Sessions on the configured store (``cfg.database_url``).
+
+    The worker is one of the processes that migrate the store (section 6.4 of
+    ``docs/architecture/orchestrators.md``): its first session creates or upgrades the
+    schema, and an attempt that failed (store unreachable) is repeated by the next session.
+    """
+    return partial(session_scope, cfg.database_url, allow_migrate=True)
 
 
 # =========================================================================== small helpers

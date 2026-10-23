@@ -3,25 +3,36 @@
 Every function takes an open :class:`~sqlalchemy.orm.Session` and never commits:
 the caller owns the transaction (usually through
 :func:`dag_healer.store.db.session_scope`).
+
+Store schema v2 keys incidents by ``(orchestrator, dag_id, run_id, task_id, map_index,
+try_number)``. ``orchestrator`` is the instance id from ``healer.yaml`` and defaults to
+``"airflow"`` everywhere, so every phase-5 call keeps working unchanged; the read helpers
+take ``orchestrator=None`` (every instance) unless they look up one key.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any
+from os import PathLike
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR, UNRESOLVED_STEP
+from dag_healer.masking import mask_text
 from dag_healer.store.models import (
     ALL_STATUSES,
     CLASSIFIED,
     COMMAND_KINDS,
     COMMAND_PENDING,
     COMMAND_STATUSES,
+    DEFAULT_CHANNEL,
     NEW,
     OPEN_STATUSES,
     PENDING_CHECK,
@@ -36,11 +47,16 @@ from dag_healer.store.models import (
     ContractState,
     Incident,
     IncidentEvent,
+    KeyValue,
     PendingEvent,
     ensure_utc,
+    json_safe,
     new_id,
     utcnow,
 )
+
+if TYPE_CHECKING:
+    from dag_healer.core.failures import Failure
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +65,25 @@ DEFAULT_ACTOR = "dag-healer"
 DEDUPE_WINDOW = timedelta(hours=24)
 #: Statuses a crashed worker can leave behind (see :func:`release_stale_claims`).
 WORKING_STATUSES: tuple[str, ...] = (TRIAGING, CLASSIFIED, REPORTING, REPAIRING)
+#: ``healer_kv`` key prefix of the poll cursor of one orchestrator instance.
+CURSOR_KEY_PREFIX = "cursor:"
+#: Keys of the phase-5 worker state file ``<healer_home>/state.json`` (Airflow REST poll).
+STATE_WATERMARK_KEY = "rest_watermark"
+STATE_NOT_BEFORE_KEY = "rest_not_before"
+#: Length of ``Incident.error_name``.
+MAX_ERROR_NAME_CHARS = 256
 
-_TI_KEY_COLUMNS: tuple[str, ...] = ("dag_id", "run_id", "task_id", "map_index", "try_number")
+#: The incident key (``uq_healer_incidents_key``).
+_TI_KEY_COLUMNS: tuple[str, ...] = ("orchestrator", "dag_id", "run_id", "task_id", "map_index", "try_number")
+#: The key as recorded in timeline event data (phase-5 shape; the incident has the instance).
+_EVENT_KEY_COLUMNS: tuple[str, ...] = ("dag_id", "run_id", "task_id", "map_index", "try_number")
 _INCIDENT_EXTRA_COLUMNS = frozenset(Incident.__table__.columns.keys()) - {
     *_TI_KEY_COLUMNS,
     "source",
     "error_summary",
     "signature",
+    "native_ref",
+    "error_name",
 }
 _PENDING_EVENT_COLUMNS = frozenset(PendingEvent.__table__.columns.keys()) - {"id"}
 
@@ -64,14 +92,40 @@ def _now(now: datetime | None) -> datetime:
     return ensure_utc(now) or utcnow()
 
 
-def _ti_key(dag_id: str, run_id: str, task_id: str, map_index: int, try_number: int) -> dict:
+def _instance(orchestrator: str | None) -> str:
+    """The instance id to store (``None`` / empty: :data:`DEFAULT_ORCHESTRATOR`)."""
+    return str(orchestrator) if orchestrator else DEFAULT_ORCHESTRATOR
+
+
+def _ti_key(
+    dag_id: str,
+    run_id: str,
+    task_id: str,
+    map_index: int,
+    try_number: int,
+    orchestrator: str | None = DEFAULT_ORCHESTRATOR,
+) -> dict[str, Any]:
     return {
+        "orchestrator": _instance(orchestrator),
         "dag_id": dag_id,
         "run_id": run_id,
         "task_id": task_id,
         "map_index": int(map_index),
         "try_number": int(try_number),
     }
+
+
+def _event_key(key: Mapping[str, Any]) -> dict[str, Any]:
+    return {name: key[name] for name in _EVENT_KEY_COLUMNS}
+
+
+def _native(value: Any) -> Any:
+    """``native_ref`` as stored: JSON-safe, ``None`` for nothing. Never masked (adapter pointers)."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return json_safe(dict(value)) if value else None
+    return json_safe(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -90,19 +144,21 @@ def get_incident_by_key(
     task_id: str,
     map_index: int = -1,
     try_number: int,
+    orchestrator: str = DEFAULT_ORCHESTRATOR,
 ) -> Incident | None:
-    """Return the incident recorded for exactly this task instance try, if any."""
-    key = _ti_key(dag_id, run_id, task_id, map_index, try_number)
+    """Return the incident recorded for exactly this attempt (task instance try), if any."""
+    key = _ti_key(dag_id, run_id, task_id, map_index, try_number, orchestrator)
     query = select(Incident).filter_by(**key)
     return session.scalars(query).first()
 
 
 def _find_open_duplicate(
-    session: Session, *, dag_id: str, task_id: str, signature: str, since: datetime
+    session: Session, *, orchestrator: str, dag_id: str, task_id: str, signature: str, since: datetime
 ) -> Incident | None:
     query = (
         select(Incident)
         .where(
+            Incident.orchestrator == orchestrator,
             Incident.dag_id == dag_id,
             Incident.task_id == task_id,
             Incident.signature == signature,
@@ -114,32 +170,37 @@ def _find_open_duplicate(
     return session.scalars(query).first()
 
 
-def _record_occurrence(session: Session, incident: Incident, key: dict, source: str) -> None:
-    """Fold another failure with the same signature into ``incident`` (idempotent per key)."""
+def _record_occurrence(session: Session, incident: Incident, key: Mapping[str, Any], source: str) -> None:
+    """Fold another failure with the same signature into ``incident`` (idempotent per key).
+
+    The occurrence is recorded with the phase-5 five-column key: the duplicate always
+    belongs to the same orchestrator instance as ``incident``.
+    """
+    folded = _event_key(key)
     query = select(IncidentEvent.data).where(
         IncidentEvent.incident_id == incident.id, IncidentEvent.kind == "occurrence"
     )
     for data in session.scalars(query):
-        if isinstance(data, dict) and all(data.get(k) == v for k, v in key.items()):
+        if isinstance(data, dict) and all(data.get(k) == v for k, v in folded.items()):
             return
     incident.occurrences = (incident.occurrences or 1) + 1
     add_event(
         session,
         incident,
         "occurrence",
-        f"Same failure seen again in run {key['run_id']} (try {key['try_number']}, "
-        f"map_index {key['map_index']}); occurrences={incident.occurrences}",
-        data={**key, "source": source},
+        f"Same failure seen again in run {folded['run_id']} (try {folded['try_number']}, "
+        f"map_index {folded['map_index']}); occurrences={incident.occurrences}",
+        data={**folded, "source": source},
     )
 
 
 def _insert_incident(session: Session, values: dict[str, Any]) -> Incident | None:
-    """Insert an incident row unless its task instance key exists; ``None`` on conflict.
+    """Insert an incident row unless its key exists; ``None`` on conflict.
 
-    SQLite and PostgreSQL use ``INSERT ... ON CONFLICT DO NOTHING``. SAVEPOINTs
-    are avoided on purpose: with the default pysqlite transaction handling a
-    SAVEPOINT that opens the transaction commits it on release, which would
-    defeat the caller's rollback.
+    SQLite and PostgreSQL use ``INSERT ... ON CONFLICT DO NOTHING`` on exactly the columns
+    of ``uq_healer_incidents_key``. SAVEPOINTs are avoided on purpose: with the default
+    pysqlite transaction handling a SAVEPOINT that opens the transaction commits it on
+    release, which would defeat the caller's rollback.
     """
     session.flush()
     dialect = session.get_bind().dialect.name
@@ -178,17 +239,22 @@ def create_incident(
     error_summary: str = "",
     signature: str | None = None,
     now: datetime | None = None,
+    orchestrator: str = DEFAULT_ORCHESTRATOR,
+    native_ref: Mapping[str, Any] | None = None,
+    error_name: str | None = None,
     **extra: Any,
 ) -> tuple[Incident, bool]:
-    """Create the incident for a failed task instance try.
+    """Create the incident for a failed attempt (Airflow: a task instance try).
 
     Returns ``(incident, created)``. The call is idempotent on the
-    ``(dag_id, run_id, task_id, map_index, try_number)`` key. When ``signature``
-    is given and an open incident with the same dag, task and signature was
-    created less than 24 hours before ``now``, that incident's ``occurrences``
-    counter is incremented instead (once per task instance try) and it is
-    returned with ``created=False``. ``extra`` sets any other Incident column
-    (for example ``created_at`` or ``status``).
+    ``(orchestrator, dag_id, run_id, task_id, map_index, try_number)`` key. When
+    ``signature`` is given and an open incident of the same orchestrator instance with the
+    same dag, task and signature was created less than 24 hours before ``now``, that
+    incident's ``occurrences`` counter is incremented instead (once per attempt) and it is
+    returned with ``created=False``. ``native_ref`` (adapter pointers, stored as given:
+    JSON-safe, never masked) and ``error_name`` are the v2 columns; ``extra`` sets any
+    other Incident column (for example ``created_at`` or ``status``). The texts are stored
+    as given: callers pass masked text (see :func:`create_incident_from_failure`).
     """
     if source not in SOURCES:
         raise ValueError(f"Unknown incident source {source!r}; expected one of {SOURCES}")
@@ -196,7 +262,7 @@ def create_incident(
     if unknown:
         raise TypeError(f"Unexpected Incident fields: {', '.join(sorted(unknown))}")
     moment = _now(now)
-    key = _ti_key(dag_id, run_id, task_id, map_index, try_number)
+    key = _ti_key(dag_id, run_id, task_id, map_index, try_number, orchestrator)
 
     existing = get_incident_by_key(session, **key)
     if existing is not None:
@@ -205,6 +271,7 @@ def create_incident(
     if signature:
         duplicate = _find_open_duplicate(
             session,
+            orchestrator=key["orchestrator"],
             dag_id=dag_id,
             task_id=task_id,
             signature=signature,
@@ -221,13 +288,15 @@ def create_incident(
         "source": source,
         "error_summary": error_summary or "",
         "signature": signature,
+        "native_ref": _native(native_ref),
+        "error_name": error_name[:MAX_ERROR_NAME_CHARS] if error_name else None,
         "created_at": moment,
         "updated_at": moment,
         **extra,
     }
     incident = _insert_incident(session, values)
     if incident is None:
-        # Another writer inserted the same task instance try concurrently.
+        # Another writer inserted the same attempt concurrently.
         existing = get_incident_by_key(session, **key)
         if existing is None:  # pragma: no cover - conflict without a visible row
             raise RuntimeError(f"Could not create or find the incident for {key}")
@@ -239,9 +308,36 @@ def create_incident(
         "created",
         f"Incident created from {source} for {dag_id}.{task_id} "
         f"(run {run_id}, try {try_number}, map_index {map_index})",
-        data={**key, "source": source},
+        data={**_event_key(key), "source": source},
     )
     return incident, True
+
+
+def create_incident_from_failure(
+    session: Session, f: Failure, *, signature: str | None, now: datetime | None = None
+) -> tuple[Incident, bool]:
+    """Create the incident of a confirmed :class:`~dag_healer.core.failures.Failure`.
+
+    The key comes from ``f.ref`` (its orchestrator instance included) and the source from
+    ``f.source``. ``f.error_summary`` and ``f.error_name`` are RAW and masked here (the
+    core is the single masking point); ``f.native`` is stored as ``native_ref`` unchanged
+    (adapter pointers are never masked; ``None`` when empty). ``signature`` drives the
+    24-hour dedupe exactly as in :func:`create_incident`. A failure without a resolved step
+    (``step_id == UNRESOLVED_STEP``) is refused: only push hints may lack a step.
+    """
+    ref = f.ref
+    if ref.step_id == UNRESOLVED_STEP:
+        raise ValueError(f"a failure needs a resolved step (or RUN_LEVEL_STEP): {ref}")
+    return create_incident(
+        session,
+        **ref.store_key(),
+        source=f.source,
+        error_summary=mask_text(f.error_summary or ""),
+        signature=signature,
+        now=now,
+        native_ref=f.native,
+        error_name=mask_text(f.error_name) if f.error_name else None,
+    )
 
 
 def list_incidents(
@@ -252,15 +348,18 @@ def list_incidents(
     limit: int = 100,
     run_id: str | None = None,
     task_id: str | None = None,
+    orchestrator: str | None = None,
 ) -> list[Incident]:
     """Return incidents newest first.
 
     ``dag_ids=None`` means no DAG filter; an empty set returns nothing (useful
-    when the caller may read no DAG at all).
+    when the caller may read no DAG at all). ``orchestrator=None`` lists every instance.
     """
     if dag_ids is not None and not dag_ids:
         return []
     query = select(Incident)
+    if orchestrator is not None:
+        query = query.where(Incident.orchestrator == orchestrator)
     if dag_ids is not None:
         query = query.where(Incident.dag_id.in_(sorted(dag_ids)))
     if statuses:
@@ -317,6 +416,7 @@ def claim_next(
     *,
     now: datetime | None = None,
     actor: str = DEFAULT_ACTOR,
+    orchestrator: str | None = None,
 ) -> Incident | None:
     """Atomically claim the oldest incident in ``statuses`` and mark it ``triaging``.
 
@@ -324,13 +424,13 @@ def claim_next(
     workers (even on different engines or hosts) never claim the same row; on
     PostgreSQL the candidate is also selected ``FOR UPDATE SKIP LOCKED``.
     Commit promptly after claiming: on SQLite the open write transaction blocks
-    other writers until it ends.
+    other writers until it ends. ``orchestrator`` restricts the claim to the incidents of
+    one instance (a worker serves one instance); ``None`` considers every incident.
     """
-    query = (
-        select(Incident.id)
-        .where(Incident.status.in_(list(statuses)))
-        .order_by(Incident.created_at, Incident.id)
-    )
+    query = select(Incident.id).where(Incident.status.in_(list(statuses)))
+    if orchestrator is not None:
+        query = query.where(Incident.orchestrator == orchestrator)
+    query = query.order_by(Incident.created_at, Incident.id)
     if session.get_bind().dialect.name == "postgresql":
         # Workers skip rows another worker is claiming instead of queueing behind it.
         query = query.limit(1).with_for_update(skip_locked=True)
@@ -349,14 +449,20 @@ def release_stale_claims(
     older_than: timedelta,
     statuses: Sequence[str] = WORKING_STATUSES,
     now: datetime | None = None,
+    orchestrator: str | None = None,
 ) -> list[Incident]:
-    """Put incidents stuck in a working status (crashed worker) back to ``new``."""
+    """Put incidents stuck in a working status (crashed worker) back to ``new``.
+
+    ``orchestrator`` limits the release to one instance's incidents (``None``: all).
+    """
     cutoff = _now(now) - older_than
     query = select(Incident).where(
         Incident.status.in_(list(statuses)),
         Incident.claimed_at.is_not(None),
         Incident.claimed_at < cutoff,
     )
+    if orchestrator is not None:
+        query = query.where(Incident.orchestrator == orchestrator)
     released = list(session.scalars(query))
     for incident in released:
         set_status(
@@ -418,9 +524,11 @@ def list_events(session: Session, incident_id: str) -> list[IncidentEvent]:
     return list(session.scalars(query))
 
 
-def incidents_created_since(session: Session, since: datetime) -> int:
-    """Return how many incidents were created at or after ``since``."""
+def incidents_created_since(session: Session, since: datetime, *, orchestrator: str | None = None) -> int:
+    """Return how many incidents (of ``orchestrator``, default all) were created at or after ``since``."""
     query = select(func.count()).select_from(Incident).where(Incident.created_at >= since)
+    if orchestrator is not None:
+        query = query.where(Incident.orchestrator == orchestrator)
     return int(session.scalar(query) or 0)
 
 
@@ -435,8 +543,9 @@ def enqueue_command(
     incident_id: str | None = None,
     payload: dict[str, Any] | None = None,
     actor: str,
+    orchestrator: str = DEFAULT_ORCHESTRATOR,
 ) -> Command:
-    """Queue a human action for the worker to apply."""
+    """Queue a human action for the worker of instance ``orchestrator`` to apply."""
     if kind not in COMMAND_KINDS:
         raise ValueError(f"Unknown command kind {kind!r}; expected one of {COMMAND_KINDS}")
     if not actor:
@@ -449,15 +558,19 @@ def enqueue_command(
         actor=actor,
         status=COMMAND_PENDING,
         created_at=utcnow(),
+        orchestrator=_instance(orchestrator),
     )
     session.add(command)
     session.flush()
     return command
 
 
-def pending_commands(session: Session, *, limit: int = 100) -> list[Command]:
-    """Return pending commands in the order they were queued."""
-    query = select(Command).where(Command.status == COMMAND_PENDING).order_by(Command.id).limit(max(1, limit))
+def pending_commands(session: Session, *, limit: int = 100, orchestrator: str | None = None) -> list[Command]:
+    """Return pending commands (of ``orchestrator``, default all) in the order they were queued."""
+    query = select(Command).where(Command.status == COMMAND_PENDING)
+    if orchestrator is not None:
+        query = query.where(Command.orchestrator == orchestrator)
+    query = query.order_by(Command.id).limit(max(1, limit))
     return list(session.scalars(query))
 
 
@@ -484,11 +597,13 @@ def upsert_contract_state(
     approved_by: str | None = None,
     approved_at: datetime | None = None,
     source_hash: str | None = None,
+    orchestrator: str = DEFAULT_ORCHESTRATOR,
 ) -> ContractState:
-    """Insert or update the cached state of a DAG contract."""
-    state = session.get(ContractState, dag_id)
+    """Insert or update the cached state of a pipeline (DAG) contract of one instance."""
+    instance = _instance(orchestrator)
+    state = session.get(ContractState, (instance, dag_id))
     if state is None:
-        state = ContractState(dag_id=dag_id)
+        state = ContractState(orchestrator=instance, dag_id=dag_id)
         session.add(state)
     state.status = status
     state.path = str(path)
@@ -500,14 +615,19 @@ def upsert_contract_state(
     return state
 
 
-def get_contract_state(session: Session, dag_id: str) -> ContractState | None:
-    """Return the cached contract state of ``dag_id``."""
-    return session.get(ContractState, dag_id)
+def get_contract_state(
+    session: Session, dag_id: str, *, orchestrator: str = DEFAULT_ORCHESTRATOR
+) -> ContractState | None:
+    """Return the cached contract state of ``dag_id`` (of instance ``orchestrator``)."""
+    return session.get(ContractState, (_instance(orchestrator), dag_id))
 
 
-def list_contract_states(session: Session) -> list[ContractState]:
-    """Return every cached contract state ordered by DAG id."""
-    return list(session.scalars(select(ContractState).order_by(ContractState.dag_id)))
+def list_contract_states(session: Session, *, orchestrator: str | None = None) -> list[ContractState]:
+    """Return the cached contract states (of ``orchestrator``, default all) ordered by DAG id."""
+    query = select(ContractState)
+    if orchestrator is not None:
+        query = query.where(ContractState.orchestrator == orchestrator)
+    return list(session.scalars(query.order_by(ContractState.dag_id, ContractState.orchestrator)))
 
 
 # --------------------------------------------------------------------------- #
@@ -545,19 +665,24 @@ def list_alerts(session: Session, incident_id: str) -> list[Alert]:
 
 
 # --------------------------------------------------------------------------- #
-# Pending events (listener / callback deliveries awaiting REST confirmation)
+# Pending events (pushed hints awaiting confirmation by the orchestrator API)
 # --------------------------------------------------------------------------- #
 def add_pending_event(session: Session, **fields: Any) -> PendingEvent:
-    """Store a pushed failure event as ``pending_check``.
+    """Store a pushed failure hint as ``pending_check``.
 
     Accepts the ingest payload directly: ``dag_id``, ``run_id``, ``task_id``,
-    ``map_index``, ``try_number`` and ``payload`` map to columns; any other key
-    is merged into ``payload``. A second delivery of the same task instance try
-    while the first is still pending returns the existing row.
+    ``map_index``, ``try_number``, ``payload`` and the v2 columns ``orchestrator``
+    (default ``"airflow"``), ``channel`` (default ``"task-failed"``) and ``native_ref`` map
+    to columns; any other key is merged into ``payload``. ``task_id`` may be ``""``
+    (:data:`~dag_healer.core.ids.UNRESOLVED_STEP`: a run-level hint whose step is not known
+    yet) but must be given. A second delivery of the same attempt of the same instance
+    while the first is still pending returns the existing row (whatever its channel).
     """
     columns = {k: v for k, v in fields.items() if k in _PENDING_EVENT_COLUMNS}
     extras = {k: v for k, v in fields.items() if k not in _PENDING_EVENT_COLUMNS}
-    missing = [k for k in ("dag_id", "run_id", "task_id") if not columns.get(k)]
+    missing = [k for k in ("dag_id", "run_id") if not columns.get(k)]
+    if columns.get("task_id") is None:
+        missing.append("task_id")
     if missing:
         raise ValueError(f"Pending event is missing {', '.join(missing)}")
     payload = dict(columns.pop("payload", None) or {})
@@ -570,6 +695,7 @@ def add_pending_event(session: Session, **fields: Any) -> PendingEvent:
         str(columns.pop("task_id")),
         -1 if map_index is None else int(map_index),
         1 if try_number is None else int(try_number),
+        columns.pop("orchestrator", None),
     )
     status = columns.pop("status", None) or PENDING_CHECK
     if status not in PENDING_EVENT_STATUSES:
@@ -582,22 +708,27 @@ def add_pending_event(session: Session, **fields: Any) -> PendingEvent:
             return existing
 
     received_at = ensure_utc(columns.pop("received_at", None)) or utcnow()
-    event = PendingEvent(**key, payload=payload, status=status, received_at=received_at)
+    event = PendingEvent(
+        **key,
+        payload=payload,
+        status=status,
+        received_at=received_at,
+        channel=str(columns.pop("channel", None) or DEFAULT_CHANNEL),
+        native_ref=_native(columns.pop("native_ref", None)),
+    )
     session.add(event)
     session.flush()
     return event
 
 
 def list_pending_events(
-    session: Session, status: str = PENDING_CHECK, *, limit: int = 500
+    session: Session, status: str = PENDING_CHECK, *, limit: int = 500, orchestrator: str | None = None
 ) -> list[PendingEvent]:
-    """Return pending events with ``status``, oldest first."""
-    query = (
-        select(PendingEvent)
-        .where(PendingEvent.status == status)
-        .order_by(PendingEvent.id)
-        .limit(max(1, limit))
-    )
+    """Return pending events with ``status`` (of ``orchestrator``, default all), oldest first."""
+    query = select(PendingEvent).where(PendingEvent.status == status)
+    if orchestrator is not None:
+        query = query.where(PendingEvent.orchestrator == orchestrator)
+    query = query.order_by(PendingEvent.id).limit(max(1, limit))
     return list(session.scalars(query))
 
 
@@ -608,3 +739,124 @@ def mark_pending_event(session: Session, event: PendingEvent, status: str) -> Pe
     event.status = status
     session.add(event)
     return event
+
+
+# --------------------------------------------------------------------------- #
+# Key-value state (healer_kv): poll cursors and other small worker state
+# --------------------------------------------------------------------------- #
+def cursor_key(instance: str) -> str:
+    """``healer_kv`` key of the poll cursor of an orchestrator instance (``cursor:<instance>``)."""
+    return f"{CURSOR_KEY_PREFIX}{_instance(instance)}"
+
+
+def kv_get(session: Session, key: str) -> Any | None:
+    """The JSON value stored under ``key`` (``None`` when there is none)."""
+    session.flush()
+    return session.execute(select(KeyValue.value).where(KeyValue.key == key)).scalar_one_or_none()
+
+
+def kv_set(session: Session, key: str, value: Any) -> None:
+    """Store a JSON-safe copy of ``value`` under ``key`` (insert or replace).
+
+    SQLite and PostgreSQL use ``INSERT ... ON CONFLICT DO UPDATE``, so two writers of the
+    same key never fail on the primary key.
+    """
+    if not key:
+        raise ValueError("healer_kv keys must not be empty")
+    values = {"key": key, "value": json_safe(value), "updated_at": utcnow()}
+    session.flush()
+    dialect = session.get_bind().dialect.name
+    if dialect in ("sqlite", "postgresql"):
+        if dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        else:
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
+        statement = dialect_insert(KeyValue.__table__).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=["key"],
+            set_={"value": statement.excluded.value, "updated_at": statement.excluded.updated_at},
+        )
+        session.execute(statement)
+    else:
+        row = session.get(KeyValue, key)
+        if row is None:
+            session.add(KeyValue(**values))
+        else:
+            row.value, row.updated_at = values["value"], values["updated_at"]
+        session.flush()
+    _expire_cached(session, key)
+
+
+def kv_delete(session: Session, key: str) -> bool:
+    """Delete ``key``; ``True`` when it existed."""
+    session.flush()
+    deleted = session.execute(delete(KeyValue).where(KeyValue.key == key)).rowcount
+    _expire_cached(session, key)
+    return bool(deleted)
+
+
+def kv_items(session: Session, prefix: str = "") -> dict[str, Any]:
+    """Every ``{key: value}`` whose key starts with ``prefix``, ordered by key."""
+    session.flush()
+    query = select(KeyValue.key, KeyValue.value).order_by(KeyValue.key)
+    if prefix:
+        query = query.where(KeyValue.key.startswith(prefix, autoescape=True))
+    return {str(key): value for key, value in session.execute(query)}
+
+
+def _expire_cached(session: Session, key: str) -> None:
+    """Drop a cached :class:`KeyValue` object of ``key`` (the row changed behind the ORM)."""
+    for item in list(session.identity_map.values()):
+        if isinstance(item, KeyValue) and item.key == key:
+            session.expire(item)
+
+
+def _state_time(state: Mapping[str, Any], name: str, path: Path) -> str | None:
+    value = state.get(name)
+    if value is None or value == "":
+        return None
+    try:
+        moment = ensure_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except ValueError:
+        logger.warning("dag-healer store: ignoring invalid %s %r in %s", name, value, path)
+        return None
+    return moment.isoformat() if moment is not None else None
+
+
+def import_state_file(
+    session: Session, path: str | PathLike[str], *, instance: str = DEFAULT_ORCHESTRATOR
+) -> dict[str, Any] | None:
+    """One-time import of the phase-5 worker state file into ``healer_kv``.
+
+    The phase-5 worker kept its Airflow REST poll position in ``<healer_home>/state.json``
+    (``rest_watermark``: when the last successful poll started; ``rest_not_before``: the
+    floor written by ``dag-healer store reset``). The first v2 worker of an Airflow instance
+    calls this before its first poll: when ``cursor:<instance>`` does not exist yet and the
+    file holds either key, it stores ``{"watermark": ..., "not_before": ...}`` (ISO-8601 UTC
+    strings or ``None``) as that cursor and returns it. It returns ``None`` (and changes
+    nothing) when the instance already has a cursor, when the file is missing, unreadable or
+    holds neither key. The file is left in place.
+    """
+    key = cursor_key(instance)
+    if kv_get(session, key) is not None:
+        return None
+    source = Path(path)
+    try:
+        state = json.loads(source.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        logger.warning("dag-healer store: not importing the unreadable state file %s (%s)", source, exc)
+        return None
+    if not isinstance(state, Mapping):
+        logger.warning("dag-healer store: not importing the state file %s (not a JSON object)", source)
+        return None
+    cursor = {
+        "watermark": _state_time(state, STATE_WATERMARK_KEY, source),
+        "not_before": _state_time(state, STATE_NOT_BEFORE_KEY, source),
+    }
+    if cursor["watermark"] is None and cursor["not_before"] is None:
+        return None
+    kv_set(session, key, cursor)
+    logger.info("dag-healer store: imported the poll position of %s from %s into %s", instance, source, key)
+    return cursor

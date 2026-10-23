@@ -33,8 +33,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from dag_healer.airflow.client import CAUSE_SEPARATOR, CONTEXT_SEPARATOR
 from dag_healer.contracts.schema import Contract, DatasetContract, DatasetLocator, Violation
+from dag_healer.core.tracebacks import CAUSE_SEPARATOR, CONTEXT_SEPARATOR
 from dag_healer.masking import mask_text, to_json_safe
 from dag_healer.repo.dagscan import TaskInfo
 

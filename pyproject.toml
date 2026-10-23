@@ -43,13 +43,22 @@ dependencies = [
 
 [project.optional-dependencies]
 airflow = ["apache-airflow>=3.1"]
-dev = ["pytest>=8", "aiosmtpd", "ruff"]
+aws = ["boto3>=1.34"]
+serve = ["uvicorn>=0.29", "PyJWT[crypto]>=2.8"]
+dev = ["pytest>=8", "aiosmtpd", "ruff", "boto3>=1.34"]   # botocore.stub for the Step Functions tests
 
 [project.scripts]
 dag-healer = "dag_healer.cli.main:main"
 
 [project.entry-points."airflow.plugins"]
 dag_healer = "dag_healer.airflow.plugin:HealerPlugin"
+
+# Orchestrator adapters (docs/architecture/orchestrators.md, section 5.2). Third-party
+# distributions register theirs in the same group; `dag-healer orchestrators list` shows them.
+[project.entry-points."dag_healer.orchestrators"]
+airflow = "dag_healer.airflow.adapter:FACTORY"
+stepfunctions = "dag_healer.stepfunctions:FACTORY"
+fake = "dag_healer.orchestrators.fake:FACTORY"
 
 # --------------------------------------------------------------------------- build
 

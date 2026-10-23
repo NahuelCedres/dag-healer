@@ -1,0 +1,212 @@
+Classify the failed Airflow task described below.
+
+<incident>
+{
+ "incident_id": "00000000000000000000000000000001",
+ "dag_id": "sales_daily_etl",
+ "run_id": "manual__2026-10-18T09:00:00+00:00",
+ "task_id": "transform_sales",
+ "map_index": -1,
+ "try_number": 1,
+ "error_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3641, in get_loc\n  File \"pandas/_libs/index.pyx\", line 168, in pandas._libs.index.IndexEngine.get_loc\n  File \"pandas/_libs/hashtable_class_helper.pxi\", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item\nKeyError: 'amount'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/sales.py\", line 25, in transform_sales\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py\", line 4378, in __getitem__\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3648, in get_loc\nKeyError: 'amount'",
+ "exception_type": "KeyError",
+ "exception_message": "'amount'",
+ "traceback_text": "Traceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3641, in get_loc\n  File \"pandas/_libs/index.pyx\", line 168, in pandas._libs.index.IndexEngine.get_loc\n  File \"pandas/_libs/hashtable_class_helper.pxi\", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item\nKeyError: 'amount'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/sales.py\", line 25, in transform_sales\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py\", line 4378, in __getitem__\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3648, in get_loc\nKeyError: 'amount'",
+ "repo_frames": [
+  {
+   "file": "src/etl/sales.py",
+   "line": 25,
+   "function": "transform_sales"
+  }
+ ],
+ "log_excerpt": "Log message source details\n/opt/airflow/logs/dag_id=sales_daily_etl/run_id=manual__2026-10-18T06:00:00.000000+00:00/task_id=transform_sales/attempt=2.log\n[2026-10-18T06:00:05.100000Z] INFO - Pre Execute\n[2026-10-18T06:00:06.300000Z] INFO - reading /opt/airflow/repo/data/processed/sales_staging.csv\n[2026-10-18T06:00:06.310000Z] INFO - first row: order_id=A-1001 customer_email=[email] phone=[phone]\n[2026-10-18T06:00:06.400000Z] ERROR - Task failed with exception\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3641, in get_loc\n  File \"pandas/_libs/index.pyx\", line 168, in pandas._libs.index.IndexEngine.get_loc\n  File \"pandas/_libs/hashtable_class_helper.pxi\", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item\nKeyError: 'amount'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 1579, in _run_task_and_map_outcome\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/task_runner.py\", line 2192, in _run_execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/bases/operator.py\", line 462, in wrapper\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 231, in execute\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/providers/standard/operators/python.py\", line 254, in execute_callable\n  File \"/home/airflow/.local/lib/python3.13/site-packages/airflow/sdk/execution_time/callback_runner.py\", line 97, in run\n  File \"/opt/airflow/repo/src/etl/sales.py\", line 25, in transform_sales\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/frame.py\", line 4378, in __getitem__\n  File \"/home/airflow/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py\", line 3648, in get_loc\nKeyError: 'amount'\n[2026-10-18T06:00:06.500000Z] INFO - Post Execute",
+ "dag_file": "dags/sales_daily_etl.py",
+ "dag_source": "\"\"\"\nDaily sales ETL.\n\nPicks up the POS export dropped by the upstream team in data/incoming/sales.csv,\nbuilds the per day / per currency revenue summary and publishes it for finance.\n\nOwner: data-eng (#data-eng on slack)\n\"\"\"\nimport os\nimport sys\nfrom datetime import datetime, timedelta\n\n# make src/ importable when airflow parses this file\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom airflow.providers.standard.operators.python import PythonOperator  # noqa: E402\nfrom airflow.sdk import DAG  # noqa: E402\n\nfrom src.etl import sales  # noqa: E402\n\ndefault_args = {\n    \"owner\": \"data-eng\",\n    \"depends_on_past\": False,\n    \"retries\": 0,\n    \"retry_delay\": timedelta(minutes=5),  # leftover from when we had retries=3\n}\n\nwith DAG(\n    \"sales_daily_etl\",\n    default_args=default_args,\n    description=\"daily sales summary for finance\",\n    schedule=None,  # was \"0 6 * * *\", now triggered after the upstream drop\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n) as dag:\n\n    extract = PythonOperator(\n        task_id=\"extract_sales\",\n        python_callable=sales.extract_sales,\n    )\n\n    transform = PythonOperator(\n        task_id=\"transform_sales\",\n        python_callable=sales.transform_sales,\n        op_kwargs={\"report_currency\": \"USD\"},\n    )\n\n    load = PythonOperator(\n        task_id=\"load_sales\",\n        python_callable=sales.load_sales,\n    )\n\n    # send_report = PythonOperator(\n    #     task_id=\"send_report\",\n    #     python_callable=sales.send_report,\n    #     op_kwargs={\"to\": \"finance-reports@example.com\"},\n    # )\n\n    # TODO: re-enable send_report once finance gives us the new SMTP relay\n    extract >> transform >> load  # >> send_report\n",
+ "task": {
+  "task_id": "transform_sales",
+  "operator": "PythonOperator",
+  "callable_name": "transform_sales",
+  "callable_module": "src.etl.sales",
+  "callable_file": "src/etl/sales.py",
+  "lineno": 43
+ },
+ "code_snippets": {
+  "dags/sales_daily_etl.py": "\"\"\"\nDaily sales ETL.\n\nPicks up the POS export dropped by the upstream team in data/incoming/sales.csv,\nbuilds the per day / per currency revenue summary and publishes it for finance.\n\nOwner: data-eng (#data-eng on slack)\n\"\"\"\nimport os\nimport sys\nfrom datetime import datetime, timedelta\n\n# make src/ importable when airflow parses this file\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), \"..\"))\n\nfrom airflow.providers.standard.operators.python import PythonOperator  # noqa: E402\nfrom airflow.sdk import DAG  # noqa: E402\n\nfrom src.etl import sales  # noqa: E402\n\ndefault_args = {\n    \"owner\": \"data-eng\",\n    \"depends_on_past\": False,\n    \"retries\": 0,\n    \"retry_delay\": timedelta(minutes=5),  # leftover from when we had retries=3\n}\n\nwith DAG(\n    \"sales_daily_etl\",\n    default_args=default_args,\n    description=\"daily sales summary for finance\",\n    schedule=None,  # was \"0 6 * * *\", now triggered after the upstream drop\n    start_date=datetime(2026, 1, 1),\n    catchup=False,\n    tags=[\"legacy\"],\n) as dag:\n\n    extract = PythonOperator(\n        task_id=\"extract_sales\",\n        python_callable=sales.extract_sales,\n    )\n\n    transform = PythonOperator(\n        task_id=\"transform_sales\",\n        python_callable=sales.transform_sales,\n        op_kwargs={\"report_currency\": \"USD\"},\n    )\n\n    load = PythonOperator(\n        task_id=\"load_sales\",\n        python_callable=sales.load_sales,\n    )\n\n    # send_report = PythonOperator(\n    #     task_id=\"send_report\",\n    #     python_callable=sales.send_report,\n    #     op_kwargs={\"to\": \"finance-reports@example.com\"},\n    # )\n\n    # TODO: re-enable send_report once finance gives us the new SMTP relay\n    extract >> transform >> load  # >> send_report\n",
+  "src/etl/sales.py": "\"\"\"Sales daily ETL: POS export -> daily revenue summary per currency.\"\"\"\nimport pandas as pd\n\nfrom src.etl import common\nfrom src.etl.common import read_csv, write_output\n\nSALES_FILE = \"data/incoming/sales.csv\"\n\n# TODO: read the rates from the finance FX table instead of hardcoding them (DATA-412)\nFX_TO_USD = {\"USD\": 1.0, \"EUR\": 1.08, \"GBP\": 1.27}\n\n\ndef extract_sales(**context):\n    df = read_csv(SALES_FILE)\n    print(\"extracted %d rows from %s\" % (len(df), SALES_FILE))\n    if len(df) == 0:\n        raise ValueError(\"sales file is empty!!\")\n    # the POS sometimes re-sends the same order\n    df = df.drop_duplicates(subset=[\"order_id\"], keep=\"last\")\n    write_output(df, \"sales_staging\")\n    return len(df)\n\n\ndef transform_sales(report_currency=\"USD\", **context):\n    df = common.read_output(\"sales_staging\")\n    df[\"amount\"] = pd.to_numeric(df[\"amount\"], errors=\"coerce\")\n    df = df[df[\"amount\"] > 0].copy()  # refunds are handled by finance, not here\n\n    if report_currency != \"USD\":\n        raise NotImplementedError(\"only USD reports for now\")\n    df[\"amount_usd\"] = df[\"amount\"] * df[\"currency\"].map(FX_TO_USD)\n\n    summary = (\n        df.groupby([\"order_date\", \"currency\"])\n        .agg(\n            orders=(\"order_id\", \"count\"),\n            revenue=(\"amount\", \"sum\"),\n            revenue_usd=(\"amount_usd\", \"sum\"),\n        )\n        .reset_index()\n    )\n    summary[\"revenue\"] = summary[\"revenue\"].round(2)\n    summary[\"revenue_usd\"] = summary[\"revenue_usd\"].round(2)\n    write_output(summary, \"sales_daily_summary\")\n    print(\"total revenue: %.2f %s\" % (summary[\"revenue_usd\"].sum(), report_currency))\n    return len(summary)\n\n\ndef load_sales(**context):\n    # the analytics.sales_daily table was dropped in the warehouse migration,\n    # finance reads the csv directly now\n    summary = common.read_output(\"sales_daily_summary\")\n    summary[\"source\"] = \"pos\"\n    write_output(summary, \"sales_daily_report\")\n    return len(summary)\n\n\ndef send_report(**context):\n    # disabled in the DAG, finance moved to the new SMTP relay\n    raise NotImplementedError(\"send_report is disabled\")\n"
+ },
+ "contract": {
+  "version": 1,
+  "dag_id": "sales_daily_etl",
+  "status": "approved",
+  "review": "required",
+  "approved_by": "data-lead",
+  "approved_at": "2026-10-18T09:00:00+00:00",
+  "source_hash": "d9cbf1d1beb34674749551f4962500c713475cc3ea1c0b96a340f458d9542f08",
+  "inferred_from": [
+   "data/incoming/sales.csv (30 rows)"
+  ],
+  "notes": "Inferred automatically from sample data. Review dtypes, nullability, numeric ranges (inferred with a 10x headroom) and row-count bands before approving.",
+  "datasets": [
+   {
+    "name": "sales",
+    "task_id": "extract_sales",
+    "locator": {
+     "type": "csv",
+     "path": "data/incoming/sales.csv"
+    },
+    "row_count": {
+     "min": 15,
+     "max": 100
+    },
+    "allow_extra_columns": true,
+    "columns": [
+     {
+      "name": "order_id",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "customer_email",
+      "dtype": "string",
+      "nullable": false,
+      "pii": true
+     },
+     {
+      "name": "amount",
+      "dtype": "float",
+      "nullable": false,
+      "min": 0.0,
+      "max": 8990.0,
+      "pii": false
+     },
+     {
+      "name": "currency",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false
+     },
+     {
+      "name": "order_date",
+      "dtype": "string",
+      "nullable": false,
+      "pii": false,
+      "note": "looks like a date (YYYY-MM-DD); inferred as 'string' so other date/time formats are not rejected. Change dtype to 'date' or 'datetime' to require ISO-8601 parseable values."
+     }
+    ]
+   }
+  ]
+ },
+ "contract_status": "approved",
+ "violations": [
+  {
+   "rule": "missing_column",
+   "dataset": "sales",
+   "column": "amount",
+   "message": "Column 'amount' is missing from dataset 'sales'.",
+   "expected": "amount",
+   "actual": [
+    "amt",
+    "currency",
+    "customer_email",
+    "order_date",
+    "order_id"
+   ],
+   "row_indexes": []
+  }
+ ],
+ "draft_violations": [],
+ "sample_dataset": "sales",
+ "masked_sample": {
+  "dataset": "sales",
+  "columns": [
+   "order_id",
+   "customer_email",
+   "amt",
+   "currency",
+   "order_date"
+  ],
+  "rows": [
+   {
+    "order_id": "ORD-50031",
+    "customer_email": "h:038151c9d1",
+    "amt": 58.0,
+    "currency": "EUR",
+    "order_date": "2026-10-02"
+   },
+   {
+    "order_id": "ORD-50032",
+    "customer_email": "h:0f62d3a9dc",
+    "amt": null,
+    "currency": "GBP",
+    "order_date": "2026-10-02"
+   },
+   {
+    "order_id": "ORD-50033",
+    "customer_email": "h:e0efe16d47",
+    "amt": 1249.0,
+    "currency": "USD",
+    "order_date": "2026-10-02"
+   },
+   {
+    "order_id": "ORD-50034",
+    "customer_email": "h:ef81261b71",
+    "amt": 36.4,
+    "currency": "USD",
+    "order_date": "2026-10-02"
+   },
+   {
+    "order_id": "ORD-50035",
+    "customer_email": "h:7add03a2da",
+    "amt": null,
+    "currency": "USD",
+    "order_date": "2026-10-02"
+   }
+  ],
+  "masked": true
+ },
+ "datasets_checked": [
+  "sales"
+ ],
+ "notes": []
+}
+</incident>
+
+<signals>
+{
+ "contract_status": "approved",
+ "violation_rules": [
+  "missing_column"
+ ],
+ "violation_columns": [
+  "amount"
+ ],
+ "draft_violation_rules": [],
+ "exception_type": "KeyError",
+ "error_kind": "data_shape",
+ "repo_frames_present": true,
+ "top_repo_frame": {
+  "file": "src/etl/sales.py",
+  "line": 25,
+  "function": "transform_sales"
+ },
+ "missing_column_in_error": "amount",
+ "columns_in_error": [
+  "amount"
+ ],
+ "violation_details": [
+  "missing_column: sales.amount"
+ ],
+ "exception_message": "'amount'",
+ "infra_marker": null,
+ "dag_id": "sales_daily_etl",
+ "task_id": "transform_sales",
+ "min_confidence": 0.75,
+ "policy_hint": {
+  "category": "data",
+  "rule": "a_contract_violated",
+  "reason": "The approved contract is violated (missing_column: sales.amount) and the task failed with a data-shaped error (KeyError).",
+  "llm_decides": false
+ }
+}
+</signals>
