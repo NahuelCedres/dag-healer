@@ -38,6 +38,12 @@ Building a wheel requires the UI bundle (`src/dag_healer/api/static/main.umd.cjs
 build it with `python scripts/tasks.py ui`, or set `DAG_HEALER_ALLOW_NO_UI=1` to build
 a wheel without the Airflow UI views.
 
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the development
+setup, the checks to run and the commit convention
+([Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)).
+
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE).
