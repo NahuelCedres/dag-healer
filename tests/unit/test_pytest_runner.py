@@ -228,7 +228,9 @@ def test_environment_is_scrubbed(project: Path, tmp_path: Path, monkeypatch: pyt
     assert env["AIRFLOW__CORE__UNIT_TEST_MODE"] == "True"
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     home = Path(env["AIRFLOW_HOME"])
-    assert env["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"] == f"sqlite:///{(home / 'unittests.db').as_posix()}"
+    # The URL holds the resolved path (on macOS the temporary directory lives behind /var -> /private/var).
+    database = (home / "unittests.db").resolve()
+    assert env["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"] == f"sqlite:///{database.as_posix()}"
     assert not home.exists()  # the throw-away AIRFLOW_HOME is removed after the run
 
 
@@ -275,7 +277,10 @@ def test_posix_resource_limits_and_new_session(project: Path, tmp_path: Path) ->
     assert result.ok, result.output_tail
     data = json.loads(dump.read_text(encoding="utf-8"))
     assert data["session_leader"] is True
-    assert 0 < data["RLIMIT_AS"] <= pytest_runner.RLIMIT_AS_BYTES
+    if sys.platform == "darwin":
+        assert data["RLIMIT_AS"] > 0  # macOS refuses to lower RLIMIT_AS, so the runner skips it there
+    else:
+        assert 0 < data["RLIMIT_AS"] <= pytest_runner.RLIMIT_AS_BYTES
     assert 0 < data["RLIMIT_NPROC"] <= pytest_runner.RLIMIT_NPROC_COUNT
     assert 0 < data["RLIMIT_FSIZE"] <= pytest_runner.RLIMIT_FSIZE_BYTES
 

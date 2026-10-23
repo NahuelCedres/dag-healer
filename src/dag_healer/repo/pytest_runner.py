@@ -11,7 +11,8 @@ the test process gets as little as possible from the worker:
 * **Time**: the whole process group is killed when ``timeout`` expires (POSIX:
   ``start_new_session`` + ``os.killpg``; Windows: best-effort ``taskkill /T``).
 * **Resources** (POSIX): ``RLIMIT_AS``, ``RLIMIT_NPROC`` and ``RLIMIT_FSIZE`` are lowered
-  in the child before ``exec`` (never raised above the current limits).
+  in the child before ``exec`` (never raised above the current limits). A limit the kernel
+  refuses is skipped: macOS does not let a process lower ``RLIMIT_AS``.
 * **Output** goes to a temporary file (not memory) and only the last
   :data:`MAX_OUTPUT_CHARS` characters are kept.
 
