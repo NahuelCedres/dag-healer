@@ -23,6 +23,7 @@ on the model Anthropic recommends for that refusal category.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from collections.abc import Callable, Iterator, Mapping
@@ -252,6 +253,20 @@ def _has_credentials() -> bool:
     return any(os.environ.get(name) for name in _CREDENTIAL_ENVS)
 
 
+def _unthreaded(tool_runner: Callable[..., Any]) -> dict[str, Any]:
+    """``{"thread": False}`` when the SDK's tool runner can use server-held threads.
+
+    Since anthropic 2.2 the runner keeps the conversation on the server by default and drops
+    ``system`` and ``tools`` from the follow-up requests. The repair loop resends the whole
+    conversation instead, so every request keeps the shape described in the module docstring.
+    """
+    try:
+        parameters = inspect.signature(tool_runner).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"thread": False} if "thread" in parameters else {}
+
+
 @contextmanager
 def _api_errors(action: str) -> Iterator[None]:
     """Translate Anthropic SDK errors into :class:`LLMUnavailable` (most specific first)."""
@@ -449,8 +464,12 @@ class AnthropicProvider:
         )
         try:
             with _api_errors(action):
-                runner = client.beta.messages.tool_runner(
-                    tools=runnable, max_iterations=MAX_RUNNER_MESSAGES, **self._request_kwargs(system, prompt)
+                tool_runner = client.beta.messages.tool_runner
+                runner = tool_runner(
+                    tools=runnable,
+                    max_iterations=MAX_RUNNER_MESSAGES,
+                    **_unthreaded(tool_runner),
+                    **self._request_kwargs(system, prompt),
                 )
                 try:
                     self._drive(runner, budget, result)

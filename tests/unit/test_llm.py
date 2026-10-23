@@ -464,6 +464,15 @@ def test_repair_session_resumes_pause_turn() -> None:
     assert resumed[-1]["content"][0]["text"] == "Working..."
 
 
+def test_repair_session_turns_server_held_threads_off_only_where_the_sdk_has_them() -> None:
+    def runner_without_threads(*, tools: Any, max_iterations: int, **params: Any) -> None: ...
+
+    def runner_with_threads(*, tools: Any, max_iterations: int, thread: Any = None, **kw: Any) -> None: ...
+
+    assert llm_module._unthreaded(runner_without_threads) == {}
+    assert llm_module._unthreaded(runner_with_threads) == {"thread": False}
+
+
 def test_repair_session_stops_when_the_budget_is_exhausted() -> None:
     api = FakeAPI(
         message(
