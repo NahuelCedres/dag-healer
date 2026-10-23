@@ -148,7 +148,7 @@ into `healer_kv` (6.2) must carry **both** keys: the floor matters right after a
 6. **Push confirmation uses the payload text.** A confirmed listener/callback incident keeps
    the pushed `error` text for its summary and signature (no log fetch); a REST incident
    uses the log. `create_incident_from_failure` must keep both behaviours.
-7. **Core import time.** `import dag_healer.core` takes about 45 ms on the Windows host,
+7. **Core import time.** `import dag_healer.core` takes about 45 ms on a development machine,
    of which about 30 ms is the standard library (`dataclasses`, `typing`, `enum`); the
    "< 50 ms" guard of 11.6 is tight there and should measure against a stdlib baseline.
 8. **Golden snapshots.** `tests/unit/test_golden_snapshots.py` records the 11.5 artifacts

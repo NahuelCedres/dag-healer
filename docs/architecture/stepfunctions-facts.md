@@ -385,7 +385,7 @@ Capabilities flags:
 - **Infra:** `States.Timeout`, `States.HeartbeatTimeout`, `States.Permissions`, `Lambda.ServiceException`, `Lambda.SdkClientException`, `Lambda.AWSLambdaException`, `Lambda.TooManyRequestsException`, `Sandbox.Timedout`, `ExecutionLimitExceeded`, `States.Http.Socket`.
 - **Definition/code:** `States.Runtime`, `States.DataLimitExceeded`.
 - **Data/aggregate signals:** `States.ExceedToleratedFailureThreshold`, `States.ItemReaderFailed`.
-- **Everything else:** the user's `errorType` (e.g. `KeyError`), which goes through the existing data-shape gates.
+- **Everything else:** the function's own `errorType` (e.g. `KeyError`), which goes through the existing data-shape gates.
 
 Dataset locators need an `s3://` type, because Distributed Map ItemReader sources are CSV/JSON/JSONL/Parquet in S3.
 
@@ -409,7 +409,7 @@ The `retry_task` action should therefore be gated on a `deployed_fix_check` capa
 
 ### 11. Tests for the reference Step Functions adapter
 
-- Recorded history/redrive JSON fixtures driven through botocore's Stubber (my suggestion; not checked this session).
+- Recorded history/redrive JSON fixtures driven through botocore's Stubber (a design choice; not verified).
 - moto for list/describe calls (static history unless `execute_state_machine` is on).
 - No moto support for `redrive_execution` or `test_state`.
 - An optional TestState-based check in CI.

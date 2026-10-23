@@ -1,13 +1,13 @@
 # dag-healer: orchestrator abstraction (ports and adapters)
 
-Status: final design. It merges the three proposals with the verified Step Functions fact sheet, and it is meant to be committed as `docs/architecture/orchestrators.md`. Implementation starts after the phase 2-5 commit lands.
+Status: accepted design. It builds on the verified Step Functions facts in [`stepfunctions-facts.md`](stepfunctions-facts.md); section 12 is the implementation plan.
 
 Tags used in this document:
-- **[V]**: verified in an AWS or vendor document, either by the fact sheet or by an extra check made while writing this design.
+- **[V]**: verified in an AWS or vendor document, either in `stepfunctions-facts.md` or by one of the extra checks below.
 - **[I]**: an inference from verified facts.
 - **[U]**: not verified. Every [U] item sits behind exactly one function or one config template and is covered by a fixture that a recorded response will replace.
 
-Extra checks made while writing this design (all [V]):
+Extra checks (all [V]):
 - `ListExecutions` returns the most recent execution first. Running executions are ordered by `startDate`/`redriveDate`, the others by `stopDate`. `statusFilter` takes a single value.
 - In `GetExecutionHistory`, `includeExecutionData` governs only the "input or output of a history event".
 - In the documented history sample, `PassStateEntered` has `previousEventId: 0`.
@@ -24,22 +24,22 @@ Extra checks made while writing this design (all [V]):
 
 ## 0. Decision summary
 
-| Topic | Decision | Taken from | Why |
-|---|---|---|---|
-| Package layout | `dag_healer/airflow/` **stays where it is** and becomes the Airflow adapter. New packages: `core/`, `orchestrators/`, `hosting/`, `stepfunctions/`. Nothing moves except three dataclass definitions and three string constants, which are re-exported from their old modules. | P3 + P1 | The `airflow.plugins` entry point, the listener module object and `dag_healer.callback` keep their identity, so no shim modules are needed. |
-| Port shape | One `OrchestratorAdapter` bundle made of small optional ports: `FailureFeed`, `PushIntake`, `HintQueue`, `RunInspector`, `CodeLocator`, `Remediator`, `NativeLinks`, plus `Vocabulary`, `Capabilities` and `ErrorTaxonomy` | P2/P3, slimmed | Adapters implement only what their orchestrator offers, and capabilities follow from which ports are present. |
-| Error interchange | Structured `AttemptDetail` (error name, message, raw cause) **plus** a Python-format `traceback_text` that each adapter renders | P2 + P1 | The existing `extract_traceback` / `map_to_repo_path` / policy / repair keep working unchanged, and structured fields are not lost. |
-| Push events | Hints only. The worker confirms each one against the orchestrator API and creates the incident from the **confirmed** ref. Run-level hints (EventBridge) get their step localised during confirmation. | P1 + P3 | Keeps the rule "the API is the truth, events are hints", and also defeats forged events. |
-| Step Functions push transport | EventBridge → SQS → `HintQueue` (recommended); EventBridge API destination → `POST /events/eventbridge` (optional); polling always on | Fact sheet + P1/P3 | Delivery is best effort and out of order [V]. SQS needs no inbound endpoint. |
-| Store key | Keep the physical columns `dag_id/run_id/task_id/map_index/try_number`, add ORM synonyms, add an `orchestrator` (instance) column **to the unique key** in schema v2 | P2/P3 | Running Airflow and Step Functions side by side during a migration (the user's scenario) needs two workers sharing one store. Changing the key is cheapest now, while only dev and demo DBs exist. |
-| `map_index` / `attempt` types | Stay `int`. `attempt = redriveCount + 1`. `Retry` attempts are counted in `native_ref`. A Distributed Map failure gives one incident on the parent. | P1/P3 (deviates from the fact sheet's [I] proposal of string keys) | See section 2.3. Retries are never incidents, because incidents are only for terminal attempts (fact sheet). |
-| HTTP API | Wire contract v1 frozen: same `/healer/api/v1/dags/{dag_id}/...` routes and JSON field names, additive fields only | P1/P2 | The Airflow UI and Airflow's `requires_access_dag` (which reads the `dag_id` path parameter) stay unchanged. A neutral `/api/v2` is future work. |
-| Auth | `AuthBackend` bundles the user dependency and the existing `Authorizer` protocol. Wiring uses the two dependency overrides that already exist (`get_current_user`, `get_authorizer`). | P1 | No route changes. The tests already use this exact mechanism. |
-| Standalone UI | `dag-healer serve` mounts the same `create_app()` at `/healer` and serves a second Vite build (React bundled) on **the same URL shapes** as the Airflow host | P1 | `links.py`, `ui/src/links.ts` and the `pluginContext` pathname resolver are reused unchanged. |
-| Contracts | `dag_id`/`task_id` stay the canonical YAML keys. `pipeline_id`/`step_id` are accepted only as input aliases. | P3 | `compute_source_hash` hashes `contract_to_dict()`. Renaming the keys would mark every approved contract stale. |
-| Poll cursor | New `healer_kv` table, one key per orchestrator instance. A phase-5 `state.json` is imported once. | P2/P3 | Safe with several containers and several instances. |
-| Sandbox | The core always scrubs cloud credentials and disables IMDS in the pytest sandbox | all three | LLM-written tests run user code inside a worker that has AWS permissions. |
-| "Repaired" ≠ "retry now" | Remediation gets a delivery gate (`fix_delivery = "ci_deploy"` for Step Functions). The UI warns that a redrive reruns the *deployed* code with the *original* definition. | Fact sheet §8 | Merging a PR does not deploy anything on AWS. |
+| Topic | Decision | Why |
+|---|---|---|
+| Package layout | `dag_healer/airflow/` **stays where it is** and becomes the Airflow adapter. New packages: `core/`, `orchestrators/`, `hosting/`, `stepfunctions/`. Nothing moves except three dataclass definitions and three string constants, which are re-exported from their old modules. | The `airflow.plugins` entry point, the listener module object and `dag_healer.callback` keep their identity, so no shim modules are needed. |
+| Port shape | One `OrchestratorAdapter` bundle made of small optional ports: `FailureFeed`, `PushIntake`, `HintQueue`, `RunInspector`, `CodeLocator`, `Remediator`, `NativeLinks`, plus `Vocabulary`, `Capabilities` and `ErrorTaxonomy` | Adapters implement only what their orchestrator offers, and capabilities follow from which ports are present. |
+| Error interchange | Structured `AttemptDetail` (error name, message, raw cause) **plus** a Python-format `traceback_text` that each adapter renders | The existing `extract_traceback` / `map_to_repo_path` / policy / repair keep working unchanged, and structured fields are not lost. |
+| Push events | Hints only. The worker confirms each one against the orchestrator API and creates the incident from the **confirmed** ref. Run-level hints (EventBridge) get their step localised during confirmation. | Keeps the rule "the API is the truth, events are hints", and also defeats forged events. |
+| Step Functions push transport | EventBridge → SQS → `HintQueue` (recommended); EventBridge API destination → `POST /events/eventbridge` (optional); polling always on | Delivery is best effort and out of order [V]. SQS needs no inbound endpoint. |
+| Store key | Keep the physical columns `dag_id/run_id/task_id/map_index/try_number`, add ORM synonyms, add an `orchestrator` (instance) column **to the unique key** in schema v2 | Running Airflow and Step Functions side by side during a migration needs two workers sharing one store. Changing the key is cheapest now, while only dev and demo DBs exist. |
+| `map_index` / `attempt` types | Stay `int`. `attempt = redriveCount + 1`. `Retry` attempts are counted in `native_ref`. A Distributed Map failure gives one incident on the parent. | See section 2.3. Retries are never incidents, because incidents are only for terminal attempts (`stepfunctions-facts.md` §4). |
+| HTTP API | Wire contract v1 frozen: same `/healer/api/v1/dags/{dag_id}/...` routes and JSON field names, additive fields only | The Airflow UI and Airflow's `requires_access_dag` (which reads the `dag_id` path parameter) stay unchanged. A neutral `/api/v2` is future work. |
+| Auth | `AuthBackend` bundles the user dependency and the existing `Authorizer` protocol. Wiring uses the two dependency overrides that already exist (`get_current_user`, `get_authorizer`). | No route changes. The tests already use this exact mechanism. |
+| Standalone UI | `dag-healer serve` mounts the same `create_app()` at `/healer` and serves a second Vite build (React bundled) on **the same URL shapes** as the Airflow host | `links.py`, `ui/src/links.ts` and the `pluginContext` pathname resolver are reused unchanged. |
+| Contracts | `dag_id`/`task_id` stay the canonical YAML keys. `pipeline_id`/`step_id` are accepted only as input aliases. | `compute_source_hash` hashes `contract_to_dict()`. Renaming the keys would mark every approved contract stale. |
+| Poll cursor | New `healer_kv` table, one key per orchestrator instance. A phase-5 `state.json` is imported once. | Safe with several containers and several instances. |
+| Sandbox | The core always scrubs cloud credentials and disables IMDS in the pytest sandbox | LLM-written tests run user code inside a worker that has AWS permissions. |
+| "Repaired" ≠ "retry now" | Remediation gets a delivery gate (`fix_delivery = "ci_deploy"` for Step Functions). The UI warns that a redrive reruns the *deployed* code with the *original* definition. | Merging a PR does not deploy anything on AWS. |
 
 ---
 
@@ -56,7 +56,7 @@ Extra checks made while writing this design (all [V]):
    - same `dag_healer.callback`, the same `POST /events/task-failed` ingest payload;
    - same email and PR.md text, and the same prompt text (snapshot-tested byte for byte);
    - every existing `healer.yaml`, contract file (including `source_hash`) and store keeps working with no manual step except the store migration, which runs on its own.
-4. **A Step Functions reference adapter** that proves the seam and can be built and unit-tested on the Windows host with no AWS credentials (pure parsers plus botocore `Stubber`).
+4. **A Step Functions reference adapter** that proves the seam and can be built and unit-tested on any development machine, Windows included, with no AWS credentials (pure parsers plus botocore `Stubber`).
 5. **A standalone host** (`dag-healer serve`) that serves the same API and React views for orchestrators that have no UI plugin system, with pluggable authentication and per-pipeline permissions.
 6. **Third-party adapters** can ship as separate distributions through the `dag_healer.orchestrators` entry-point group and validate themselves with the packaged conformance suite.
 
@@ -106,14 +106,14 @@ Extra checks made while writing this design (all [V]):
   - `RUN_LEVEL_STEP = "__run__"`: a failure that has no step, such as an execution timeout or abort, or a history still unreadable after the confirmation retries. The UI shows it as "run-level failure".
 - **`native_ref`** (JSON column) holds adapter-owned, JSON-safe pointers such as the execution ARN, event ids, `retry_attempts`, `map_run_arn`, the Lambda request id and the start date. The core never interprets it and passes it back to the adapter.
   - **Privacy rule:** execution input or output, `cause` text and data rows never go into `native_ref`. The conformance suite enforces a 4 KB limit and a payload-key denylist.
-- **Error text** travels raw from the adapter and is masked by the core (`masking.mask_text`) before any persistence or prompt. The core is the single masking point (P2).
+- **Error text** travels raw from the adapter and is masked by the core (`masking.mask_text`) before any persistence or prompt. The core is the single masking point.
 - **Execution-name reuse** (Step Functions names can be reused 90 days after close [V]): `native_ref.start_date` is stored. If a key collides with a different `start_date`, the adapter sets `run_id = f"{name}@{startDate_ms}"`.
 
-### 2.3 Why `map_index` and `attempt` stay integers (deviation from the fact sheet's inference)
+### 2.3 Why `map_index` and `attempt` stay integers (deviation from an inference in the facts)
 
-The fact sheet *infers* [I] that the key should become `map_key: str` and `attempt_key: str` (`"redrive<n>.retry<m>"`). None of the verified facts forces this.
+`stepfunctions-facts.md` *infers* [I] that the key should become `map_key: str` and `attempt_key: str` (`"redrive<n>.retry<m>"`). None of the verified facts forces this.
 
-- **Attempt.** Incidents are raised only for **terminal** attempts (fact sheet §4, matching Airflow's `failed` vs `up_for_retry`). Within one redrive segment a Standard execution has at most one terminal step failure [I]: an uncaught failure ends the execution; an inline Map or Parallel fails on its first failing iteration or branch and then propagates or is caught; a caught failure is not terminal. Retry counters reset on redrive [V]. So `redriveCount + 1` identifies the terminal attempt uniquely, and the in-segment retry count is evidence (`native_ref.retry_attempts`), not identity.
+- **Attempt.** Incidents are raised only for **terminal** attempts (`stepfunctions-facts.md` §4, matching Airflow's `failed` vs `up_for_retry`). Within one redrive segment a Standard execution has at most one terminal step failure [I]: an uncaught failure ends the execution; an inline Map or Parallel fails on its first failing iteration or branch and then propagates or is caught; a caught failure is not terminal. Retry counters reset on redrive [V]. So `redriveCount + 1` identifies the terminal attempt uniquely, and the in-segment retry count is evidence (`native_ref.retry_attempts`), not identity.
 - **Distributed Map.** A child execution name is a string, but one incident per *child* would turn one bad input file into up to 10,000 incidents (default concurrency [V]). Retry and redrive also act on the parent or Map Run, not on one child [V]. The design files **one incident for the parent execution**, with `step_id = <Map state>` and `native_ref.{map_run_arn, failed_children (sample of up to 5), item_counts}`. That fits an integer `map_index = -1`.
 - **Dagster.** Its step key already contains dynamic mapping keys (format [U]), so `map_index = -1`.
 
@@ -1139,7 +1139,7 @@ example `self.links = AirflowNativeLinks(cfg)`), while the other ports may stay 
 
 ### 9.1 Facts the design rests on
 
-The full list with sources is in the fact sheet. The points that shape the adapter:
+The full list with sources is in `stepfunctions-facts.md`. The points that shape the adapter:
 
 **EventBridge [V]**
 - Only Standard workflows emit "Execution Status Change". Delivery is best effort and can be out of order.
@@ -1321,7 +1321,7 @@ The order is: explicit `options.code_map`, then the IaC resolvers, then nothing 
 - `StartExecution(stateMachineArn, name=f"{orig[:52]}-healer-{n}", input=...)` gives `new_ref` with a new `run_id`.
 - This is the only option after an ASL change: a redrive uses the original definition [V].
 
-**Delivery gate** (fact sheet §8):
+**Delivery gate** (`stepfunctions-facts.md` §8):
 - `capabilities.fix_delivery = "ci_deploy"`. For incidents in status `repaired`, `retry_task` comes with the warning: "A redrive reruns the code deployed now with the original definition. Deploy the merged fix first."
 - Future `deployed_fix_check`: compare `GetFunction` `CodeSha256`/`Version` with the fix commit and enable the action only when the fix is live.
 
@@ -1593,7 +1593,7 @@ Under the Airflow adapter every later step must reproduce them byte for byte, ap
 
 ## 12. Implementation plan for this repository
 
-Prerequisite: the phase 2-5 workflow is committed. Every step ends with `tests/unit` and ruff green on the Windows host. From step 6 on, `python scripts/tasks.py test-airflow` and `python scripts/tasks.py demo` must also stay green with unchanged outcomes.
+Prerequisite: the phase-5 code is committed. Every step ends with `tests/unit` and ruff green on the host. From step 6 on, `python scripts/tasks.py test-airflow` and `python scripts/tasks.py demo` must also stay green with unchanged outcomes.
 
 ### 12.1 Steps
 
@@ -1655,7 +1655,7 @@ Prerequisite: the phase 2-5 workflow is committed. Every step ends with `tests/u
 - `hosting/{__init__,app,shell,rbac}.py`, `hosting/auth/{token,trusted_header,alb_oidc,dev}.py`, `cli/serve_cmd.py`, `cli/main.py`.
 - `ui/src/standalone.tsx`, `ui/vite.standalone.config.ts`, `ui/package.json` (`build:standalone`), `ui/src/{messages.ts,api.ts,model.ts}` (vocabulary, optional fields), `scripts/build_ui.py`, `hatch_build.py`, `pyproject.toml` `serve` extra.
 - Tests: 11.7.
-- *Gate:* `dag-healer serve` with `orchestrator.type: fake` and the `token` backend shows the three views with working actions on the Windows host; the Airflow bundle and views are unchanged (screenshots compared in the running stack).
+- *Gate:* `dag-healer serve` with `orchestrator.type: fake` and the `token` backend shows the three views with working actions on the host; the Airflow bundle and views are unchanged (screenshots compared in the running stack).
 
 **Step 8. Step Functions reference adapter v1** (4-5 d; parallel with step 7)
 - `src/dag_healer/stepfunctions/*` (9.3), `src/dag_healer/storage/s3.py` + scheme dispatch in `datasets.py`.
@@ -1667,9 +1667,9 @@ Prerequisite: the phase 2-5 workflow is committed. Every step ends with `tests/u
 
 Order: 0 → 1 → 2, then 3 ∥ 4, then 5, then 6 alone, then 7 ∥ 8 (their files are disjoint; `pyproject.toml` is edited only by step 7, and step 8 adds its extra in a final one-line edit), then 9.
 
-Total effort: about **16-20 engineer-days**, or 4-5 sequential workflow runs of 3-6 parallel agents.
+Total effort: about **16-20 engineer-days**.
 
-### 12.2 Step Functions v1 scope (buildable and testable on Windows without credentials)
+### 12.2 Step Functions v1 scope (buildable and testable without AWS credentials)
 
 In v1:
 - Standard workflows.
@@ -1761,24 +1761,3 @@ Each sits behind one function or template with a fixture:
 - the `RedriveExecution` `clientToken` length limit;
 - the Dagster step-key format for mapped ops;
 - the Prefect logs filter request shape.
-
----
-
-## Scorecard
-
-Scale is 1 to 10, where 10 is best. For migration risk, 10 means the lowest risk.
-
-| Criterion | P1 Minimal seam | P2 Hexagonal | P3 Step-Functions-first |
-|---|---|---|---|
-| Correctness against the facts | **8**. Facts are accurate and its uncertain items are flagged. It misses the "repaired ≠ deployed" gate except as a PR note. Its one-orchestrator-per-store rule conflicts with the side-by-side migration this design must support (a design flaw, not a factual error). | **7**. Attempt = ordinal of failed attempts including `Retry`, which contradicts the "terminal attempts only" principle and Airflow's try semantics. It suggests `endpoint_url` for "Step Functions Local", which is unsupported. Otherwise sound. | **8**. The most careful [U] flagging; correct Distributed Map and redrive handling. A few claims (ERROR-level logs omitting `*StateEntered`, the IAM resource mapping) were stated from memory, though they were flagged. |
-| Fit with existing code | **9**. Accurate inventory; reuses the existing `Authorizer` and the two overrides; no moves. | **5**. Moves `airflow/*`, `api/auth.py`, `dagscan` and `ingest` behind shims (listener and plugin identity risk) and rewrites route auth to neutral `Identity`. | **6**. Keeps the `airflow/` package, but adds a new `/pipelines` route family, replaces `requires_access_dag` with direct `is_authorized_dag` calls, and adds a UI `HostAdapter` and hash routing. |
-| Migration risk | **9**. Additive ADD COLUMN only, no route or UI change. | **5**. A rebuild of three tables, a changed ON CONFLICT target, web 503, moved modules. | **5**. Two migrations (v2 additive + v3 rebuild), new routes, UI routing rewrite. |
-| Fit for Step Functions / Dagster / Prefect | **6**. Text-only error interchange; Airflow-shaped `FailureRef`; one store per orchestrator; no S3 datasets. | **8**. Clean small ports, log deferral, S3 store, packaged conformance suite. | **10**. Run-level sentinel, SQS with ack, Distributed Map dedupe, `includeExecutionData=false`, contract-hash stability, credential scrub, S3 datasets. |
-| Testability | **8**. Conformance suite, fake adapter, golden snapshots, migration and guard tests. | **9**. Packaged conformance harness, fake builder, host-parametrised API tests, a Windows demo without Docker. | **9**. Scenario catalogue, packaged conformance suite, Stubber-first, golden parity, auth parity tests. |
-| **Average** | **8.0** | **6.8** | **7.6** |
-
-What the final design takes from each proposal:
-- **P1:** the layout discipline (no moves), the dependency-override `AuthBackend`, standalone URL mirroring, confirm-then-create from the confirmed ref, `map_to_repo_path(..., mappings=None)`, and the stable pipeline-id map.
-- **P2:** the small optional ports, the single masking point, ORM synonyms, the `healer_kv` cursor, the web-processes-never-migrate rule with 503, the packaged conformance harness, and the fake world.
-- **P3:** keeping `dag_healer/airflow/` as the adapter package, the run-level sentinel, Distributed Map dedupe, the SQS ack flow, contract keys kept for hash stability, the credential scrub, the taxonomy with event types, the S3 datasets, and the localisation details.
-- **The fact sheet** decided: terminal-only incidents, the redrive/deploy gate, `includeExecutionData=false`, the SQS recommendation, the IAM split, and the testing toolchain.

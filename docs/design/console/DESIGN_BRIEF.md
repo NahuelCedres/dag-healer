@@ -3,7 +3,7 @@
 ## Product
 dag-healer attaches to EXISTING data pipelines (Airflow today, AWS Step Functions and others through connectors), detects task failures, classifies each as DATA / CODE / AMBIGUOUS, and heals them: CODE gets a failing pytest test + a minimal fix + a PR (or PR.md); DATA gets the violated data-contract rule with a masked sample and an alert; AMBIGUOUS waits for a human decision (resolve as data / as code / ignore). This canvas designs the STANDALONE console (`dag-healer serve`): one UI for every orchestrator. The Airflow plugin keeps its own native look; this console is the product's own home.
 
-## Direction (settled with the user)
+## Direction
 "Neon ops": the dense, dark, three-pane layout of a modern agent IDE (left sidebar with workspaces and live lists, a center area of tabs and split panes with terminal-like agent logs, a right inspector panel, a thin status bar at the bottom), combined with a NEON look for showing DAGs: pipeline graphs glow like a circuit board, nodes and edges lit by their state. Original design: do not copy any other product's name, logo or branding. Product name in UI: "dag-healer" (lowercase).
 
 ## Design system (use exactly these values)
@@ -42,7 +42,7 @@ Every desktop artboard is a PAGE (fluid root: no px root width, `min-height: 100
 Write the shell markup out in each artboard (each artboard is self-contained), keeping it consistent.
 
 ## Demo data (use these exact names and facts; no invented metrics)
-Repo `analytics-etl` (the user's existing Airflow repo). Connectors: Airflow 3.3.2 "prod" (plugin installed, listener + REST polling, 3 DAGs monitored), Step Functions us-east-1 (EventBridge rule + execution history, 2 state machines monitored), Dagster (not connected).
+Repo `analytics-etl` (an existing Airflow repo). Connectors: Airflow 3.3.2 "prod" (plugin installed, listener + REST polling, 3 DAGs monitored), Step Functions us-east-1 (EventBridge rule + execution history, 2 state machines monitored), Dagster (not connected).
 Incidents (newest first):
 1. inventory_report / build_report: AMBIGUOUS, status "needs you" (waiting_human). Error `KeyError: 'qty'`. Contract for inventory_report is a DRAFT (not approved), so dag-healer will not decide alone. Evidence: today's inventory.csv has columns sku, warehouse, warehouse_code, quantity, updated_at; the draft contract expects sku, warehouse, qty, updated_at. So: `qty` missing, `quantity` and `warehouse_code` new. 2m ago. Source: listener.
 2. orders-ingest (Step Functions state machine) / ValidateOrder (Lambda task): CODE, status "healing" (repairing). Execution history shows `TaskFailed` with error `KeyError` and cause `'currency'`, raised in the Lambda handler `src/orders/validate.py` line 42, function `validate_order` (mapped to code through the repo's SAM template). Agent currently writing a failing test. 6m ago. Source: EventBridge.
