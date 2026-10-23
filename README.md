@@ -25,6 +25,14 @@ listener), so the UI lives inside Airflow and respects its users and permissions
 TODO: installation into an existing Airflow deployment, `dag-healer init`, contract
 approval and the end-to-end demo (`python scripts/tasks.py demo`).
 
+## Example cases
+
+- `example_existing_repo/` is a small legacy Airflow repository whose day-2 files break three
+  DAGs, one per category; `python scripts/tasks.py demo` plays it end to end.
+- `examples/synthetic/` adds three more pipelines with larger, fully synthetic datasets
+  (`python scripts/synthetic_cases.py` after the demo). See its
+  [README](examples/synthetic/README.md).
+
 ## Development
 
 ```bash

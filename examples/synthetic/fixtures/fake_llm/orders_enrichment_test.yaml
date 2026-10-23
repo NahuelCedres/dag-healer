@@ -1,0 +1,40 @@
+# Fake LLM script: CODE case (orders_enrichment), phase "test".
+# Writes a pytest regression test that reproduces the latent bug in
+# src/etl/orders.py::average_item_price (orders without items divide by zero).
+# Before the fix the first test fails with ZeroDivisionError; the second one passes.
+name: orders_enrichment_test
+match:
+  dag_id: orders_enrichment
+  task_id: enrich_orders
+  exception_type: ZeroDivisionError
+  phase: test
+steps:
+  - tool: list_files
+    input: {path: ".", pattern: "*.py"}
+  - tool: read_file
+    input: {path: src/etl/orders.py}
+  - tool: write_file
+    input:
+      path: tests/test_orders_average_item_price.py
+      content: |
+        """Regression test for orders_enrichment: cancelled orders arrive with zero items."""
+
+        from src.etl.orders import average_item_price
+
+
+        def test_average_item_price_is_none_for_orders_without_items():
+            assert average_item_price(0.0, 0) is None
+
+
+        def test_average_item_price_divides_the_total_by_the_items():
+            assert average_item_price(59.97, 3) == 19.99
+            assert average_item_price(120.5, 2) == 60.25
+  - tool: run_tests
+    input:
+      paths: [tests/test_orders_average_item_price.py]
+final_text: >-
+  Added tests/test_orders_average_item_price.py.
+  test_average_item_price_is_none_for_orders_without_items reproduces the failure of
+  orders_enrichment.enrich_orders: average_item_price raises ZeroDivisionError for a cancelled
+  order (items 0, total 0.00), which the approved contract allows. The second test documents the
+  behaviour that must keep working.

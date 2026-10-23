@@ -1,0 +1,38 @@
+# Fake LLM script: CODE case (orders_enrichment), phase "fix".
+# Minimal fix in src/etl/orders.py::average_item_price: an order without items (a cancelled
+# order) has no average item price, so return None instead of dividing by zero.
+# Each replacement targets a single line so it works whatever the file's line endings are.
+name: orders_enrichment_fix
+match:
+  dag_id: orders_enrichment
+  task_id: enrich_orders
+  exception_type: ZeroDivisionError
+  phase: fix
+steps:
+  - tool: read_file
+    input: {path: src/etl/orders.py}
+  - tool: replace_in_file
+    input:
+      path: src/etl/orders.py
+      old: '    """Average price of one item of the order."""'
+      new: '    """Average price of one item of the order (None when it has no items, e.g. cancelled)."""'
+  - tool: replace_in_file
+    input:
+      path: src/etl/orders.py
+      old: '    return round(float(total) / int(items), 2)'
+      # "|4-": keep the 4-space function-body indentation, no trailing newline.
+      new: |4-
+              items = int(items)
+              if items == 0:  # cancelled orders release their items
+                  return None
+              return round(float(total) / items, 2)
+  - tool: run_tests
+    input:
+      paths: [tests/test_orders_average_item_price.py]
+  - tool: run_tests
+    input: {}
+final_text: >-
+  average_item_price divided the order total by its item count, so the cancelled orders that the
+  order system now exports (items 0, total 0.00, allowed by the approved contract) raised
+  ZeroDivisionError. It now returns None for orders without items; every other order keeps its
+  average. The regression test and the whole suite pass.
