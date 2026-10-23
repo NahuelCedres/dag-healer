@@ -16,6 +16,7 @@ htmlcov/
 # dag-healer demo and local state
 .demo/
 *.db
+!tests/unit/fixtures/store/healer_v1.db
 *.db-journal
 *.db-wal
 *.db-shm
