@@ -6,7 +6,10 @@ hint against the API:
 1. ``DescribeExecution(execution_arn)``; ``ExecutionDoesNotExist``/``InvalidArn`` ->
    ``discarded`` ("forged or deleted"); throttling, 5xx, network or a permission problem ->
    ``retry_later``;
-2. status not in ``options.statuses`` -> ``discarded``;
+2. the hint's attempt still running (``RUNNING``, or ``PENDING_REDRIVE`` of a Map Run child;
+   ``DescribeExecution`` is eventually consistent) -> ``retry_later`` with
+   ``state=AttemptState.RUNNING``: the core checks it again on its next cycle, without counting
+   an error; any other status outside ``options.statuses`` -> ``discarded``;
 3. ``redriveCount + 1 != hint.ref.attempt`` -> ``discarded`` ("stale; a newer attempt
    exists"); an execution of another machine/name than the hint names -> ``discarded``;
 4. localise (``executions.read_history`` + ``history.localize``) and return
@@ -37,7 +40,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from dag_healer.core.errors import NotFound, OrchestratorError
-from dag_healer.core.failures import Confirmation, FailureHint, Trigger
+from dag_healer.core.failures import AttemptState, Confirmation, FailureHint, Trigger
 from dag_healer.stepfunctions import arns, events, executions
 from dag_healer.stepfunctions.events import CHANNEL, SOURCE_EVENTBRIDGE
 from dag_healer.stepfunctions.feed import ExecutionInfo, HistoryLocalizer, execution_failure
@@ -48,6 +51,8 @@ logger = logging.getLogger(__name__)
 MAX_UNREADABLE_CHECKS = 3
 #: Incident sources a confirmed hint may keep (anything else becomes ``eventbridge``).
 HINT_SOURCES: tuple[str, ...] = ("eventbridge", "sqs", "cli")
+#: Statuses of an attempt that has not ended (``PENDING_REDRIVE``: a Map Run child).
+RUNNING_STATUSES = frozenset({"RUNNING", "PENDING_REDRIVE"})
 
 
 def _discarded(reason: str) -> Confirmation:
@@ -129,7 +134,16 @@ class SfnIntake:
         info = ExecutionInfo.from_api(described)
         if info is None:
             return _retry_later("DescribeExecution gave an answer without execution ARN or status")
-        problem = self._mismatch(hint, info)
+        problem = self._not_the_run(hint, info)
+        if problem is not None:
+            return _discarded(problem)
+        if info.status in RUNNING_STATUSES and info.attempt == ref.attempt:
+            return Confirmation(
+                verdict="retry_later",
+                reason=f"attempt {ref.attempt} has not ended yet (the execution is {info.status})",
+                state=AttemptState.RUNNING,
+            )
+        problem = self._not_the_failure(hint, info)
         if problem is not None:
             return _discarded(problem)
         return self._localized(hint, info)
@@ -142,8 +156,8 @@ class SfnIntake:
         kind = "transient " if exc.transient else ""
         return _retry_later(f"{what} failed ({kind}{type(exc).__name__})")
 
-    def _mismatch(self, hint: FailureHint, info: ExecutionInfo) -> str | None:
-        """Why the described execution is not the hint's failed attempt (``None``: it is)."""
+    def _not_the_run(self, hint: FailureHint, info: ExecutionInfo) -> str | None:
+        """Why the described execution is not the hint's run (``None``: it is)."""
         ref = hint.ref
         pipeline_id = self.rt.pipelines.pipeline_id_for(info.state_machine_arn)
         known = self.rt.pipelines.known_arn(ref.pipeline_id)
@@ -155,7 +169,12 @@ class SfnIntake:
             if info.name == arns.execution_name(ref.run_id):
                 return f"run {ref.run_id} names an earlier execution of the same name"
             return f"the execution is not run {ref.run_id}"
-        if info.status not in self.rt.options.statuses:
+        return None
+
+    def _not_the_failure(self, hint: FailureHint, info: ExecutionInfo) -> str | None:
+        """Why the run's described state is not the hint's failed attempt (``None``: it is)."""
+        ref = hint.ref
+        if info.status not in self.rt.options.statuses and info.attempt == ref.attempt:
             return f"the execution is {info.status}, not one of {', '.join(self.rt.options.statuses)}"
         if info.attempt != ref.attempt:
             if info.attempt > ref.attempt:

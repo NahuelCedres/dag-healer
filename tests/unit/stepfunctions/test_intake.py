@@ -387,12 +387,30 @@ def test_a_hint_of_an_unknown_pipeline_is_discarded(intake: SfnIntake) -> None:
     assert "payroll" in confirmation.reason
 
 
-@pytest.mark.parametrize("status", ["RUNNING", "SUCCEEDED", "ABORTED", "PENDING_REDRIVE"])
+@pytest.mark.parametrize("status", ["SUCCEEDED", "ABORTED"])
 def test_an_execution_that_is_not_failed_is_discarded(aws: Aws, intake: SfnIntake, status: str) -> None:
     aws.describe(described(status=status))
     confirmation = intake.confirm(hint_of(intake), trigger="final_failure")
     assert confirmation.verdict == "discarded"
     assert confirmation.reason == f"the execution is {status}, not one of FAILED, TIMED_OUT"
+    assert confirmation.state is None
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "PENDING_REDRIVE"])
+def test_an_attempt_that_has_not_ended_is_checked_again(aws: Aws, intake: SfnIntake, status: str) -> None:
+    aws.describe(described(status=status))
+    confirmation = intake.confirm(hint_of(intake), trigger="final_failure")
+    assert confirmation.verdict == "retry_later"
+    assert confirmation.state is AttemptState.RUNNING
+    assert confirmation.reason == f"attempt 1 has not ended yet (the execution is {status})"
+    assert confirmation.failures == ()
+
+
+def test_a_newer_attempt_that_is_running_makes_the_hint_stale(aws: Aws, intake: SfnIntake) -> None:
+    aws.describe(described(status="RUNNING", redriveCount=1))
+    confirmation = intake.confirm(hint_of(intake), trigger="final_failure")
+    assert confirmation.verdict == "discarded"
+    assert confirmation.reason == "stale: attempt 1 was redriven, attempt 2 exists"
 
 
 def test_aborted_executions_are_confirmed_when_watched(aws: Aws, intake_of: Callable[..., SfnIntake]) -> None:
