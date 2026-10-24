@@ -50,7 +50,8 @@ AIRFLOW_AT_MODULE_LEVEL = frozenset({"airflow/plugin.py", "airflow/listener.py"}
 #: Modules that import ``airflow`` inside functions, which only run in Airflow processes.
 AIRFLOW_LAZILY = frozenset({"airflow/__init__.py", "api/auth.py"})
 #: The only modules that may import boto3 / botocore, and only inside functions (section 4).
-AWS_SDK_LAZILY = frozenset({"stepfunctions/aws.py", "storage/s3.py"})
+#: ``stepfunctions/testing.py`` is the offline AWS of the tests: it builds real botocore clients.
+AWS_SDK_LAZILY = frozenset({"stepfunctions/aws.py", "stepfunctions/testing.py", "storage/s3.py"})
 
 #: Calls of the Airflow REST client (``dag_healer.airflow.client.AirflowClient``).
 AIRFLOW_CLIENT_CALL = re.compile(
