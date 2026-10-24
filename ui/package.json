@@ -2,7 +2,7 @@
   "name": "dag-healer-ui",
   "private": true,
   "version": "0.1.0",
-  "description": "Airflow React plugin UI for dag-healer (nav page, DAG tab and task instance tab).",
+  "description": "React UI for dag-healer (nav page, DAG tab and task instance tab): the Airflow plugin bundle and the standalone host bundle.",
   "engines": {
     "node": ">=22"
   },
@@ -21,6 +21,7 @@
   "scripts": {
     "dev": "vite --port 5173 --strictPort",
     "build": "vite build",
+    "build:standalone": "vite build --config vite.standalone.config.ts",
     "build:types": "tsc --p tsconfig.lib.json",
     "build:lib": "vite build",
     "lint": "eslint --quiet && tsc --p tsconfig.app.json",

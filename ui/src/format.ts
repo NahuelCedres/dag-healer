@@ -1,5 +1,6 @@
 /** Small, locale-independent formatting helpers shared by the views. */
 import type { Category, ContractStatus, IncidentAction, IncidentStatus } from "src/api";
+import { DEFAULT_VOCABULARY, type Vocabulary } from "src/vocabulary";
 
 const pad = (value: number): string => String(value).padStart(2, "0");
 
@@ -102,6 +103,10 @@ export const ACTION_LABELS: Record<IncidentAction, string> = {
   retry_repair: "Retry repair",
   retry_task: "Retry task",
 };
+
+/** Label of an action button: `retry_task` uses the orchestrator's word ("Retry task", "Retry step"). */
+export const actionLabel = (action: IncidentAction, words: Vocabulary = DEFAULT_VOCABULARY): string =>
+  action === "retry_task" ? words.retry_action : ACTION_LABELS[action];
 
 /** Human labels of the decision rules of `dag_healer.agent.policy`. */
 export const RULE_LABELS: Record<string, string> = {

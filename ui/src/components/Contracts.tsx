@@ -4,16 +4,18 @@ import { useState } from "react";
 import { approveContract, type ContractDatasetView, type ContractView, toApiError } from "src/api";
 import { formatDateTime } from "src/format";
 import { dagHref } from "src/links";
+import { sessionExpiredRetryMessage } from "src/messages";
 import { contractNeedsApproval } from "src/model";
+import { capitalize, type UiText, useUiText } from "src/vocabulary";
 
 import { ContractStatusBadge } from "./Badges";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-const approvalError = (error: unknown): string => {
+const approvalError = (error: unknown, text: UiText): string => {
   const apiError = toApiError(error);
 
   if (apiError.status === 401) {
-    return "Your Airflow session expired — reload the page and try again.";
+    return sessionExpiredRetryMessage(text);
   }
   if (apiError.status === 403) {
     return "You do not have permission to approve this contract.";
@@ -39,6 +41,7 @@ export const ApproveContractButton = ({
   // The contract object current when the POST succeeded: until a fresh one arrives from the API,
   // the approval is shown as pending even if the server has not reported it yet.
   const [queuedFor, setQueuedFor] = useState<ContractView>();
+  const text = useUiText();
 
   if (contract.pending_approval || queuedFor === contract) {
     return (
@@ -60,7 +63,7 @@ export const ApproveContractButton = ({
         setOpen(false);
         onQueued?.();
       })
-      .catch((caught: unknown) => setError(approvalError(caught)))
+      .catch((caught: unknown) => setError(approvalError(caught, text)))
       .finally(() => setBusy(false));
   };
 
@@ -106,60 +109,64 @@ const rowBand = (dataset: ContractDatasetView): string => {
 };
 
 /** One dataset of a contract: locator, row-count band and the column rules. */
-export const DatasetRules = ({ dataset }: { readonly dataset: ContractDatasetView }) => (
-  <Box borderColor="border" borderRadius="md" borderWidth="1px" data-testid="contract-dataset" p={3}>
-    <HStack gap={3} mb={2} wrap="wrap">
-      <Text fontWeight="semibold">{dataset.name}</Text>
-      {dataset.task_id === null ? undefined : (
+export const DatasetRules = ({ dataset }: { readonly dataset: ContractDatasetView }) => {
+  const { words } = useUiText();
+
+  return (
+    <Box borderColor="border" borderRadius="md" borderWidth="1px" data-testid="contract-dataset" p={3}>
+      <HStack gap={3} mb={2} wrap="wrap">
+        <Text fontWeight="semibold">{dataset.name}</Text>
+        {dataset.task_id === null ? undefined : (
+          <Text color="fg.muted" fontSize="sm">
+            {words.step} <Code size="sm">{dataset.task_id}</Code>
+          </Text>
+        )}
         <Text color="fg.muted" fontSize="sm">
-          task <Code size="sm">{dataset.task_id}</Code>
+          {dataset.locator.type} <Code size="sm">{dataset.locator.path}</Code>
         </Text>
-      )}
-      <Text color="fg.muted" fontSize="sm">
-        {dataset.locator.type} <Code size="sm">{dataset.locator.path}</Code>
-      </Text>
-      <Text color="fg.muted" fontSize="sm">
-        rows: {rowBand(dataset)}
-      </Text>
-    </HStack>
-    {dataset.columns.length === 0 ? (
-      <Text color="fg.muted" fontSize="sm">
-        No column rules.
-      </Text>
-    ) : (
-      <Table.ScrollArea maxWidth="100%">
-        <Table.Root aria-label={`Column rules of ${dataset.name}`} size="sm" variant="line">
-          <Table.Header>
-            <Table.Row>
-              <Table.ColumnHeader>Column</Table.ColumnHeader>
-              <Table.ColumnHeader>Type</Table.ColumnHeader>
-              <Table.ColumnHeader>Nullable</Table.ColumnHeader>
-              <Table.ColumnHeader>Min</Table.ColumnHeader>
-              <Table.ColumnHeader>Max</Table.ColumnHeader>
-              <Table.ColumnHeader>PII</Table.ColumnHeader>
-              <Table.ColumnHeader>Allowed values</Table.ColumnHeader>
-              <Table.ColumnHeader>Note</Table.ColumnHeader>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {dataset.columns.map((column) => (
-              <Table.Row key={column.name}>
-                <Table.Cell fontFamily="mono">{column.name}</Table.Cell>
-                <Table.Cell>{column.dtype}</Table.Cell>
-                <Table.Cell>{column.nullable ? "yes" : "no"}</Table.Cell>
-                <Table.Cell>{bound(column.min)}</Table.Cell>
-                <Table.Cell>{bound(column.max)}</Table.Cell>
-                <Table.Cell>{column.pii ? <Badge variant="surface">PII</Badge> : ""}</Table.Cell>
-                <Table.Cell>{column.allowed_values?.join(", ") ?? ""}</Table.Cell>
-                <Table.Cell color="fg.muted">{column.note ?? ""}</Table.Cell>
+        <Text color="fg.muted" fontSize="sm">
+          rows: {rowBand(dataset)}
+        </Text>
+      </HStack>
+      {dataset.columns.length === 0 ? (
+        <Text color="fg.muted" fontSize="sm">
+          No column rules.
+        </Text>
+      ) : (
+        <Table.ScrollArea maxWidth="100%">
+          <Table.Root aria-label={`Column rules of ${dataset.name}`} size="sm" variant="line">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeader>Column</Table.ColumnHeader>
+                <Table.ColumnHeader>Type</Table.ColumnHeader>
+                <Table.ColumnHeader>Nullable</Table.ColumnHeader>
+                <Table.ColumnHeader>Min</Table.ColumnHeader>
+                <Table.ColumnHeader>Max</Table.ColumnHeader>
+                <Table.ColumnHeader>PII</Table.ColumnHeader>
+                <Table.ColumnHeader>Allowed values</Table.ColumnHeader>
+                <Table.ColumnHeader>Note</Table.ColumnHeader>
               </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Root>
-      </Table.ScrollArea>
-    )}
-  </Box>
-);
+            </Table.Header>
+            <Table.Body>
+              {dataset.columns.map((column) => (
+                <Table.Row key={column.name}>
+                  <Table.Cell fontFamily="mono">{column.name}</Table.Cell>
+                  <Table.Cell>{column.dtype}</Table.Cell>
+                  <Table.Cell>{column.nullable ? "yes" : "no"}</Table.Cell>
+                  <Table.Cell>{bound(column.min)}</Table.Cell>
+                  <Table.Cell>{bound(column.max)}</Table.Cell>
+                  <Table.Cell>{column.pii ? <Badge variant="surface">PII</Badge> : ""}</Table.Cell>
+                  <Table.Cell>{column.allowed_values?.join(", ") ?? ""}</Table.Cell>
+                  <Table.Cell color="fg.muted">{column.note ?? ""}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+        </Table.ScrollArea>
+      )}
+    </Box>
+  );
+};
 
 /** Status line of a contract: badge, stale flag and approval. */
 export const ContractStatusLine = ({ contract }: { readonly contract: ContractView }) => (
@@ -181,52 +188,56 @@ export const ContractsTable = ({
 }: {
   readonly contracts: Array<ContractView>;
   readonly onQueued?: () => void;
-}) => (
-  <Table.ScrollArea borderColor="border" borderRadius="md" borderWidth="1px" maxWidth="100%">
-    <Table.Root aria-label="Contracts" size="sm" variant="line">
-      <Table.Header>
-        <Table.Row>
-          <Table.ColumnHeader>DAG</Table.ColumnHeader>
-          <Table.ColumnHeader>Status</Table.ColumnHeader>
-          <Table.ColumnHeader>Datasets</Table.ColumnHeader>
-          <Table.ColumnHeader>Approved by</Table.ColumnHeader>
-          <Table.ColumnHeader>Approved at</Table.ColumnHeader>
-          <Table.ColumnHeader>Stale</Table.ColumnHeader>
-          <Table.ColumnHeader textAlign="end">Action</Table.ColumnHeader>
-        </Table.Row>
-      </Table.Header>
-      <Table.Body>
-        {contracts.map((contract) => (
-          <Table.Row data-dag-id={contract.dag_id} key={contract.dag_id}>
-            <Table.Cell>
-              <Link href={dagHref(contract.dag_id)}>{contract.dag_id}</Link>
-            </Table.Cell>
-            <Table.Cell>
-              <ContractStatusBadge status={contract.status} />
-            </Table.Cell>
-            <Table.Cell>
-              <Stack gap={0}>
-                {contract.datasets.map((dataset) => (
-                  <Text fontSize="sm" key={dataset.name}>
-                    {dataset.name}{" "}
-                    <Text as="span" color="fg.muted">
-                      ({dataset.columns.length} columns)
-                    </Text>
-                  </Text>
-                ))}
-              </Stack>
-            </Table.Cell>
-            <Table.Cell>{contract.approved_by ?? ""}</Table.Cell>
-            <Table.Cell>
-              {contract.approved_at === null ? "" : formatDateTime(contract.approved_at)}
-            </Table.Cell>
-            <Table.Cell>{contract.stale ? <ContractStatusBadge status="stale" /> : "no"}</Table.Cell>
-            <Table.Cell textAlign="end">
-              <ApproveContractButton contract={contract} onQueued={onQueued} />
-            </Table.Cell>
+}) => {
+  const { words } = useUiText();
+
+  return (
+    <Table.ScrollArea borderColor="border" borderRadius="md" borderWidth="1px" maxWidth="100%">
+      <Table.Root aria-label="Contracts" size="sm" variant="line">
+        <Table.Header>
+          <Table.Row>
+            <Table.ColumnHeader>{capitalize(words.pipeline)}</Table.ColumnHeader>
+            <Table.ColumnHeader>Status</Table.ColumnHeader>
+            <Table.ColumnHeader>Datasets</Table.ColumnHeader>
+            <Table.ColumnHeader>Approved by</Table.ColumnHeader>
+            <Table.ColumnHeader>Approved at</Table.ColumnHeader>
+            <Table.ColumnHeader>Stale</Table.ColumnHeader>
+            <Table.ColumnHeader textAlign="end">Action</Table.ColumnHeader>
           </Table.Row>
-        ))}
-      </Table.Body>
-    </Table.Root>
-  </Table.ScrollArea>
-);
+        </Table.Header>
+        <Table.Body>
+          {contracts.map((contract) => (
+            <Table.Row data-dag-id={contract.dag_id} key={contract.dag_id}>
+              <Table.Cell>
+                <Link href={dagHref(contract.dag_id)}>{contract.dag_id}</Link>
+              </Table.Cell>
+              <Table.Cell>
+                <ContractStatusBadge status={contract.status} />
+              </Table.Cell>
+              <Table.Cell>
+                <Stack gap={0}>
+                  {contract.datasets.map((dataset) => (
+                    <Text fontSize="sm" key={dataset.name}>
+                      {dataset.name}{" "}
+                      <Text as="span" color="fg.muted">
+                        ({dataset.columns.length} columns)
+                      </Text>
+                    </Text>
+                  ))}
+                </Stack>
+              </Table.Cell>
+              <Table.Cell>{contract.approved_by ?? ""}</Table.Cell>
+              <Table.Cell>
+                {contract.approved_at === null ? "" : formatDateTime(contract.approved_at)}
+              </Table.Cell>
+              <Table.Cell>{contract.stale ? <ContractStatusBadge status="stale" /> : "no"}</Table.Cell>
+              <Table.Cell textAlign="end">
+                <ApproveContractButton contract={contract} onQueued={onQueued} />
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+    </Table.ScrollArea>
+  );
+};

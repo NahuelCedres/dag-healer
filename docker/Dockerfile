@@ -5,14 +5,16 @@
 #   docker build -f docker/Dockerfile -t dag-healer/airflow:dev .
 #   docker compose -f docker/compose.yaml build            # same thing, used by scripts/tasks.py
 #
-# Export only the compiled UI bundle (no Python involved):
+# Export only the compiled UI bundles (no Python involved):
 #
 #   docker build -f docker/Dockerfile --target ui-export --output type=local,dest=ui/dist .
 #
 # Stages:
-#   ui         node:22-alpine compiles ui/ (Vite 8 needs Node ^20.19 || >=22.12)
+#   ui         node:22-alpine compiles ui/ (Vite 8 needs Node ^20.19 || >=22.12): the Airflow
+#              plugin bundle (main.umd.cjs) and the dag-healer serve bundle (standalone/)
 #   ui-export  scratch stage that only holds ui/dist (for --output type=local)
-#   wheel      python:3.12-slim builds the dag-healer wheel with the fresh bundle inside
+#   wheel      python:3.12-slim builds the dag-healer wheel with the fresh plugin bundle inside
+#              (standalone/ is the one of src/: the image serves the Airflow plugin)
 #   (final)    apache/airflow:3.3.2 + the wheel (+ the demo repo requirements, + pytest)
 #
 # Requires BuildKit (default builder of Docker Desktop and Docker Engine >= 23).
@@ -32,7 +34,8 @@ RUN corepack enable
 COPY ui/package.json ui/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY ui/ ./
-RUN pnpm build && ls -la dist
+# pnpm build empties dist/ first, so the standalone bundle (dist/standalone/) is built after it.
+RUN pnpm build && pnpm build:standalone && ls -la dist dist/standalone
 
 # --------------------------------------------------------------------------- 2. ui-export
 FROM scratch AS ui-export

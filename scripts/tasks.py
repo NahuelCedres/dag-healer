@@ -46,6 +46,9 @@ DEMO_LOGS = DEMO_DIR / "logs"
 EXAMPLE_REPO = ROOT / "example_existing_repo"
 UI_DIR = ROOT / "ui"
 BUNDLE_PATH = ROOT / "src" / "dag_healer" / "api" / "static" / "main.umd.cjs"
+#: The standalone bundle (``dag-healer serve``): a directory next to BUNDLE_PATH and its entry.
+STANDALONE_DIRNAME = "standalone"
+STANDALONE_ENTRY = "index.js"
 SCRIPTS_DIR = ROOT / "scripts"
 
 PROJECT_NAME = "dag-healer"
@@ -460,7 +463,11 @@ def local_node_status() -> tuple[bool, str]:
 
 
 def install_bundle(dist_dir: Path) -> Path:
-    """Copy the built ``*.umd.cjs`` from ``dist_dir`` to src/dag_healer/api/static/main.umd.cjs."""
+    """Copy the built ``*.umd.cjs`` from ``dist_dir`` to src/dag_healer/api/static/main.umd.cjs.
+
+    The standalone bundle of ``dist_dir`` is installed next to it when it was built
+    (:func:`install_standalone_bundle`). Returns the path of the Airflow plugin bundle.
+    """
     candidates = sorted(dist_dir.glob("*.umd.cjs")) or sorted(dist_dir.rglob("*.umd.cjs"))
     if not candidates:
         raise TaskError(f"no *.umd.cjs bundle was produced in {dist_dir}")
@@ -468,15 +475,53 @@ def install_bundle(dist_dir: Path) -> Path:
     BUNDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(chosen, BUNDLE_PATH)
     info(f"UI bundle written to {rel(BUNDLE_PATH)} ({BUNDLE_PATH.stat().st_size} bytes)")
+    install_standalone_bundle(dist_dir)
     return BUNDLE_PATH
 
 
+def install_standalone_bundle(dist_dir: Path) -> Path | None:
+    """Replace src/dag_healer/api/static/standalone/ with ``dist_dir/standalone/``.
+
+    The target is the ``standalone`` directory next to :data:`BUNDLE_PATH`, read at call time.
+    It is replaced as a whole (copied into a temporary sibling first, then renamed), so no stale
+    chunk of an earlier build survives. When ``dist_dir`` has no ``standalone/index.js`` (an
+    older dist) the existing directory is left untouched and None is returned; otherwise the
+    installed directory is returned.
+    """
+    source = dist_dir / STANDALONE_DIRNAME
+    target = BUNDLE_PATH.parent / STANDALONE_DIRNAME
+    if not (source / STANDALONE_ENTRY).is_file():
+        info(
+            f"no standalone UI bundle in {rel(dist_dir)} ({STANDALONE_DIRNAME}/{STANDALONE_ENTRY}): "
+            f"{rel(target)}/ left as it is"
+        )
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{STANDALONE_DIRNAME}-", dir=target.parent))
+    try:
+        fresh = staging / STANDALONE_DIRNAME
+        shutil.copytree(source, fresh)
+        remove_tree(target)
+        fresh.rename(target)
+    finally:
+        remove_tree(staging)
+    files = [path for path in target.rglob("*") if path.is_file()]
+    size = sum(path.stat().st_size for path in files)
+    count = f"{len(files)} file" + ("" if len(files) == 1 else "s")
+    info(f"standalone UI bundle written to {rel(target)}/ ({count}, {size} bytes)")
+    return target
+
+
 def build_ui_local() -> int:
-    """Build ui/ with the local Node + pnpm and install the bundle."""
+    """Build both UI bundles with the local Node + pnpm and install them.
+
+    ``pnpm build`` makes the Airflow plugin bundle and empties ui/dist/ first, so
+    ``pnpm build:standalone`` (ui/dist/standalone/) runs after it.
+    """
     pnpm = pnpm_command()
     if pnpm is None:
         raise TaskError("neither pnpm nor corepack is available")
-    for step in (["install", "--frozen-lockfile"], ["build"]):
+    for step in (["install", "--frozen-lockfile"], ["build"], ["build:standalone"]):
         code = run([*pnpm, *step], cwd=UI_DIR)
         if code != 0:
             return code
@@ -485,7 +530,10 @@ def build_ui_local() -> int:
 
 
 def build_ui_docker() -> int:
-    """Build ui/ in the node:22-alpine stage of docker/Dockerfile and install the bundle."""
+    """Build both UI bundles in the node:22-alpine stage of docker/Dockerfile and install them.
+
+    That stage runs ``pnpm build`` and then ``pnpm build:standalone``, like the local toolchain.
+    """
     docker = ensure_docker_running()
     with tempfile.TemporaryDirectory(prefix="dag-healer-ui-") as tmp:
         code = run(
@@ -508,7 +556,10 @@ def build_ui_docker() -> int:
 
 
 def build_ui(mode: str = "auto") -> int:
-    """Build the UI bundle. ``mode``: "auto" (local Node if suitable, else Docker), "local", "docker"."""
+    """Build the UI bundles. ``mode``: "auto" (local Node if suitable, else Docker), "local", "docker".
+
+    Both modes build both bundles: the Airflow plugin's and the standalone host's.
+    """
     if mode not in {"auto", "local", "docker"}:
         raise TaskError(f"unknown UI build mode {mode!r}")
     if not (UI_DIR / "package.json").is_file():
@@ -627,7 +678,7 @@ def cmd_doctor(args: argparse.Namespace, extra: list[str]) -> int:
 
 
 def cmd_ui(args: argparse.Namespace, extra: list[str]) -> int:
-    """Build the UI bundle into src/dag_healer/api/static/main.umd.cjs."""
+    """Build the UI bundles into src/dag_healer/api/static/ (main.umd.cjs and standalone/)."""
     mode = "local" if args.local else "docker" if args.docker else "auto"
     return build_ui(mode)
 
@@ -744,7 +795,11 @@ def build_parser() -> argparse.ArgumentParser:
     add("init", cmd_init, f"run 'dag-healer init --repo {CONTAINER_REPO} ...' in the api-server")
     add("doctor", cmd_doctor, "run 'dag-healer doctor ...' in the api-server")
 
-    p = add("ui", cmd_ui, "build the UI bundle into src/dag_healer/api/static/main.umd.cjs")
+    p = add(
+        "ui",
+        cmd_ui,
+        "build the UI bundles into src/dag_healer/api/static/ (main.umd.cjs and standalone/)",
+    )
     group = p.add_mutually_exclusive_group()
     group.add_argument("--local", action="store_true", help="force the local Node toolchain")
     group.add_argument("--docker", action="store_true", help="force the node:22-alpine Docker build")

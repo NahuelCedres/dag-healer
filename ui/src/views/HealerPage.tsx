@@ -37,6 +37,7 @@ import { usePolledResource, usePollingIntervals } from "src/hooks/usePolledResou
 import { dagHref, taskInstanceHref } from "src/links";
 import { countIncidents, orderStatuses, sortNewestFirst } from "src/model";
 import { categoryPalette } from "src/palettes";
+import { capitalize, useUiText } from "src/vocabulary";
 
 /** Incidents fetched for the page; counts and filters are computed client-side from them. */
 export const INCIDENT_PAGE_LIMIT = 500;
@@ -104,64 +105,69 @@ const FilterSelect = ({
   </NativeSelect.Root>
 );
 
-const DagsTable = ({ dags }: { readonly dags: Array<DagSummary> }) => (
-  <Table.ScrollArea borderColor="border" borderRadius="md" borderWidth="1px" maxWidth="100%">
-    <Table.Root aria-label="Monitored DAGs" size="sm" variant="line">
-      <Table.Header>
-        <Table.Row>
-          <Table.ColumnHeader>DAG</Table.ColumnHeader>
-          <Table.ColumnHeader>Contract</Table.ColumnHeader>
-          <Table.ColumnHeader textAlign="end">Open incidents</Table.ColumnHeader>
-          <Table.ColumnHeader>Last incident</Table.ColumnHeader>
-        </Table.Row>
-      </Table.Header>
-      <Table.Body>
-        {dags.map((dag) => (
-          <Table.Row data-dag-id={dag.dag_id} key={dag.dag_id}>
-            <Table.Cell>
-              <Link href={dagHref(dag.dag_id)}>{dag.dag_id}</Link>
-              {dag.monitored ? undefined : (
-                <Badge ms={2} variant="plain">
-                  not monitored
-                </Badge>
-              )}
-            </Table.Cell>
-            <Table.Cell>
-              <ContractStatusBadge status={dag.contract_status} />
-            </Table.Cell>
-            <Table.Cell textAlign="end">{dag.open_incidents}</Table.Cell>
-            <Table.Cell>
-              {dag.last_incident === null ? (
-                <Text color="fg.muted" fontSize="sm">
-                  none
-                </Text>
-              ) : (
-                <HStack gap={2} wrap="wrap">
-                  <Link
-                    fontSize="sm"
-                    href={taskInstanceHref(
-                      dag.dag_id,
-                      dag.last_incident.run_id,
-                      dag.last_incident.task_id,
-                      dag.last_incident.map_index,
-                    )}
-                  >
-                    {formatDateTime(dag.last_incident.created_at)}
-                  </Link>
-                  <CategoryBadge category={dag.last_incident.category} />
-                  <StatusBadge status={dag.last_incident.status} />
-                </HStack>
-              )}
-            </Table.Cell>
+const DagsTable = ({ dags }: { readonly dags: Array<DagSummary> }) => {
+  const { words } = useUiText();
+
+  return (
+    <Table.ScrollArea borderColor="border" borderRadius="md" borderWidth="1px" maxWidth="100%">
+      <Table.Root aria-label={`Monitored ${words.pipelines}`} size="sm" variant="line">
+        <Table.Header>
+          <Table.Row>
+            <Table.ColumnHeader>{capitalize(words.pipeline)}</Table.ColumnHeader>
+            <Table.ColumnHeader>Contract</Table.ColumnHeader>
+            <Table.ColumnHeader textAlign="end">Open incidents</Table.ColumnHeader>
+            <Table.ColumnHeader>Last incident</Table.ColumnHeader>
           </Table.Row>
-        ))}
-      </Table.Body>
-    </Table.Root>
-  </Table.ScrollArea>
-);
+        </Table.Header>
+        <Table.Body>
+          {dags.map((dag) => (
+            <Table.Row data-dag-id={dag.dag_id} key={dag.dag_id}>
+              <Table.Cell>
+                <Link href={dagHref(dag.dag_id)}>{dag.dag_id}</Link>
+                {dag.monitored ? undefined : (
+                  <Badge ms={2} variant="plain">
+                    not monitored
+                  </Badge>
+                )}
+              </Table.Cell>
+              <Table.Cell>
+                <ContractStatusBadge status={dag.contract_status} />
+              </Table.Cell>
+              <Table.Cell textAlign="end">{dag.open_incidents}</Table.Cell>
+              <Table.Cell>
+                {dag.last_incident === null ? (
+                  <Text color="fg.muted" fontSize="sm">
+                    none
+                  </Text>
+                ) : (
+                  <HStack gap={2} wrap="wrap">
+                    <Link
+                      fontSize="sm"
+                      href={taskInstanceHref(
+                        dag.dag_id,
+                        dag.last_incident.run_id,
+                        dag.last_incident.task_id,
+                        dag.last_incident.map_index,
+                      )}
+                    >
+                      {formatDateTime(dag.last_incident.created_at)}
+                    </Link>
+                    <CategoryBadge category={dag.last_incident.category} />
+                    <StatusBadge status={dag.last_incident.status} />
+                  </HStack>
+                )}
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+    </Table.ScrollArea>
+  );
+};
 
 /** Top-level "Healer" page (nav destination): counts, incident timeline, monitored DAGs, contracts. */
 export const HealerPage = () => {
+  const { words } = useUiText();
   const { commandMs, refreshMs } = usePollingIntervals();
   const incidents = usePolledResource<IncidentListResponse>(
     "incidents",
@@ -214,8 +220,11 @@ export const HealerPage = () => {
       ids.add(dagFilter);
     }
 
-    return [{ label: "All DAGs", value: ALL }, ...[...ids].sort().map((id) => ({ label: id, value: id }))];
-  }, [allIncidents, dags.data, dagFilter]);
+    return [
+      { label: `All ${words.pipelines}`, value: ALL },
+      ...[...ids].sort().map((id) => ({ label: id, value: id })),
+    ];
+  }, [allIncidents, dags.data, dagFilter, words.pipelines]);
 
   const sessionExpired = hasSessionExpired(incidents.error, dags.error, contracts.error);
   const total = incidents.data?.total ?? allIncidents.length;
@@ -230,7 +239,8 @@ export const HealerPage = () => {
             Healer
           </Heading>
           <Text color="fg.muted">
-            Task failures of monitored DAGs, classified by dag-healer as data, code or ambiguous.
+            {capitalize(words.step)} failures of monitored {words.pipelines}, classified by dag-healer as
+            data, code or ambiguous.
           </Text>
         </Box>
         <SimpleGrid columns={{ base: 2, lg: 5, md: 3 }} data-testid="status-counts" gap={3}>
@@ -274,7 +284,7 @@ export const HealerPage = () => {
               value={categoryFilter}
             />
             <FilterSelect
-              label="Filter by DAG"
+              label={`Filter by ${words.pipeline}`}
               onChange={setDagFilter}
               options={dagOptions}
               value={dagFilter}
@@ -289,7 +299,7 @@ export const HealerPage = () => {
         )}
         {incidents.data === undefined ? undefined : allIncidents.length === 0 ? (
           <EmptyNotice title="No incidents recorded yet.">
-            Failed tasks of monitored DAGs will show up here.
+            Failed {words.steps} of monitored {words.pipelines} will show up here.
           </EmptyNotice>
         ) : filtered.length === 0 ? (
           <EmptyNotice title="No incident matches the filters." />
@@ -303,14 +313,14 @@ export const HealerPage = () => {
         )}
       </Section>
 
-      <Section title="Monitored DAGs">
+      <Section title={`Monitored ${words.pipelines}`}>
         {dags.loading ? <Loading /> : undefined}
         {dags.error === undefined ? undefined : (
-          <SectionError emptyTitle="No monitored DAGs." error={dags.error} />
+          <SectionError emptyTitle={`No monitored ${words.pipelines}.`} error={dags.error} />
         )}
         {dags.data === undefined ? undefined : dags.data.dags.length === 0 ? (
-          <EmptyNotice title="No monitored DAGs.">
-            List DAG ids (or glob patterns) under monitor.dags in healer.yaml.
+          <EmptyNotice title={`No monitored ${words.pipelines}.`}>
+            List {words.pipeline} ids (or glob patterns) under monitor.dags in healer.yaml.
           </EmptyNotice>
         ) : (
           <DagsTable dags={dags.data.dags} />

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
+from dag_healer.api import app as app_module
 from dag_healer.api import auth, schemas, views
 from dag_healer.api.deps import API_PREFIX, get_adapter, get_config
 from dag_healer.config import HealerConfig
@@ -16,17 +17,22 @@ router = APIRouter(prefix=API_PREFIX, tags=["me"])
 
 @router.get("/me", response_model=schemas.MeView)
 def get_me(
+    request: Request,
     user: Any = Depends(auth.require_authenticated),
     cfg: HealerConfig = Depends(get_config),
     adapter: OrchestratorAdapter | None = Depends(get_adapter),
 ) -> schemas.MeView:
     """The current user name and the public base URL of the Healer views.
 
-    ``orchestrator`` (words and capabilities) is added for any orchestrator but the default
-    Airflow instance, so the answer for that one stays ``{user, base_url}``.
+    ``host`` is the host serving the views: ``standalone`` for the app of ``dag-healer serve``
+    (:func:`dag_healer.api.app.serving_host` of ``request.app``, the healer app also when it
+    is mounted), else ``airflow_plugin``, which is left out. ``orchestrator`` (words and
+    capabilities) is added for any orchestrator but the default Airflow instance, so the answer
+    of the Airflow plugin for that one stays ``{user, base_url}``.
     """
     return schemas.MeView(
         user=auth.user_name(user),
         base_url=views.airflow_base_url(cfg),
+        host=app_module.serving_host(request.app),
         orchestrator=views.orchestrator_view(adapter),
     )

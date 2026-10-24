@@ -20,6 +20,7 @@ import {
   type AlertRecord,
   getPrMarkdown,
   getTaskInstanceIncident,
+  hasAuthorizationProvider,
   hasSessionExpired,
   type IncidentAction,
   type IncidentDetail,
@@ -38,11 +39,12 @@ import { MaskedSampleTable } from "src/components/MaskedSampleTable";
 import { Section } from "src/components/Section";
 import { ViolatedRuleCard, ViolationsTable } from "src/components/ViolationsTable";
 import type { HealerContext } from "src/context/pluginContext";
-import { ACTION_LABELS, formatConfidence, formatDateTime, ruleLabel, taskLabel } from "src/format";
+import { actionLabel, formatConfidence, formatDateTime, ruleLabel, taskLabel } from "src/format";
 import { usePolledResource, usePollingIntervals } from "src/hooks/usePolledResource";
 import { prMarkdownHref } from "src/links";
-import { NO_TI_INCIDENT_MESSAGE, QUEUED_MESSAGE } from "src/messages";
-import { decisionFromEvents } from "src/model";
+import { noStepInstanceIncidentMessage, QUEUED_MESSAGE, sessionExpiredRetryMessage } from "src/messages";
+import { actionWarnings, decisionFromEvents, nativeLinks } from "src/model";
+import { DEFAULT_VOCABULARY, type UiText, useUiText, type Vocabulary } from "src/vocabulary";
 
 /** Order of the buttons in the action bar. */
 const ACTION_ORDER: ReadonlyArray<IncidentAction> = [
@@ -67,12 +69,19 @@ const ACTION_DESCRIPTIONS: Record<IncidentAction, string> = {
     "effect once its branch is merged.",
 };
 
-const actionError = (error: unknown): string => {
+/** What an action does; outside Airflow, `retry_task` is the orchestrator's own remediation. */
+const actionDescription = (action: IncidentAction, words: Vocabulary): string =>
+  action === "retry_task" && words.product !== DEFAULT_VOCABULARY.product
+    ? `${words.retry_action}: ${words.product} runs the failed ${words.step} again. A code fix only ` +
+      "takes effect once its branch is merged."
+    : ACTION_DESCRIPTIONS[action];
+
+const actionError = (error: unknown, text: UiText): string => {
   const apiError = toApiError(error);
 
   switch (apiError.status) {
     case 401:
-      return "Your Airflow session expired — reload the page and try again.";
+      return sessionExpiredRetryMessage(text);
     case 403:
       return "You do not have permission to change this incident.";
     case 409:
@@ -203,9 +212,12 @@ const PullRequestSection = ({ incident }: { readonly incident: IncidentDetail })
                 ? "No GitHub token was configured, so the fix was pushed to a local branch and described in PR.md."
                 : "The pull request description is also available as PR.md."}
             </Text>
-            <Link href={prMarkdownHref(incident.dag_id, incident.id)} rel="noopener" target="_blank">
-              View PR.md
-            </Link>
+            {/* A new tab cannot send the standalone host's API token: then only the preview reads PR.md. */}
+            {hasAuthorizationProvider() ? undefined : (
+              <Link href={prMarkdownHref(incident.dag_id, incident.id)} rel="noopener" target="_blank">
+                View PR.md
+              </Link>
+            )}
             <PrMarkdownPreview incident={incident} />
           </>
         ) : undefined}
@@ -255,21 +267,29 @@ const AlertsTable = ({ alerts }: { readonly alerts: Array<AlertRecord> }) => (
   </Table.ScrollArea>
 );
 
-const PendingNotice = ({ incident }: { readonly incident: IncidentDetail }) => (
-  <Alert.Root data-testid="queued" status="info">
-    <Spinner size="sm" />
-    <Alert.Content>
-      <Alert.Title>{QUEUED_MESSAGE}</Alert.Title>
-      {incident.pending_commands.length > 0 ? (
-        <Alert.Description>
-          {incident.pending_commands
-            .map((command) => `${command.kind.replaceAll("_", " ")} by ${command.actor}`)
-            .join("; ")}
-        </Alert.Description>
-      ) : undefined}
-    </Alert.Content>
-  </Alert.Root>
-);
+/** A queued command's kind as the view words it: `retry_task` is the orchestrator's retry action. */
+const commandLabel = (kind: string, words: Vocabulary): string =>
+  kind === "retry_task" ? words.retry_action.toLowerCase() : kind.replaceAll("_", " ");
+
+const PendingNotice = ({ incident }: { readonly incident: IncidentDetail }) => {
+  const { words } = useUiText();
+
+  return (
+    <Alert.Root data-testid="queued" status="info">
+      <Spinner size="sm" />
+      <Alert.Content>
+        <Alert.Title>{QUEUED_MESSAGE}</Alert.Title>
+        {incident.pending_commands.length > 0 ? (
+          <Alert.Description>
+            {incident.pending_commands
+              .map((command) => `${commandLabel(command.kind, words)} by ${command.actor}`)
+              .join("; ")}
+          </Alert.Description>
+        ) : undefined}
+      </Alert.Content>
+    </Alert.Root>
+  );
+};
 
 const ActionBar = ({
   disabled,
@@ -283,6 +303,7 @@ const ActionBar = ({
   const [action, setAction] = useState<IncidentAction>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const text = useUiText();
   const actions = ACTION_ORDER.filter((candidate) => incident.allowed_actions.includes(candidate));
 
   if (!incident.can_edit || actions.length === 0) {
@@ -305,7 +326,7 @@ const ActionBar = ({
         setAction(undefined);
         onQueued();
       })
-      .catch((caught: unknown) => setError(actionError(caught)))
+      .catch((caught: unknown) => setError(actionError(caught, text)))
       .finally(() => setBusy(false));
   };
 
@@ -332,19 +353,20 @@ const ActionBar = ({
             size="sm"
             variant={candidate === "ignore" ? "ghost" : "outline"}
           >
-            {ACTION_LABELS[candidate]}
+            {actionLabel(candidate, text.words)}
           </Button>
         ))}
       </HStack>
       {action === undefined ? undefined : (
         <ConfirmDialog
           busy={busy}
-          confirmLabel={ACTION_LABELS[action]}
-          description={ACTION_DESCRIPTIONS[action]}
+          confirmLabel={actionLabel(action, text.words)}
+          description={actionDescription(action, text.words)}
           error={error}
           onCancel={close}
           onConfirm={confirm}
-          title={`${ACTION_LABELS[action]}?`}
+          title={`${actionLabel(action, text.words)}?`}
+          warnings={actionWarnings(incident, action)}
         />
       )}
     </Box>
@@ -360,7 +382,9 @@ const IncidentView = ({
   readonly onQueued: () => void;
   readonly queued: boolean;
 }) => {
+  const { words } = useUiText();
   const pending = queued || incident.pending_commands.length > 0;
+  const native = nativeLinks(incident);
 
   return (
     <Stack data-incident-id={incident.id} gap={8}>
@@ -373,9 +397,19 @@ const IncidentView = ({
           <StatusBadge size="md" status={incident.status} />
         </HStack>
         <Text color="fg.muted" fontSize="sm">
-          {incident.dag_id} · {taskLabel(incident.task_id, incident.map_index)} · try {incident.try_number}
+          {incident.dag_id} · {taskLabel(incident.task_id, incident.map_index)} · {words.attempt}{" "}
+          {incident.try_number}
           {incident.occurrences > 1 ? ` · seen ${incident.occurrences} times` : ""} · run {incident.run_id}
         </Text>
+        {native.length === 0 ? undefined : (
+          <HStack data-testid="native-links" fontSize="sm" gap={4} wrap="wrap">
+            {native.map((link) => (
+              <Link href={link.url} key={link.label} rel="noopener noreferrer" target="_blank">
+                {`Open in ${link.label}`}
+              </Link>
+            ))}
+          </HStack>
+        )}
       </Stack>
 
       {pending ? <PendingNotice incident={incident} /> : undefined}
@@ -483,6 +517,7 @@ const IncidentView = ({
 /** "Healer incident" tab of a task instance: classification, evidence, fix and human actions. */
 export const TaskInstancePanel = ({ context }: { readonly context: HealerContext }) => {
   const { dagId, mapIndex, runId, taskId } = context;
+  const { words } = useUiText();
   const { commandMs, refreshMs } = usePollingIntervals();
   const ready = dagId !== undefined && runId !== undefined && taskId !== undefined;
   const key = ready ? JSON.stringify(["ti", dagId, runId, taskId, mapIndex ?? "-1"]) : null;
@@ -501,7 +536,7 @@ export const TaskInstancePanel = ({ context }: { readonly context: HealerContext
   const [queuedFor, setQueuedFor] = useState<IncidentDetail>();
 
   if (!ready) {
-    return <EmptyNotice title="Open a task instance to see its dag-healer incident." />;
+    return <EmptyNotice title={`Open a ${words.step} instance to see its dag-healer incident.`} />;
   }
   const { data, error } = resource;
   const incident = data?.incident ?? null;
@@ -520,8 +555,8 @@ export const TaskInstancePanel = ({ context }: { readonly context: HealerContext
       )}
       {incident === null ? (
         resource.loading || (error !== undefined && error.status !== 404) ? undefined : (
-          <EmptyNotice title={NO_TI_INCIDENT_MESSAGE}>
-            dag-healer records an incident when this task instance fails.
+          <EmptyNotice title={noStepInstanceIncidentMessage(words)}>
+            dag-healer records an incident when this {words.step} instance fails.
           </EmptyNotice>
         )
       ) : (

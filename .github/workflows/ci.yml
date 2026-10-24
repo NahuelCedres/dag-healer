@@ -94,23 +94,71 @@ jobs:
           node-version: "22"
       - name: Enable corepack (pnpm from ui/package.json)
         run: corepack enable
-      # pnpm install --frozen-lockfile, pnpm build, then copy ui/dist/main.umd.cjs to
-      # src/dag_healer/api/static/main.umd.cjs (over the committed bundle).
-      - name: Build the UI bundle
+      # pnpm install --frozen-lockfile, pnpm build (the Airflow plugin bundle) and pnpm
+      # build:standalone (the dag-healer serve page), then copy ui/dist/main.umd.cjs and
+      # ui/dist/standalone/ into src/dag_healer/api/static/ (over the committed bundles).
+      - name: Build the UI bundles
         run: python scripts/tasks.py ui --local
-      # As in docker/Dockerfile; hatch_build.py refuses a wheel without the bundle.
+      # A difference means a change of ui/ was committed without both rebuilt bundles. A warning
+      # for now: make it fail once the runner's build has been seen to match a local one byte for byte.
+      - name: Compare the fresh bundles with the committed ones
+        run: |
+          changed="$(git status --porcelain -- src/dag_healer/api/static)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "::warning::the committed UI bundles differ from a fresh build of ui/: run 'python scripts/tasks.py ui' and commit src/dag_healer/api/static/"
+          fi
+      # As in docker/Dockerfile; hatch_build.py refuses a wheel without main.umd.cjs.
       - name: Build the wheel
         run: python -m pip wheel --no-deps -w dist .
-      - name: Check that the wheel ships the new bundle
+      # Both bundles byte-identical to ui/dist, no stale standalone file, and their sizes.
+      - name: Check that the wheel ships the new bundles
         shell: python
         run: |
+          import gzip
           import zipfile
           from pathlib import Path
 
+          static = "dag_healer/api/static/"
+          dist = Path("ui/dist")
+          built = {"main.umd.cjs": dist / "main.umd.cjs"}
+          for path in sorted((dist / "standalone").rglob("*")):
+              if path.is_file():
+                  built[path.relative_to(dist).as_posix()] = path
+          if "standalone/index.js" not in built:
+              raise SystemExit("pnpm build:standalone did not produce ui/dist/standalone/index.js")
+
           wheel = next(Path("dist").glob("dag_healer-*.whl"))
           with zipfile.ZipFile(wheel) as archive:
-              shipped = archive.read("dag_healer/api/static/main.umd.cjs")
-          built = Path("ui/dist/main.umd.cjs").read_bytes()
-          if shipped != built:
-              raise SystemExit(f"{wheel.name} does not ship the bundle built from ui/")
-          print(f"{wheel.name} ships main.umd.cjs ({len(shipped)} bytes), built from ui/")
+              names = set(archive.namelist())
+              for name, path in built.items():
+                  if static + name not in names:
+                      raise SystemExit(f"{wheel.name} does not ship {static}{name}")
+                  if archive.read(static + name) != path.read_bytes():
+                      raise SystemExit(f"{wheel.name} ships a {static}{name} not built from ui/")
+          stale = sorted(
+              name[len(static):]
+              for name in names
+              if name.startswith(static + "standalone/") and name[len(static):] not in built
+          )
+          if stale:
+              raise SystemExit(f"{wheel.name} ships standalone files the build did not produce: {stale}")
+
+          def size(paths):
+              data = b"".join(path.read_bytes() for path in paths)
+              return f"{len(data)} bytes, {len(gzip.compress(data, mtime=0))} gzipped"
+
+          standalone = [path for name, path in built.items() if name.startswith("standalone/")]
+          print(f"{wheel.name} ships the bundles built from ui/:")
+          print(f"  main.umd.cjs: {size([built['main.umd.cjs']])}")
+          print(f"  standalone/: {size(standalone)} in {len(standalone)} file(s)")
+      # Run in ui/ so corepack picks the pnpm version pinned in ui/package.json.
+      - name: Lint the UI (eslint + tsc)
+        working-directory: ui
+        run: pnpm lint
+      - name: Check the UI formatting (prettier)
+        working-directory: ui
+        run: pnpm format:check
+      - name: Run the UI tests (vitest)
+        working-directory: ui
+        run: pnpm test

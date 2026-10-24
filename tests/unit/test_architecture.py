@@ -5,6 +5,11 @@
   orchestrator's code or SDK; only the Airflow adapter's runtime modules and ``api/auth.py``
   import Airflow; boto3 / botocore are imported lazily by the modules that own them, and by
   no module yet.
+* The standalone host (step 7): ``hosting/`` and ``cli/serve_cmd.py`` follow the core's rules
+  (FastAPI and Starlette are fine); only ``cli/serve_cmd.py`` imports ``hosting``, and neither
+  the core nor ``hosting`` imports the CLI; the authentication backends never import the host
+  modules that hand them the authorizer; the packages of the ``serve`` extra (PyJWT,
+  cryptography, uvicorn) are imported lazily, each by its one user.
 * A text guard: no Airflow REST client call outside ``airflow/`` and ``cli/doctor_cmd.py``
   (``scripts/`` is not part of the package).
 
@@ -51,6 +56,19 @@ AIRFLOW_AT_MODULE_LEVEL = frozenset({"airflow/plugin.py", "airflow/listener.py"}
 AIRFLOW_LAZILY = frozenset({"airflow/__init__.py", "api/auth.py"})
 #: The only modules that may import boto3 / botocore, and only inside functions (section 4).
 AWS_SDK_LAZILY = frozenset({"stepfunctions/aws.py", "storage/s3.py"})
+
+#: The standalone host (``dag-healer serve``): the package and the command that runs it.
+HOSTING_DIR = "hosting"
+SERVE_COMMAND = "cli/serve_cmd.py"
+#: The modules of ``hosting/auth`` must not import: the host modules hand the backends their authorizer.
+HOST_MODULES = ("dag_healer.hosting.app", "dag_healer.hosting.rbac", "dag_healer.hosting.shell")
+#: The packages of the ``serve`` extra, each imported only inside the functions of its one user, so
+#: Airflow and the worker run without the extra.
+SERVE_EXTRA_LAZILY: dict[str, str] = {
+    "jwt": "hosting/auth/alb_oidc.py",
+    "cryptography": "hosting/auth/alb_oidc.py",
+    "uvicorn": "cli/serve_cmd.py",
+}
 
 #: Calls of the Airflow REST client (``dag_healer.airflow.client.AirflowClient``).
 AIRFLOW_CLIENT_CALL = re.compile(
@@ -145,6 +163,11 @@ def _core_files() -> list[Path]:
     files = [path for name in CORE_PACKAGES for path in sorted((PACKAGE_DIR / name).rglob("*.py"))]
     files += [PACKAGE_DIR / name for name in CORE_MODULES]
     return [path for path in files if _relative(path) not in NOT_CORE]
+
+
+def _hosting_files() -> list[Path]:
+    """The standalone host: ``hosting/**`` and the ``serve`` command."""
+    return [*sorted((PACKAGE_DIR / HOSTING_DIR).rglob("*.py")), PACKAGE_DIR / SERVE_COMMAND]
 
 
 def _within(name: str, package: str) -> bool:
@@ -274,6 +297,91 @@ def test_the_aws_sdk_is_imported_only_lazily_by_its_owners() -> None:
     owners = {name.split(":")[0] for name in importers}
     assert owners <= AWS_SDK_LAZILY, importers
     assert all(importers.values()), importers
+
+
+# =========================================================================== the standalone host (step 7)
+
+
+def test_the_standalone_host_scope_exists() -> None:
+    files = {_relative(path) for path in _hosting_files()}
+    assert {
+        "hosting/app.py",
+        "hosting/rbac.py",
+        "hosting/shell.py",
+        "hosting/auth/token.py",
+        SERVE_COMMAND,
+    } <= files
+    for name in SERVE_EXTRA_LAZILY.values():
+        assert (PACKAGE_DIR / name).is_file(), name
+
+
+@pytest.mark.parametrize("path", _hosting_files(), ids=_relative)
+def test_the_standalone_host_never_imports_an_orchestrator(path: Path) -> None:
+    """Neutral like the core: no orchestrator SDK, adapter package, fake adapter or conformance suite."""
+    bad = [
+        f"line {item.line}: {item.module}" for item in imports_of(path) if forbidden_for_the_core(item.module)
+    ]
+    assert bad == [], f"{_relative(path)} imports orchestrator code"
+
+
+def test_only_the_serve_command_imports_the_standalone_host() -> None:
+    """``hosting`` builds on the API; the API, the core, the adapters and the task runners never import it."""
+    hosting = f"{PACKAGE}.{HOSTING_DIR}"
+    importers = [
+        f"{_relative(path)}:{item.line}: {item.module}"
+        for path in _package_files()
+        if not _relative(path).startswith(f"{HOSTING_DIR}/") and _relative(path) != SERVE_COMMAND
+        for item in imports_of(path)
+        if _within(item.module, hosting)
+    ]
+    assert importers == []
+    assert any(_within(item.module, hosting) for item in imports_of(PACKAGE_DIR / SERVE_COMMAND))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        *_core_files(),
+        *(PACKAGE_DIR / name for name in (*BRIDGE_MODULES, *NOT_CORE)),
+        *(path for path in _hosting_files() if _relative(path) != SERVE_COMMAND),
+    ],
+    ids=_relative,
+)
+def test_the_core_and_the_standalone_host_never_import_the_cli(path: Path) -> None:
+    bad = [
+        f"line {item.line}: {item.module}"
+        for item in imports_of(path)
+        if _within(item.module, f"{PACKAGE}.cli")
+    ]
+    assert bad == [], f"{_relative(path)} imports the CLI"
+
+
+def test_the_auth_backends_never_import_the_host_modules() -> None:
+    """The host builds the authorizer and hands it to the backend (dependency injection only)."""
+    bad = [
+        f"{_relative(path)}:{item.line}: {item.module}"
+        for path in sorted((PACKAGE_DIR / HOSTING_DIR / "auth").rglob("*.py"))
+        for item in imports_of(path)
+        if any(_within(item.module, module) for module in HOST_MODULES)
+    ]
+    assert bad == []
+
+
+def test_the_serve_extra_is_imported_only_lazily_by_its_users() -> None:
+    importers = {
+        f"{_relative(path)}:{item.line}": (item.module.split(".")[0], item.lazy)
+        for path in _package_files()
+        for item in imports_of(path)
+        if item.module.split(".")[0] in SERVE_EXTRA_LAZILY
+    }
+    misplaced = {
+        where: package
+        for where, (package, _) in importers.items()
+        if where.split(":")[0] != SERVE_EXTRA_LAZILY[package]
+    }
+    assert misplaced == {}
+    assert all(lazy for _, lazy in importers.values()), importers
+    assert {package for package, _ in importers.values()} == set(SERVE_EXTRA_LAZILY)  # the guard sees them
 
 
 # =========================================================================== Airflow client calls

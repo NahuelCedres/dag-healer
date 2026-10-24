@@ -9,6 +9,8 @@ export interface ConfirmDialogProps {
   readonly onCancel: () => void;
   readonly onConfirm: (note: string) => void;
   readonly title: string;
+  /** Shown under the description (for example the server's `action_warnings` of the action). */
+  readonly warnings?: ReadonlyArray<string>;
   /** Show the optional free-text note sent with the command. */
   readonly withNote?: boolean;
 }
@@ -25,6 +27,7 @@ export const ConfirmDialog = ({
   onCancel,
   onConfirm,
   title,
+  warnings = [],
   withNote = true,
 }: ConfirmDialogProps) => {
   const [note, setNote] = useState("");
@@ -52,6 +55,11 @@ export const ConfirmDialog = ({
                 <Text color="fg.muted" fontSize="sm">
                   {description}
                 </Text>
+                {warnings.map((warning) => (
+                  <Text color="fg.warning" data-testid="action-warning" fontSize="sm" key={warning}>
+                    {warning}
+                  </Text>
+                ))}
                 {withNote ? (
                   <Field.Root>
                     <Field.Label>Note (optional)</Field.Label>

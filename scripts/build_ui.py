@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Build the dag-healer UI bundle (src/dag_healer/api/static/main.umd.cjs).
+"""Build the dag-healer UI bundles into src/dag_healer/api/static/.
 
-Thin wrapper around ``python scripts/tasks.py ui`` for build tooling (hatch_build.py points
-here when the bundle is missing). By default it uses a local Node >= 20.19 / 22.12 with
-pnpm (or corepack) when available, and otherwise compiles ui/ in the node:22-alpine stage
-of docker/Dockerfile. Standard library only; the exit code is the build's exit code.
+Two bundles come from ui/: ``main.umd.cjs`` (the Airflow plugin views) and ``standalone/``
+(the page of ``dag-healer serve``). Thin wrapper around ``python scripts/tasks.py ui`` for
+build tooling (hatch_build.py points here when a bundle is missing). By default it uses a
+local Node >= 20.19 / 22.12 with pnpm (or corepack) when available; otherwise it compiles ui/
+in the node:22-alpine stage of docker/Dockerfile. Both build both bundles. Standard library
+only; the exit code is the build's exit code.
 """
 
 from __future__ import annotations
@@ -31,10 +33,10 @@ def load_tasks() -> ModuleType:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Build the bundle and return the exit code."""
+    """Build the bundles and return the exit code."""
     parser = argparse.ArgumentParser(
         prog="python scripts/build_ui.py",
-        description="Build src/dag_healer/api/static/main.umd.cjs from ui/.",
+        description="Build src/dag_healer/api/static/main.umd.cjs and standalone/ from ui/.",
     )
     parser.add_argument(
         "--mode",

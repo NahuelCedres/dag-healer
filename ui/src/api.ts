@@ -1,11 +1,16 @@
 /**
- * Typed client for the dag-healer API mounted by the plugin under `/healer` on the Airflow API server.
+ * Typed client for the dag-healer API mounted under `/healer`: by the plugin on the Airflow API server,
+ * or by `dag-healer serve` (the standalone host).
  *
- * Requests are same-origin: the Airflow `_token` cookie (HttpOnly) is sent by the browser on its own,
- * so the UI never handles credentials. URLs are resolved against `document.baseURI`, which the Airflow
- * UI sets with `<base href>`, so deployments under a sub-path keep working.
+ * Requests are same-origin. In the Airflow plugin the `_token` cookie (HttpOnly) is sent by the
+ * browser on its own, so the UI never handles credentials, and the plugin never installs an
+ * authorization provider: Airflow reads a Bearer header before its cookie, so a stray header would
+ * break its session. Only the standalone entry of the token backend installs one (see
+ * {@link setAuthorizationProvider}). URLs are resolved against `document.baseURI`, which both hosts
+ * set with `<base href>`, so deployments under a sub-path keep working.
  *
- * The types below mirror the JSON shapes of the `/healer/api/v1` endpoints.
+ * The types below mirror the JSON shapes of the `/healer/api/v1` endpoints. The optional fields are
+ * the additive ones: the server leaves them out for the default Airflow instance.
  */
 
 export const API_PREFIX = "healer/api/v1/";
@@ -68,11 +73,17 @@ export interface IncidentSummary {
   dag_id: string;
   /** Not part of the summary contract; used when a server includes it. */
   diagnosis?: string | null;
+  /** Native error name reported by the orchestrator (left out when unknown). */
+  error_name?: string | null;
   error_summary: string;
   has_pr_md: boolean;
   id: string;
+  /** Only when the server has native links to show (never for Airflow). */
+  links?: IncidentLinks | null;
   map_index: number;
   occurrences: number;
+  /** Orchestrator instance of the incident (left out for the default Airflow instance). */
+  orchestrator?: string;
   pr_url: string | null;
   run_id: string;
   source: string;
@@ -131,10 +142,14 @@ export interface PendingCommand {
 export interface IncidentLinks {
   dag?: string | null;
   healer?: string | null;
+  /** Labelled links into the orchestrator's own pages (`{"AWS console": url}`); empty for Airflow. */
+  native?: Record<string, string>;
   task_instance?: string | null;
 }
 
 export interface IncidentDetail extends IncidentSummary {
+  /** Texts to show next to offered actions (`{"retry_task": [...]}`). */
+  action_warnings?: Record<string, Array<string>>;
   alerts: Array<AlertRecord>;
   allowed_actions: Array<IncidentAction>;
   attempts: number;
@@ -196,8 +211,21 @@ export interface ContractView {
   status: ContractStatus;
 }
 
+/** `/me` → `orchestrator`: the orchestrator of this dag-healer (absent for the default Airflow instance). */
+export interface MeOrchestrator {
+  capabilities: Record<string, unknown>;
+  display_name: string;
+  instance: string;
+  type: string;
+  /** The keys of `dag_healer.core.vocab.Vocabulary` (`product`, `pipeline`, `step`, `retry_action`...). */
+  vocabulary: Record<string, string>;
+}
+
 export interface MeResponse {
   base_url: string | null;
+  /** Where the views are served (left out inside Airflow). */
+  host?: "airflow_plugin" | "standalone";
+  orchestrator?: MeOrchestrator | null;
   user: Record<string, unknown> | string | null;
 }
 
@@ -262,7 +290,7 @@ export class ApiError extends Error {
   }
 }
 
-/** 401: the Airflow session cookie is missing or expired. */
+/** 401: the session is missing or expired (the Airflow cookie, or the standalone host's credentials). */
 export class UnauthorizedError extends ApiError {
   constructor(path: string, detail: string, body?: unknown) {
     super(401, detail, path, body);
@@ -304,7 +332,7 @@ export class NetworkError extends ApiError {
 
 export const isApiError = (error: unknown): error is ApiError => error instanceof ApiError;
 
-/** True when one of the errors is a 401 (the Airflow session expired). */
+/** True when one of the errors is a 401 (the session expired). */
 export const hasSessionExpired = (...errors: Array<unknown>): boolean =>
   errors.some((error) => isApiError(error) && error.status === 401);
 
@@ -383,10 +411,29 @@ export const apiUrl = (path: string, baseUri: string = document.baseURI): URL =>
   // A leading slash would resolve against the origin root and escape the deployment base path.
   new URL(API_PREFIX + path.replace(/^\/+/u, ""), baseUri);
 
+/** The `Authorization` header value to send (for example `Bearer <token>`), or undefined for none. */
+export type AuthorizationProvider = () => string | undefined;
+
+let authorizationProvider: AuthorizationProvider | undefined;
+
+/**
+ * Install the provider of the `Authorization` header of every API call (none removes it).
+ *
+ * Only the standalone entry of the token backend calls this: a browser cannot send a bearer token on
+ * its own. The Airflow plugin never does (see the module docstring).
+ */
+export const setAuthorizationProvider = (provider?: AuthorizationProvider): void => {
+  authorizationProvider = provider;
+};
+
+/** True when API calls carry an `Authorization` header that a plain link (a new tab) cannot send. */
+export const hasAuthorizationProvider = (): boolean => authorizationProvider !== undefined;
+
 /**
  * Call the healer API and return the parsed JSON (or text) body.
  *
- * Always sends `credentials: "same-origin"` and `X-Requested-With: dag-healer`; throws an
+ * Always sends `credentials: "same-origin"` and `X-Requested-With: dag-healer`, plus the
+ * `Authorization` of the installed provider unless the caller passed one; throws an
  * {@link ApiError} subclass for non-2xx responses and network failures.
  */
 export const apiFetch = async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
@@ -398,6 +445,13 @@ export const apiFetch = async <T = unknown>(path: string, init: RequestInit = {}
   }
   if (typeof init.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+  if (authorizationProvider !== undefined && !headers.has("Authorization")) {
+    const authorization = authorizationProvider();
+
+    if (authorization !== undefined && authorization.length > 0) {
+      headers.set("Authorization", authorization);
+    }
   }
 
   let response: Response;
@@ -445,7 +499,7 @@ const noteBody = (note?: string): { note?: string } => {
 // Endpoints
 // --------------------------------------------------------------------------------------------- //
 
-/** `GET /me`: the signed-in user and the Airflow base URL. */
+/** `GET /me`: the signed-in user, the public base URL and, outside Airflow, the host and orchestrator. */
 export const getMe = (signal?: AbortSignal) => apiFetch<MeResponse>("me", { signal });
 
 export interface IncidentQuery {

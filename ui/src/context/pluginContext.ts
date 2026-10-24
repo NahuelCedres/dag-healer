@@ -82,6 +82,16 @@ const baseSegmentCount = (segments: Array<string>, baseUri: string | undefined):
   return isPrefix ? baseSegments.length : 0;
 };
 
+/**
+ * Decoded segments of `pathname` after the deployment base path taken from `baseUri` (all of them
+ * when `baseUri` is not a directory prefixing the pathname).
+ */
+export const pathSegmentsAfterBase = (pathname: string, baseUri?: string): Array<string> => {
+  const segments = splitPath(pathname).map(safeDecode);
+
+  return segments.slice(baseSegmentCount(segments, baseUri));
+};
+
 const parseFrom = (segments: Array<string>, start: number): HealerContext => {
   const dagsIndex = segments.indexOf("dags", start);
   const dagId = dagsIndex === -1 ? undefined : segments[dagsIndex + 1];

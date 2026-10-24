@@ -30,7 +30,7 @@ and works without `make` (every `make <target>` delegates to it):
 |---|---|
 | `python scripts/tasks.py up` | build the image if needed, start Airflow 3.3.2 and the healer worker |
 | `python scripts/tasks.py demo` | scripted end-to-end demo with three failures: DATA, CODE and AMBIGUOUS |
-| `python scripts/tasks.py ui` | build the React bundle (local Node >= 20.19, otherwise Docker) |
+| `python scripts/tasks.py ui` | build the React bundles of the Airflow plugin and of `dag-healer serve` (local Node >= 20.19, otherwise Docker) |
 | `python scripts/tasks.py test` | unit tests, no Airflow needed |
 | `python scripts/tasks.py test-airflow` | tests that need Airflow, in the `tests` compose profile |
 | `python scripts/tasks.py e2e` | smoke test against the running stack |
@@ -50,8 +50,8 @@ and works without `make` (every `make <target>` delegates to it):
 
 CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`: the
 ruff checks above, the unit tests on Linux, macOS and Windows (Python 3.10 and 3.13; Linux
-also 3.11 and 3.12) and a build of the UI bundle and the wheel. It does not run the `ui/`
-checks or `test-airflow`, so run those yourself when they apply.
+also 3.11 and 3.12), a build of both UI bundles and the wheel, and the `ui/` checks. It does
+not run `test-airflow`, so run it yourself when it applies.
 
 ## Commit messages
 

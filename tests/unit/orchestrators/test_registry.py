@@ -113,7 +113,14 @@ def test_pyproject_registers_the_adapters_and_the_extras() -> None:
     assert extras["airflow"] == ["apache-airflow>=3.1"]
     assert extras["aws"] == ["boto3>=1.34"]
     assert extras["serve"] == ["uvicorn>=0.29", "PyJWT[crypto]>=2.8"]
-    assert extras["dev"] == ["pytest>=8", "aiosmtpd", "ruff", "boto3>=1.34"]
+    assert extras["dev"] == [
+        "pytest>=8",
+        "aiosmtpd",
+        "ruff",
+        "boto3>=1.34",
+        "uvicorn>=0.29",
+        "PyJWT[crypto]>=2.8",
+    ]
     assert registry.BUILTIN_EXTRAS == {"stepfunctions": "aws"}
 
 

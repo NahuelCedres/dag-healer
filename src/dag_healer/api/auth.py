@@ -22,6 +22,14 @@ Indirection for tests: route code only depends on :func:`get_current_user` and
 :func:`get_authorizer` (``require_dag_access`` dependencies use both), so tests on hosts
 without Airflow override exactly these two with ``app.dependency_overrides``. Without
 Airflow and without overrides every dependency fails closed with 503.
+
+Standalone host (``dag-healer serve``): an :class:`AuthBackend` bundles a user dependency
+with an :class:`Authorizer`, and :func:`apply_auth_backend` installs it through the same
+two overrides. It is the only production writer of ``dependency_overrides``. The overrides
+live on the healer app object and still apply when that app is mounted under ``/healer``.
+Standalone users are :class:`Principal` objects, which :func:`user_name` understands like
+Airflow users. :class:`AirflowAuthBackend` packages the Airflow wiring as a backend, but
+``create_app(auth=None)`` does not install it: the Airflow host's app has no override.
 """
 
 from __future__ import annotations
@@ -31,11 +39,12 @@ import importlib.util
 import inspect
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.concurrency import run_in_threadpool
 
 log = logging.getLogger(__name__)
@@ -115,6 +124,37 @@ _airflow_get_user: Callable[..., Any] = _security.get_user if _security is not N
 # --------------------------------------------------------------------------- users
 
 
+@dataclass(frozen=True)
+class Principal:
+    """A user of the standalone host, as its :class:`AuthBackend` authenticated it.
+
+    Duck-compatible with Airflow's ``BaseUser`` (``get_id`` / ``get_name``), so
+    :func:`user_name` and the command actor work unchanged. RBAC rules match ``id``
+    (``user:<id>``, exact and case-sensitive) and ``groups`` (``group:<name>``). ``claims``
+    holds verified identity-provider claims only; it is left out of equality, hashing and
+    ``repr``, and must never be logged.
+    """
+
+    id: str
+    name: str
+    groups: frozenset[str] = frozenset()
+    claims: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.groups, str):  # frozenset("admin") would be five one-letter groups
+            raise TypeError("Principal.groups must be a collection of group names, not a string")
+        if not isinstance(self.groups, frozenset):
+            object.__setattr__(self, "groups", frozenset(self.groups))
+
+    def get_id(self) -> str:
+        """The principal id (``BaseUser.get_id()``)."""
+        return self.id
+
+    def get_name(self) -> str:
+        """The display name (``BaseUser.get_name()``)."""
+        return self.name
+
+
 async def get_current_user(user: Any = Depends(_airflow_get_user)) -> Any:
     """FastAPI dependency returning the authenticated Airflow user (``GetUserDep``).
 
@@ -129,7 +169,13 @@ def require_authenticated(user: Any = Depends(get_current_user)) -> Any:
 
 
 def user_name(user: Any) -> str:
-    """Display name of an Airflow user (``BaseUser.get_name()``) used as command actor."""
+    """Display name of the user (``BaseUser.get_name()``) used as command actor.
+
+    A :class:`Principal` gives its ``name``, else its ``id``; any other user object (an
+    Airflow user) is asked ``get_name()``, then ``get_id()``, then ``username`` / ``name``.
+    """
+    if isinstance(user, Principal):
+        return str(user.name or user.id or "unknown")
     for getter in ("get_name", "get_id"):
         method = getattr(user, getter, None)
         if callable(method):
@@ -305,6 +351,87 @@ def require_dag_access(method: str, entity: str | None = "TASK_INSTANCE") -> Cal
     return dependency
 
 
+# --------------------------------------------------------------------------- auth backends
+
+
+@runtime_checkable
+class AuthBackend(Protocol):
+    """A user dependency plus the :class:`Authorizer` that answers DAG (pipeline) questions.
+
+    ``name`` is ``airflow`` for :class:`AirflowAuthBackend`, else the standalone host's
+    ``serve.auth.backend`` (``dev``, ``token``, ``trusted_header`` or ``alb_oidc``).
+    """
+
+    name: str
+
+    def user_dependency(self) -> Callable[..., Any]:
+        """FastAPI dependency returning the user or raising ``HTTPException`` (401/403).
+
+        The standalone backends return a :class:`Principal`. The dependency may declare
+        ``request: Request`` and sub-dependencies, and must be a plain ``def`` when it does
+        I/O, so that FastAPI runs it in the threadpool.
+        """
+        ...
+
+    def authorizer(self) -> Authorizer:
+        """The :class:`Authorizer` of every request: the same object on every call, no I/O."""
+        ...
+
+    def allowed_origins(self) -> list[str]:
+        """Extra absolute http(s) URLs whose origins the CSRF ``Origin``/``Referer`` check accepts.
+
+        They are accepted besides the request's own origin. Called on every state-changing
+        request, so it must be cheap.
+        """
+        ...
+
+
+class AirflowAuthBackend:
+    """The Airflow host's wiring as an :class:`AuthBackend`.
+
+    Users come from Airflow's ``get_user`` (Bearer, then the ``_token`` cookie), permissions
+    from the process-wide authorizer of :func:`get_authorizer` and the CSRF origins from
+    :func:`dag_healer.api.app.configured_base_urls`. ``create_app(auth=None)`` does not
+    install it: the Airflow host's app reaches the same objects without any override.
+    """
+
+    name = "airflow"
+
+    def user_dependency(self) -> Callable[..., Any]:
+        """Airflow's ``get_user`` (``GetUserDep``) with its own sub-dependencies."""
+        return _airflow_get_user
+
+    def authorizer(self) -> Authorizer:
+        """The process-wide authorizer (Airflow's auth manager; 503 without Airflow)."""
+        return _AUTHORIZER
+
+    def allowed_origins(self) -> list[str]:
+        """``AIRFLOW__API__BASE_URL`` and ``HEALER_PUBLIC_URL``, else Airflow's ``[api] base_url``."""
+        from dag_healer.api.app import configured_base_urls  # lazy: not loaded with this module
+
+        return configured_base_urls()
+
+
+def apply_auth_backend(app: FastAPI, backend: AuthBackend) -> None:
+    """Install ``backend`` on ``app`` through exactly two ``dependency_overrides`` keys.
+
+    ``get_current_user`` becomes ``backend.user_dependency()`` and ``get_authorizer`` the
+    bound ``backend.authorizer``, which FastAPI calls per request. ``require_authenticated``,
+    ``require_dag_access`` and the list routes depend on these two, so no route changes;
+    routes, middleware and ``app.state`` are left alone. The overrides live on ``app`` and
+    still apply when it is mounted (its routes resolve overrides through the app that
+    included them). ``TypeError`` when ``backend`` is not an :class:`AuthBackend` or its
+    ``user_dependency()`` is not callable.
+    """
+    if not isinstance(backend, AuthBackend):
+        raise TypeError(f"expected an AuthBackend, got {type(backend).__name__}")
+    user_dependency = backend.user_dependency()
+    if not callable(user_dependency):
+        raise TypeError(f"{type(backend).__name__}.user_dependency() must return a callable")
+    app.dependency_overrides[get_current_user] = user_dependency
+    app.dependency_overrides[get_authorizer] = backend.authorizer
+
+
 def configured_base_url() -> str | None:
     """The Airflow ``[api] base_url`` (env ``AIRFLOW__API__BASE_URL``, else Airflow config)."""
     value = os.environ.get("AIRFLOW__API__BASE_URL", "").strip()
@@ -324,11 +451,15 @@ def configured_base_url() -> str | None:
 __all__ = [
     "AIRFLOW_AVAILABLE",
     "DAG_ACCESS_ENTITIES",
+    "AirflowAuthBackend",
     "AirflowAuthorizer",
+    "AuthBackend",
     "Authorizer",
+    "Principal",
     "UnavailableAuthorizer",
     "airflow_available",
     "airflow_installed",
+    "apply_auth_backend",
     "authorized_dag_ids",
     "can_edit_dag",
     "can_read_dag",

@@ -9,6 +9,11 @@ code first.
 
 Set ``DAG_HEALER_ALLOW_NO_UI=1`` to build a wheel without the bundle anyway
 (for example in CI jobs that only run the Python test-suite).
+
+The page of the standalone host (``dag-healer serve``) is a second bundle,
+``src/dag_healer/api/static/standalone/``. It is optional: a wheel without it still
+ships the Airflow plugin, so every wheel build (standard or editable) only warns
+when it is missing; ``dag-healer serve`` then answers 503 on its pages.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from typing import Any
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 BUNDLE_RELPATH = "src/dag_healer/api/static/main.umd.cjs"
+STANDALONE_RELPATH = "src/dag_healer/api/static/standalone/index.js"
 ALLOW_NO_UI_ENV = "DAG_HEALER_ALLOW_NO_UI"
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -68,8 +74,29 @@ def check_ui_bundle(
     raise MissingUIBundleError(message)
 
 
+def standalone_bundle_present(root: str | Path) -> bool:
+    """Return True when the entry of the standalone UI bundle exists and is not empty."""
+    entry = Path(root) / STANDALONE_RELPATH
+    return entry.is_file() and entry.stat().st_size > 0
+
+
+def missing_standalone_message() -> str:
+    """Explain what a missing standalone bundle means and how to produce it."""
+    return (
+        f"dag-healer: the standalone UI bundle '{STANDALONE_RELPATH}' is missing.\n"
+        "  The Airflow plugin views are not affected, but 'dag-healer serve' answers 503 on its pages.\n"
+        "  Build both bundles with:  python scripts/tasks.py ui\n"
+        "  (with a local Node >= 20.19, else in the node:22-alpine stage of docker/Dockerfile)."
+    )
+
+
+def check_standalone_bundle(root: str | Path) -> str | None:
+    """Return a warning when the standalone bundle is missing, None otherwise (it never raises)."""
+    return None if standalone_bundle_present(root) else missing_standalone_message()
+
+
 class CustomBuildHook(BuildHookInterface):
-    """Fail wheel builds that would ship without the UI bundle."""
+    """Fail wheel builds that would ship without the UI bundle; warn without the standalone one."""
 
     PLUGIN_NAME = "custom"
 
@@ -80,3 +107,6 @@ class CustomBuildHook(BuildHookInterface):
         warning = check_ui_bundle(self.root, editable=version == "editable")
         if warning:
             self.app.display_warning(warning)
+        standalone_warning = check_standalone_bundle(self.root)
+        if standalone_warning:
+            self.app.display_warning(standalone_warning)

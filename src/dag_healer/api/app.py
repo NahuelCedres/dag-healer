@@ -11,6 +11,12 @@ route ``/api/v1/events/*`` (shared token, no browser), the request must carry
 base URL (``AIRFLOW__API__BASE_URL``) or the request's own host (CSRF protection on top
 of the ``SameSite=Lax`` Airflow cookie).
 
+The standalone host (``dag-healer serve``) mounts ``create_app(auth=backend)`` under
+``/healer`` instead: the backend's user dependency and authorizer replace Airflow's
+(:func:`dag_healer.api.auth.apply_auth_backend`), the CSRF origins come from the backend
+(``HEALER_PUBLIC_URL`` and ``serve.public_url``; the Airflow base URL is not consulted)
+and :func:`serving_host` tells the two hosts apart.
+
 This module must import and run without Airflow (unit tests on hosts where Airflow
 cannot be installed); routers are attached by :func:`include_routers` and their
 authentication fails closed (503) when Airflow is unavailable.
@@ -24,10 +30,10 @@ import importlib.util
 import logging
 import mimetypes
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI
@@ -37,12 +43,22 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from dag_healer._version import __version__
 
+if TYPE_CHECKING:
+    from dag_healer.api.auth import AuthBackend
+
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ROUTERS_MODULE = "dag_healer.api.routers"
 DEBUG_ENV = "HEALER_DEBUG"
 _TRUTHY = {"1", "true", "yes", "on"}
+
+#: The two hosts of the healer app (the ``host`` of ``/me``).
+HostName = Literal["airflow_plugin", "standalone"]
+#: ``app.state`` attribute marking an app of the standalone host (see :func:`serving_host`).
+HOST_STATE_ATTR = "healer_host"
+AIRFLOW_PLUGIN_HOST: HostName = "airflow_plugin"
+STANDALONE_HOST: HostName = "standalone"
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 CSRF_HEADER = "x-requested-with"
@@ -142,11 +158,25 @@ def _request_origin(scope: Scope, headers: Mapping[str, str]) -> Origin | None:
 
 
 class RequestGuardMiddleware:
-    """ASGI middleware: body size cap and CSRF checks for state-changing requests."""
+    """ASGI middleware: body size cap and CSRF checks for state-changing requests.
 
-    def __init__(self, app: ASGIApp, *, max_body_bytes: int = MAX_BODY_BYTES) -> None:
+    ``allowed_urls`` gives the URLs whose origins the Origin/Referer check accepts besides
+    the request's own; it is called on every checked request. ``None`` (the Airflow host)
+    means :func:`configured_base_urls`, looked up per request as well.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_body_bytes: int = MAX_BODY_BYTES,
+        allowed_urls: Callable[[], Iterable[str]] | None = None,
+    ) -> None:
+        if allowed_urls is not None and not callable(allowed_urls):
+            raise TypeError("allowed_urls must be a callable returning the allowed URLs")
         self.app = app
         self.max_body_bytes = max_body_bytes
+        self.allowed_urls = allowed_urls
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Reject oversized or cross-site state-changing requests before routing."""
@@ -158,12 +188,13 @@ class RequestGuardMiddleware:
         if length is not None and (not length.strip().isdigit() or int(length) > self.max_body_bytes):
             await self._reject(scope, receive, send, 413, "Request body is too large")
             return
+        allowed_urls = configured_base_urls if self.allowed_urls is None else self.allowed_urls
         reason = csrf_failure(
             scope["method"],
             _route_path(scope),
             headers,
             request_origin=_request_origin(scope, headers),
-            allowed_urls=configured_base_urls(),
+            allowed_urls=allowed_urls(),
         )
         if reason is not None:
             log.info("dag-healer: rejected %s %s: %s", scope["method"], scope.get("path"), reason)
@@ -229,8 +260,24 @@ def debug_enabled() -> bool:
     return os.environ.get(DEBUG_ENV, "").strip().lower() in _TRUTHY
 
 
-def create_app() -> FastAPI:
-    """Build a new dag-healer FastAPI application."""
+def create_app(*, auth: AuthBackend | None = None) -> FastAPI:
+    """Build a new dag-healer FastAPI application.
+
+    With ``auth=None`` it is the Airflow host's app: Airflow's user and authorizer through
+    :mod:`dag_healer.api.auth`, the CSRF origins of :func:`configured_base_urls`, no
+    dependency override and nothing on ``app.state``. With an
+    :class:`~dag_healer.api.auth.AuthBackend` (the standalone host) the same app also gets
+    the backend's user dependency and authorizer
+    (:func:`~dag_healer.api.auth.apply_auth_backend`) and its ``allowed_origins`` as CSRF
+    origins; any backend but ``airflow`` marks the app as the standalone host
+    (:func:`serving_host`). ``TypeError`` when ``auth`` is not an ``AuthBackend``.
+    """
+    if auth is not None:
+        # lazy, so that importing this module loads nothing new
+        from dag_healer.api.auth import AuthBackend, apply_auth_backend
+
+        if not isinstance(auth, AuthBackend):
+            raise TypeError(f"auth must be an AuthBackend, got {type(auth).__name__}")
     _register_mimetypes()
     debug = debug_enabled()
     app = FastAPI(
@@ -247,11 +294,30 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
-    app.add_middleware(RequestGuardMiddleware)
+    if auth is None:
+        app.add_middleware(RequestGuardMiddleware)
+    else:
+        app.add_middleware(RequestGuardMiddleware, allowed_urls=auth.allowed_origins)
 
     # The authenticated /api/v1 routers (dag_healer.api.routers).
     include_routers(app)
+    if auth is not None:
+        apply_auth_backend(app, auth)
+        if auth.name != "airflow":
+            setattr(app.state, HOST_STATE_ATTR, STANDALONE_HOST)
     return app
+
+
+def serving_host(app: Any) -> HostName:
+    """The host that serves ``app``: ``standalone`` when :func:`create_app` marked it so.
+
+    Every other app, the Airflow host's included, is ``airflow_plugin``. ``/me`` asks about
+    ``request.app``, which is the healer app itself in both hosts (also when mounted).
+    """
+    state = getattr(app, "state", None)
+    if getattr(state, HOST_STATE_ATTR, None) == STANDALONE_HOST:
+        return STANDALONE_HOST
+    return AIRFLOW_PLUGIN_HOST
 
 
 def include_routers(app: FastAPI) -> None:

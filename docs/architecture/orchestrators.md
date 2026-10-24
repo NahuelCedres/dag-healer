@@ -764,6 +764,10 @@ ui/vite.standalone.config.ts   NEW  ES-module app build with React bundled
 - Only `airflow/{plugin,listener}.py` and `api/auth.py` import `airflow` (today's rule).
 - Only `stepfunctions/aws.py` and `storage/s3.py` import `boto3`, and only lazily.
 - Task runners never import `orchestrators` or `core`: an extension of the existing light-import test.
+- As built in step 7:
+  - `hosting/auth/` also holds `__init__.py`, with the factory `build_auth_backend`, and `base.py`, with what the four backends share.
+  - `hosting/` imports `api`, `config`, `masking` and `orchestrators.registry` (and `core` types), and follows the core's rules. Only `cli/serve_cmd.py` imports it.
+  - PyJWT and cryptography are imported only lazily, by `hosting/auth/alb_oidc.py`; uvicorn only lazily, by `cli/serve_cmd.py` (11.6).
 
 ---
 
@@ -855,6 +859,8 @@ dev = ["pytest>=8", "aiosmtpd", "ruff", "boto3>=1.34"]   # botocore.stub for the
 ```
 
 Entry points become visible only after `pip install`, so an editable install must be reinstalled after adding one. `load_factory` also accepts `"pkg.mod:factory"` strings, which serves development and tests.
+
+As built in step 7: the `dev` extra also lists the `serve` packages (`uvicorn>=0.29`, `PyJWT[crypto]>=2.8`). CI installs `.[dev]`, so the `serve` and `alb_oidc` tests run on every platform of the matrix without skips. The `serve` extra and the required dependencies are unchanged, so Airflow environments install dag-healer without the extra.
 
 ---
 
@@ -1000,6 +1006,33 @@ def get_app() -> FastAPI: ...      # unchanged; used by HealerPlugin.fastapi_app
 | URL shapes | `/plugin/healer`, `/dags/<d>/plugin/healer-dag`, `/dags/<d>/runs/<r>/tasks/<t>[/mapped/<i>]/plugin/healer-ti` | **the same shapes**, served by the shell |
 | CSRF origins | `AIRFLOW__API__BASE_URL`, `HEALER_PUBLIC_URL` | `serve.public_url`, `HEALER_PUBLIC_URL` |
 
+As built in step 7:
+- `create_app(auth=None)` is the Airflow host's app as before: no dependency override, nothing on `app.state` and `RequestGuardMiddleware` added without a keyword. `get_app()` and `airflow/plugin.py` are unchanged.
+- `create_app(auth=backend)` passes `backend.allowed_origins` to the guard as `allowed_urls` (called on every state-changing request), applies the backend after the routers (`apply_auth_backend`) and, for any backend but `airflow`, sets the marker `app.state.healer_host = "standalone"`. `serving_host(app)` reads it, and `/me` reports it as `host` (7.4). `TypeError` for an object that is not an `AuthBackend`.
+- `create_standalone_app(cfg, *, backend=None, bind_host=None, static_dir=None)` (`hosting/app.py`):
+  - an outer FastAPI app without docs or OpenAPI, the healer app mounted at `/healer` and the shell routes (7.6);
+  - the backend from `hosting.auth.build_auth_backend` with a `RuleAuthorizer` of the effective rules (7.3), or an injected one (tests);
+  - the title from the adapter's display name, computed once: "Healer" and a warning when the adapter cannot be built;
+  - warnings for a missing standalone bundle and for an adapter whose `capabilities.ui_hosts` lacks `standalone`.
+- The API keeps reading `healer.yaml` through `deps.get_config()`, so `dag-healer serve` exports `HEALER_CONFIG`.
+  - The backend, its tokens and the rules are built once, at start. A token removed from `healer.yaml`, or a rule narrowed there, applies only when `serve` restarts.
+  - So when the reloaded configuration has another `serve.auth`, the host logs a warning, once per change, that a restart applies it. It compares whenever it lists the pipelines a user may see, which the Healer page does on every load.
+- The standalone CSRF origins are `HEALER_PUBLIC_URL` and `serve.public_url` (`hosting.auth.standalone_origins`), read once when the backend is built. `AIRFLOW__API__BASE_URL` is not consulted.
+  - The request's own origin is still accepted. A TLS-terminating proxy changes the scheme, so behind one `serve.public_url` must be set; `serve` warns about a non-loopback address without it.
+- Every answer under `/healer/api/` carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` unless it sets them (`ApiResponseHeaders` on the outer app). Behind a proxy that keeps a session cookie, no cache may keep incidents, error excerpts or PR content. The Airflow host's app is unchanged.
+- With the `dev` backend, the outer app answers 400 unless the `Host` header names a loopback host (`LoopbackHostGuard`). Binding a loopback address keeps other machines out, but not a web page that reaches the port through DNS rebinding.
+  - It also answers 400 to a request with a forwarding header (`Forwarded`, `Via`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`). A reverse proxy on the same machine may set `Host` to the loopback address it forwards to (nginx does by default), and would otherwise make whoever reaches it the admin `dev`.
+- `dag-healer serve` (`cli/serve_cmd.py`) runs these steps in order:
+  1. checks that uvicorn imports (else the `pip install 'dag-healer[serve]'` hint and exit 1);
+  2. loads the configuration;
+  3. takes the address from `--host` / `--port`, else `serve.host` / `serve.port` (`[::1]` binds `::1`; `localhost`, in any case, binds `127.0.0.1`, because only the literal address is sure to be loopback);
+  4. exports `HEALER_CONFIG`;
+  5. builds the adapter;
+  6. builds the app. A `ConfigError`, `AuthConfigError` included, or an adapter that cannot be loaded or built exits 1 before anything is bound;
+  7. creates or migrates the store (`init_db(allow_migrate=True)`, section 6.4). A store that cannot be reached is only a warning, and its routes answer 503;
+  8. warns about the `dev` backend, about a non-loopback address without a public URL and about the groups header of `trusted_header` (7.3). The empty-rules, missing-bundle and `ui_hosts` warnings are logged while the app is built;
+  9. prints one start-up line and runs uvicorn with `proxy_headers=False` and `server_header=False` (`-vv` sets the log level to debug).
+
 ### 7.2 `AuthBackend` (`api/auth.py`, next to the existing `Authorizer`)
 
 ```python
@@ -1047,6 +1080,13 @@ How the wiring behaves:
 - Using overrides as production wiring is a deliberate choice. It is the only mechanism that substitutes a dependency *together with its own sub-dependencies*, which Airflow's `GetUserDep` needs.
 - Routes stay `/dags/{dag_id}/...`, with no change: `RuleAuthorizer.check_dag_access` reads `request.path_params["dag_id"]` just as Airflow does.
 
+As built in step 7:
+- `Principal.claims` is left out of equality, hashing and `repr`, so a principal stays hashable and its claims never reach a log. `groups` is normalised to a `frozenset`; a bare string is a `TypeError`, because it would split into one-letter groups.
+- `user_name(Principal)` is its `name`, else its `id`, else `"unknown"`. Every other user object keeps today's fallbacks (`get_name()`, `get_id()`, `username`, `name`).
+- `AuthBackend` is `runtime_checkable`. `apply_auth_backend` raises `TypeError` for an object that is not one, or whose `user_dependency()` is not callable. It sets exactly the two keys and is the only production writer of `dependency_overrides`. The overrides live on the healer app object, so a standalone app built in the same process never reaches the `get_app()` singleton.
+- `AirflowAuthBackend` exists for completeness and tests; `create_app(auth=None)` does not install it.
+- `RequestGuardMiddleware(app, *, max_body_bytes=..., allowed_urls=None)`: `allowed_urls` must be callable (else `TypeError`). `None` keeps evaluating `configured_base_urls()` per request. The header rule, the body cap and the `/api/v1/events/` exemption are the same for both hosts. Bots that use bearer tokens must send `X-Requested-With: dag-healer` on POST too.
+
 ### 7.3 Standalone authentication and authorization (`hosting/`)
 
 **`RuleAuthorizer(rules, *, candidates: Callable[[], set[str]])`** implements the existing `Authorizer`:
@@ -1060,10 +1100,49 @@ Backends (`hosting/auth/`), each returning `Principal`:
 |---|---|---|
 | `token` | CLI and bots | `Authorization: Bearer <t>`; sha256 compared with `hmac.compare_digest` against `serve.auth.tokens` (hashes only) |
 | `trusted_header` | oauth2-proxy / IAP | `user_header` + `groups_header`, accepted **only** when the peer address is in `trusted_proxies`, else 401 |
-| `alb_oidc` | AWS ALB `authenticate-oidc` / Cognito | Verify `x-amzn-oidc-data` (ES256) with the key at `https://public-keys.auth.elb.{region}.amazonaws.com/{kid}` (cached; GovCloud endpoints differ). The JWT **header** must have `signer == alb_arn`; enforce the header's `exp`. User = configured claim (default `email`, else `sub`); groups = `groups_claim`. Never trust `x-amzn-oidc-identity`. The ALB adds base64 padding to the JWT [V]: strip it before verification [I]. Targets must accept traffic only from the ALB security group [V]. |
+| `alb_oidc` | AWS ALB `authenticate-oidc` / Cognito | Verify `x-amzn-oidc-data` (ES256) with the key at `https://public-keys.auth.elb.{region}.amazonaws.com/{kid}` (cached; GovCloud endpoints differ). The JWT **header** must have `signer == alb_arn`; enforce the header's `exp`. User = configured claim (default `email`, only when verified), else `sub`; groups = `groups_claim`. Never trust `x-amzn-oidc-identity`. The ALB adds base64 padding to the JWT [V]: strip it before verification [I]. Targets must accept traffic only from the ALB security group [V]. |
 | `dev` | local development | fixed user `dev` in group `admin`. `serve` refuses to start with it unless bound to a loopback address. |
 
 `OnUnauthenticatedRequest: deny` makes the ALB return 401 to the SPA's XHR calls [V]. The UI's existing "session expired, reload" banner then applies.
+
+As built in step 7:
+- **Permissions** (`hosting/rbac.py`):
+  - `action_for`: `GET` with any entity is `read`, `PUT TASK_INSTANCE` is `act`, and `PUT CODE` or `PUT` on the pipeline itself (entity `None`, which the contract approval uses) is `approve_contract`. Anything else has no action and is denied.
+  - Principals: `user:<id>` (exact, case-sensitive) and `group:<name>` match a `Principal` only. `authenticated` and `*` match any user.
+  - Pipelines use the semantics of `monitor.dags` (`HealerConfig.is_monitored`): a `!pattern` excludes and wins, a list of exclusions only means every other pipeline, and an empty list matches none. Actions are independent: `act` does not imply `read`.
+  - `check_dag_access` answers 403 `{"detail": "Forbidden"}` when no rule allows, and also for a request without a `dag_id` path parameter.
+  - `authorized_dag_ids` maps `GET` to `read` and `PUT` to `act`; any other method gets no pipeline. Its candidates are the contracts' pipelines, the literal `monitor.dags` entries (no pattern, no `!`) and the `datasets` keys, read from the configuration at call time. There is no store query: the list routes add the pipelines of their incidents themselves. A failing listing gives no pipeline (a warning).
+  - The rules are `serve.auth.rules`, compiled once at start. Without rules, `dev` gets the built-in rule (`group:admin`, every action on `*`, logged). Any other backend gets none, so every request is denied, with a warning.
+- **Errors.** Missing, malformed, duplicated, unknown or expired credentials get the same 401 `{"detail": "Not authenticated"}` on every backend (`token` adds `WWW-Authenticate: Bearer`). An invalid token is a 401, not Airflow's 403. Refused credentials are logged at debug level, without header values, tokens or claims; a failing key endpoint (`alb_oidc`) is a warning. A setting that cannot be served safely raises `AuthConfigError` (a `ConfigError`) when the backend is built, so `serve` exits 1 before it binds a socket. The backends never import `hosting.app`, `hosting.rbac` or `hosting.shell`: the host hands them its authorizer.
+- **`dev`.** The user is the principal `dev` in group `admin`. The backend's constructor refuses a bind address that is not loopback, so `serve` (the effective `--host`) and `create_standalone_app` (`bind_host`, else `serve.host`) both enforce the rule. Loopback means `localhost` (any case), `127.0.0.0/8`, `::1` and IPv4-mapped `::ffff:127.x.y.z`, with or without brackets. Everything else is refused: `0.0.0.0`, `::`, other host names and abbreviations such as `127.1`. The outer app also checks the `Host` header (7.1).
+- **`token`:**
+  - The request must carry exactly one `Authorization` header, with the scheme `Bearer` in any case and a token of 1 to 4096 visible ASCII characters.
+  - Its sha256 is compared with every configured digest through `hmac.compare_digest`, without an early exit. Only digests are kept, and they are left out of `repr`.
+  - The backend refuses to start without an entry or with a digest listed twice. Two entries may share a name, which is how a token is rotated.
+  - A token must be a random secret, such as `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Its sha256 is fast and unsalted, so a short or guessable token could be found by trying candidates against the server or a leaked `healer.yaml`.
+  - Removing an entry revokes its token when `serve` restarts (7.1).
+  - No cookie and no query parameter is read. The standalone UI asks for the token and sends this header itself (7.6).
+- **`trusted_header`:**
+  - Only the direct TCP peer counts: `serve` runs uvicorn with `proxy_headers=False`, so `X-Forwarded-For` is never consulted. IPv4-mapped peers count as their IPv4 address, and a peer that is not an IP address is untrusted.
+  - `trusted_proxies` must not be empty, and must name the proxies rather than whole providers. Refused: a network that holds every address (`0.0.0.0/0`, `::/0`, or `::ffff:0:0/96`, every IPv4-mapped address); a wider IPv6 network that contains `::ffff:0:0/96` (`::/64` trusts every IPv4 client of a dual-stack socket); a network wider than an IPv4 /8 or an IPv6 /32 (a /8 inside the unique local `fc00::/7`, like `10.0.0.0/8`), alone or merged with the others (`0.0.0.0/1` with `128.0.0.0/1`).
+  - The user header must appear exactly once, printable, at most 256 characters and without a comma. A comma is what a proxy that appends to a client's header, instead of overwriting it, produces.
+  - The groups header may appear at most once, with at most 64 names, and must differ from the user header.
+  - The proxies must overwrite or remove both headers on every request they forward. The groups header is believed from them like the user header, but some proxies set the user header only and pass the client's other headers through: IAP (`X-Goog-Authenticated-User-Email`), a forward-auth that maps the user alone. Behind them `groups_header` must be `null`, or a client can claim any group. `serve` warns at start while a groups header is set, and says when it is the default `X-Forwarded-Groups`.
+- **`alb_oidc`:**
+  - The request must carry exactly one `x-amzn-oidc-data` header, of at most 16 KB.
+  - Before any network call, the unverified JWT header must have `alg` `ES256`, a `kid` matching `^[A-Za-z0-9][A-Za-z0-9-]{0,127}$` (it becomes part of the key URL), `signer == alb_arn` and an `exp` that is a finite number in the future.
+  - The key comes from the regional endpoint (in GovCloud, the S3 bucket URL). It is fetched with httpx: no redirects, TLS verified, `Accept-Encoding: identity`, at most 16 KB within a total deadline. It must be a P-256 public key in PEM.
+  - Keys are cached for 32 kids. A kid whose key could not be had is not asked for again for 60 s. A 4xx answer is a 401, except 408 and 429, which ask to try later. Those two, a network error, a 5xx or a document that is not such a key are a 503 "The load balancer signing key cannot be fetched".
+  - One key is fetched at a time, and a backend starts at most 10 fetches within 60 s. A request for the kid being fetched waits for that fetch (up to 5 s). A request for another new kid meanwhile, or past that budget, answers 503 without a fetch, and the 503 is not remembered for the kid.
+  - So a client that reaches the targets directly, and knows `alb_arn`, cannot make the host fetch more than one key at a time, nor hold the threadpool that the sync routes share. The targets must still accept traffic from the load balancer's security group only (risk 10).
+  - The padding-stripped token is verified first. The token as received is tried only when that signature fails and the token had padding; which form the ALB signs is still unverified (section 13). The verified header must equal the checked one, and PyJWT verifies the payload `exp`.
+  - `aud` is not verified: the token is bound to the deployment by its signed `signer`, and the audience of the identity provider's claims is not ours to check.
+  - The user is `user_claim`, else `sub`. An `email` or a `phone_number` counts only when the identity provider marks it verified: `email_verified` / `phone_number_verified` is `true`, or the string `"true"` that Cognito sends.
+  - Many providers let users set their own address (database sign-ups, profile edits). An unverified one could name somebody else, in `user:` rules and as the actor of the commands. `sub` is assigned by the provider, so `user:` rules are best written on `sub`, or replaced by groups the provider manages.
+  - The groups are a list or a comma-separated string, and names that are not usable strings are dropped.
+  - `alb_arn` must be an ALB ARN in the `aws` or `aws-us-gov` partition, whose key endpoints are the ones above, with a region of that partition. Any other partition (`aws-cn`, `aws-iso*`) is refused at start, rather than answering 503 on every request.
+  - `region` is the region of `alb_arn` (the configuration derives it). The unsigned `x-amzn-oidc-identity` and `x-amzn-oidc-accesstoken` are never read. PyJWT, cryptography and httpx are imported only when used.
+  - Tests replace the fetch with `key_fetcher` (URL → PEM text). It raises `SigningKeyNotFound` for a 401 and `SigningKeyUnavailable` for a 503; any other exception is a 503.
 
 ### 7.4 Wire contract: v1 frozen, additive only
 
@@ -1084,6 +1163,11 @@ As built in step 6:
 - `POST /events/{channel}` answers 202 `EventsAccepted {accepted, pending_event_ids}`, 404 for a channel the adapter's intake does not list, 422 for a body that is not a JSON object or that `normalize` rejects (`ValueError`), and 500 "The event could not be read" when `normalize` raises anything else (only the exception type is logged). The intake gets the request headers without `X-Healer-Token`, `Authorization` and `Cookie`. `/events/task-failed` answers 404 only under an adapter without the `task-failed` channel.
 - Lists, filters and the commands the API enqueues are scoped to the process's instance (`deps.get_instance`); an incident of another instance answers 404. No API dependency migrates the store: an outdated schema keeps answering 503.
 
+As built in step 7:
+- `/me` sets `host` from `serving_host(request.app)`, which is the healer app in both hosts, also when it is mounted. The value is `standalone` for the app of `dag-healer serve`. On the Airflow plugin it is `airflow_plugin`, which is left out, so the plugin's body for the default instance stays `{user, base_url}`. The plugin never calls `/me`.
+- `base_url` keeps the base chain of 7.5 on both hosts. A standalone deployment normally sets `HEALER_PUBLIC_URL` or `serve.public_url`; without either, an orchestrator that is not Airflow gets `http://{serve.host}:{serve.port}`.
+- No other route, schema or view changed. The routes, their dependencies and the `healer_dag_access` markers are the same on both hosts.
+
 ### 7.5 Deep links (`links.py`)
 
 - The signatures of `task_instance_url`, `dag_url`, `healer_page_url`, `pr_md_url` and `incident_links` are unchanged. They point at the Healer views, which both hosts serve on the same shapes.
@@ -1093,6 +1177,11 @@ As built in step 6:
   - Step Functions: `{"AWS console": ..., "CloudWatch logs": ...}` from configurable templates (9.11).
 - Emails add one "Open in <label>" link per native link (for example "Open in AWS console") only when native links exist **and** the type is not Airflow, so Airflow emails stay byte-identical.
 - The API applies the same rule (`shown_native_links`): `links.native` and the summaries' `links` stay empty for Airflow, whose own UI hosts the Healer views (the `task_instance` link already opens it).
+
+As built in step 7:
+- `links.py` is unchanged.
+- Both bundles build the links between the Healer views on the client, relative to `<base href>`. Of the links the server sends, the UI uses only `links.native`, shown as "Open in <label>" (http and https URLs only).
+- The links the server writes (emails, PR.md, `/me` `base_url`) follow the base chain. Without `serve.public_url` or `HEALER_PUBLIC_URL`, they point at `http://{serve.host}:{serve.port}` from `healer.yaml`: `--host` / `--port` change only the address `serve` binds, and the worker never sees them. A token sign-in is kept per origin (7.6). So a deployment sets `serve.public_url` to the URL users open.
 
 ### 7.6 React views reused in both hosts
 
@@ -1108,12 +1197,43 @@ As built in step 6:
 - `hosting/shell.py` serves `index.html` (`<base href="{root_path}/">`, `<div id="root">`, `<script type="module" src="healer/static/standalone/index.js?v=...">`) for `/`, `/plugin/{route}` and `/dags/{rest:path}`. `/` redirects to `plugin/healer`.
 - `scripts/build_ui.py` builds both bundles (`pnpm build && pnpm build:standalone`). `hatch_build.py` still *requires* only `main.umd.cjs` and warns if `standalone/` is missing, in which case `serve` answers 503 on `/` with a clear message. CI builds both.
 
+As built in step 7:
+- **Bundles:**
+  - `pnpm build` is unchanged: the UMD bundle of `vite.config.ts` and `main.tsx`. `pnpm build:standalone` (`vite.standalone.config.ts`) builds one ES module, `ui/dist/standalone/index.js`, after it. React 19, ReactDOM, Chakra and Emotion are bundled, the CSS is injected by the JavaScript and the file name has no hash.
+  - Sizes: about 577 kB (163 kB gzipped); the UMD bundle is about 384 kB.
+  - `python scripts/tasks.py ui` builds both, with the local toolchain or else in the `ui` stage of `docker/Dockerfile`, and replaces `src/dag_healer/api/static/standalone/` as a whole. The image's wheel takes the fresh plugin bundle and the standalone bundle of `src/`.
+  - `hatch_build.py` requires `main.umd.cjs` alone and warns, for standard and editable builds, when `standalone/index.js` is missing.
+  - CI checks that the wheel ships both bundles byte for byte, reports their sizes and runs the UI's lint, format check and tests. It also warns when the committed bundles differ from its fresh build; the check can fail the job once the runner's build is seen to match a local one byte for byte.
+  - The `/healer/static` mount also serves `standalone/index.js` inside the Airflow api-server: public JavaScript, like `main.umd.cjs`.
+- **The shell** (`hosting/shell.py`):
+  - `/` redirects (307) to `{root_path}/plugin/healer`. `/plugin/{route}` and `/dags/{rest:path}` answer the page: `<base href="{root_path}/">`, `<meta name="dag-healer-auth" content="<backend>">`, the title "Healer · <display name>", `<div id="root">` and the module script `healer/static/standalone/index.js?v=<version>`.
+  - Every value is HTML-escaped, and the page has no inline script or style. `root_path` is the ASGI root path, set by uvicorn's `--root-path`.
+  - The bundle is looked for on every request. While it is missing, the three routes answer 503 in plain text, naming the file and the fix; the API keeps answering.
+  - Every shell answer (200, 307 and 503) carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: DENY` and the policy `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`. Emotion and the injected CSS need the inline styles.
+  - The routes answer GET only. A probe uses `/healer/health`.
+- **The standalone UI:**
+  - `StandaloneApp` asks `/me` once per page, before it mounts `App` (with the `token` backend, once a token is there); meanwhile it shows the header "Healer" and "Loading…". So the words never switch from "DAG" to "flow", and a token host shows its sign-in before any view gets a 401.
+  - `App` takes an optional `header` and `text` (the words and the host, through `UiTextContext`). The plugin passes neither, so its DOM is today's.
+  - The words are `/me`'s string values for known keys over `DEFAULT_VOCABULARY`, which equals `Vocabulary().as_dict()` (a unit test checks it). The header title is "Healer · <display_name>", or "Healer · Apache Airflow" when `/me` has no orchestrator block.
+  - The mode comes from the path after `<base href>`: `.../plugin/healer-dag` is the DAG tab, `.../plugin/healer-ti` the task-instance tab, anything else the Healer page.
+  - The confirmation dialog lists `action_warnings[action]`; native links show as "Open in <label>". A queued `retry_task` is named after `retry_action` ("retry step by alice"), the other commands after their kind.
+  - `src/entries.test.ts` checks that `main.tsx` never reaches `src/standalone/`.
+- **The token sign-in** (only when the meta names `token`):
+  - A password field without a `name`. The candidate is checked with `GET /me`, sending `Authorization`, before it is kept for the tab in sessionStorage (plus page memory when storage is blocked). There is no reload after a sign-in.
+  - A 401 clears the token and shows the form again; "Sign out" clears it and reloads the page.
+  - The token is never put in localStorage, a URL or a log, and the plugin bundle never sends `Authorization`.
+  - While a token is installed, "View PR.md" (a new tab, which cannot send the bearer token) is hidden; the in-page preview remains.
+
 ### 7.7 Standalone deployment topology (Step Functions)
 
 - An ECS or EC2 service runs `dag-healer serve` behind an ALB with the `authenticate-oidc`/Cognito action.
 - A second service runs `dag-healer worker` with an IAM role.
 - Both share Postgres. The repo is a git checkout on a volume, cloned for repairs exactly as today.
 - An ALB listener rule forwards `/healer/api/v1/events/*` and `/healer/health` **without** the authenticate action; those paths are token-protected.
+
+As built in step 7:
+- `/healer/health` needs no credential at all and answers only the status and the version. `/healer/api/v1/events/*` keeps its `X-Healer-Token` check, and the shell pages are public too (they hold no data).
+- `POST /events/task-failed` keeps the Airflow host's limiter: 120 requests a minute per client address, counted before the token check (`test_api_routes.py` pins it). Behind the load balancer every sender shares its address, so requests with a wrong token can use up the budget of the real sender. `POST /events/{channel}`, the path of the other channels, keys on the channel and the token instead.
 
 ---
 
@@ -1603,6 +1723,12 @@ Under the Airflow adapter every later step must reproduce them byte for byte, ap
 - `core` and `orchestrators/__init__` import in < 50 ms with no third-party modules (`sys.modules` diff).
 - The task-runner import graph is unchanged (extends the existing light-import test).
 - As built: `test_architecture.py` holds the import rules and the client-call guard. `orchestrators/registry.py`, `compat.py` and the package `__init__` follow the core's rules, since the core imports them. The import-time bound is measured on top of the standard library modules the two packages use (`core/test_core_imports.py`; inventory 6.7). `test_package.py` pins the `dag_healer` modules a task process loads.
+- As built in step 7, `test_architecture.py` also guards the standalone host:
+  - `hosting/**` and `cli/serve_cmd.py` follow the core's rules (no Airflow, AWS SDK, adapter package, fake adapter or conformance suite; FastAPI and Starlette are fine);
+  - only `cli/serve_cmd.py` imports `hosting`;
+  - neither the core, the bridge modules, `api/auth.py` nor `hosting` imports the CLI;
+  - `hosting/auth/**` never imports `hosting.app`, `hosting.rbac` or `hosting.shell`;
+  - the packages of the `serve` extra are imported only inside functions, each by its one user: PyJWT and cryptography by `hosting/auth/alb_oidc.py`, uvicorn by `cli/serve_cmd.py`.
 
 ### 11.7 Host and auth tests
 
@@ -1622,6 +1748,28 @@ Under the Airflow adapter every later step must reproduce them byte for byte, ap
 - Container (`tests/airflow`): the auth matrix is unchanged, plus "plugin registered with 3 react_apps + `/healer`". `/me` keeps its v1 body `{user, base_url}` for the default Airflow instance (7.4); its `orchestrator` block (`type == "airflow"`) is checked by the unit suite with a named Airflow instance.
 - UI (vitest): standalone path → mode resolution; vocabulary defaults equal today's strings; existing view tests untouched.
 - `pytest_runner`: a sandboxed test printing `os.environ` shows no `AWS_*` credential variables and `AWS_EC2_METADATA_DISABLED=true`.
+
+As built in step 7:
+- **`test_api_hosts.py`** collects tests of `test_api_routes.py` and `test_api_security.py` again, by name, and runs each of them on four hosts. Those two modules stay unmodified. The tests cover the reads, the filters, every action, the contract approval, the events, the store errors, the Fakeflow instance, 401/403, CSRF and the body cap. The hosts are:
+  - `airflow`: the faked overrides;
+  - `token`;
+  - `alb_oidc`: padded ES256 tokens of a local key and a stubbed key endpoint;
+  - `trusted_header`: the client is a trusted proxy.
+
+  The three standalone hosts are `create_app(auth=backend)` with a `RuleAuthorizer` whose rules match the faked users. Each host's client replaces `X-Test-User` with that host's credentials. The tests that depend on Airflow's own answers (403 for an invalid JWT, the exact `/me` body) are replaced by host-aware ones:
+  - `/me` reports `host`, the Fakeflow vocabulary and the capabilities, and `retry_task` is not offered without a remediator;
+  - credentials a backend does not know answer 401 (`token` with `WWW-Authenticate: Bearer`);
+  - a wrong `signer` or a past header `exp` answers 401 on every sample route, before any key fetch;
+  - the unsigned ALB headers alone answer 401;
+  - identity headers from an untrusted peer answer 401, also with `X-Forwarded-For` naming the proxy, and 200 from the proxy;
+  - the UI's default words and display name are what `/me` says for a named Airflow instance.
+- **The other unit modules:**
+  - `hosting/test_rbac.py` and `hosting/test_auth_{dev,token,trusted_header,alb_oidc}.py`;
+  - `test_api_auth_backend.py`: the two hosts of `create_app`, the overrides of a mounted app and the backend's CSRF origins;
+  - `test_standalone_host.py`: the shell, the mount, the route guard reused, the API's cache headers, the `dev` checks (host names, forwarded requests), the warning of a changed `serve.auth`, and the gate of step 7 (Fakeflow with the token backend and the rules of its `healer.yaml`, built by the real factory);
+  - `test_cli_serve.py`: `run_server` is recorded. It covers the refusals (exit 1, nothing bound), the address overrides (`localhost` binds `127.0.0.1`), the start-up warnings, the export of `HEALER_CONFIG`, the store migration and `proxy_headers=False`;
+  - `test_ui_bundles.py`: how the two bundles are installed, that the wheel build requires only the plugin bundle (and warns without the other), and that the names agree from the build to the shell.
+- The `/events/eventbridge` cases come with the Step Functions adapter (step 8).
 
 ---
 
@@ -1690,6 +1838,50 @@ Prerequisite: the phase-5 code is committed. Every step ends with `tests/unit` a
 - `ui/src/standalone.tsx`, `ui/vite.standalone.config.ts`, `ui/package.json` (`build:standalone`), `ui/src/{messages.ts,api.ts,model.ts}` (vocabulary, optional fields), `scripts/build_ui.py`, `hatch_build.py`, `pyproject.toml` `serve` extra.
 - Tests: 11.7.
 - *Gate:* `dag-healer serve` with `orchestrator.type: fake` and the `token` backend shows the three views with working actions on the host; the Airflow bundle and views are unchanged (screenshots compared in the running stack).
+- As built in step 7:
+  - Besides the files above: `hosting/auth/__init__.py` (`build_auth_backend`) and `hosting/auth/base.py` (`AuthConfigError`, the shared 401, `standalone_origins`); `api/routers/me.py` (`host`); `ui/src/vocabulary.ts`, `ui/src/standalone/` and the vocabulary-driven views (7.6); `pyproject.toml` adds the `serve` packages to the `dev` extra (5.2).
+  - Unchanged: `create_app()` / `get_app()`, `airflow/plugin.py`, `ui/src/main.tsx`, `ui/vite.config.ts`, the schemas, the views and `links.py`. The plugin bundle renders today's texts.
+  - The unit part of the gate is `test_standalone_host.py`'s gate tests (11.7).
+  - Manual gate, without Docker, from a scratch directory, with dag-healer installed from the checkout (`pip install -e ".[dev]"`; the `dev` extra holds the `serve` packages):
+    1. Make a random token and print it with its sha256 (tokens must be high-entropy, 7.3): `python -c "import hashlib, secrets; token = secrets.token_urlsafe(32); print(token); print(hashlib.sha256(token.encode()).hexdigest())"`.
+    2. Write this `healer.yaml`, with that digest:
+
+       ```yaml
+       version: 1
+       repo: {path: .}
+       orchestrator: {type: fake}
+       monitor: {dags: ["*"], modes: [poll, push]}
+       serve:
+         auth:
+           backend: token
+           tokens:
+             - {name: alice, sha256: <the digest>, groups: [data-eng]}
+           rules:
+             - {principals: ["group:data-eng"], pipelines: ["*"], actions: [read, act, approve_contract]}
+       ```
+
+    3. Export `HEALER_HOME` as a scratch directory, for this step and the next (the SQLite store lives there), and seed two Fakeflow incidents with this script:
+
+       ```python
+       from dag_healer.config import load_config
+       from dag_healer.store import db, repo
+
+       cfg = load_config("healer.yaml")
+       db.init_db(db.get_engine(cfg.database_url), allow_migrate=True)
+       with db.session_scope(cfg.database_url) as session:
+           for dag_id, task_id, status, category in [
+               ("sales_daily_etl", "load_sales", "waiting_human", "ambiguous"),
+               ("customers_sync", "transform", "repair_failed", "code"),
+           ]:
+               repo.create_incident(
+                   session, orchestrator="fake", dag_id=dag_id, run_id="run-1", task_id=task_id,
+                   try_number=1, source="poll", error_summary=f"{category} failure",
+                   status=status, category=category,
+               )
+       ```
+
+    4. Run `dag-healer -c healer.yaml serve` and open `http://127.0.0.1:8090/plugin/healer`, `http://127.0.0.1:8090/dags/sales_daily_etl/plugin/healer-dag` and `http://127.0.0.1:8090/dags/sales_daily_etl/runs/run-1/tasks/load_sales/plugin/healer-ti`.
+    5. Check the sign-in (a wrong token is refused, the token of step 1 signs in), the header "Healer · Fakeflow" with `alice`, the Fakeflow words ("flow", "step", "Retry step"), "Open in Fakeflow" links, an action confirmed (202, "Queued"), and "Sign out".
 
 **Step 8. Step Functions reference adapter v1** (4-5 d; parallel with step 7)
 - `src/dag_healer/stepfunctions/*` (9.3), `src/dag_healer/storage/s3.py` + scheme dispatch in `datasets.py`.
@@ -1794,4 +1986,5 @@ Each sits behind one function or template with a fixture:
 - the `Runtime.*` Lambda error names used in the taxonomy;
 - the `RedriveExecution` `clientToken` length limit;
 - the Dagster step-key format for mapped ops;
-- the Prefect logs filter request shape.
+- the Prefect logs filter request shape;
+- whether the ALB signs the padded or the unpadded segments of `x-amzn-oidc-data` (`alb_oidc` verifies both, 7.3).

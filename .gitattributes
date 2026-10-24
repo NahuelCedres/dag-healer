@@ -33,4 +33,5 @@
 
 # Generated files: committed, but not diffed line by line
 src/dag_healer/api/static/main.umd.cjs linguist-generated=true -diff
+src/dag_healer/api/static/standalone/** linguist-generated=true -diff
 ui/pnpm-lock.yaml linguist-generated=true
