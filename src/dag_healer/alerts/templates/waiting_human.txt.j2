@@ -17,7 +17,7 @@ or by the code, so it is waiting for a human decision. Nothing has been changed.
 Open the Healer incident tab and choose one of:
 - Resolve as data: report it as a data issue and alert the data owners (no code change).
 - Resolve as code: dag-healer writes a failing test and proposes a minimal fix.
-- {{ words.retry_action }}: run the failed {{ words.step }} again once an external cause is fixed (the incident stays open).
+- {{ words.retry_action }}: run the failed {{ words.step }} again once an external cause is fixed, then the {{ words.steps }} after it that failed or were blocked by it (the incident stays open).
 - Ignore: close the incident without further action.
 
 {{ m.links_block(links, words) }}

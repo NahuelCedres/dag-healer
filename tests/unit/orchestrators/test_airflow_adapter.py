@@ -56,6 +56,7 @@ from dag_healer.airflow.adapter import (
     AirflowNativeLinks,
     attempt_state,
     cleared_count,
+    cleared_task_instances,
     confirm_try,
     cursor_from_state,
     parse_timestamp,
@@ -472,11 +473,24 @@ class PhaseFiveClient:
             raise AirflowAPIError("log not found", status_code=404) from None
 
     def clear_task_instances(
-        self, dag_id: str, run_id: str, task_ids: list[Any], *, only_failed: bool = True
+        self,
+        dag_id: str,
+        run_id: str,
+        task_ids: list[Any],
+        *,
+        only_failed: bool = True,
+        include_downstream: bool = False,
     ) -> dict[str, Any]:
-        self.calls.append(("clear", dag_id, run_id, list(task_ids), only_failed))
+        self.calls.append(("clear", dag_id, run_id, list(task_ids), only_failed, include_downstream))
         self._fail("clear")
-        return {"task_instances": [{"task_id": t if isinstance(t, str) else t[0]} for t in task_ids]}
+        return {
+            "task_instances": [
+                {"task_id": t, "map_index": -1}
+                if isinstance(t, str)
+                else {"task_id": t[0], "map_index": t[1]}
+                for t in task_ids
+            ]
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -678,9 +692,9 @@ def test_compat_wraps_phase5_doubles(make_config: MakeConfig) -> None:
     adapter = compat.as_adapter(cfg, ClearOnly())
     assert isinstance(adapter, AirflowAdapter) and adapter.client.__class__ is ClearOnly
     result = adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k", actor="ann")
-    assert (
-        result.detail
-        == f"ann cleared transform in run {RUN} (2 task instance(s)); Airflow will run it again."
+    assert result.detail == (
+        f"ann cleared transform and any failed downstream tasks in run {RUN} (2 task instance(s)); "
+        "Airflow will run them again."
     )
     with pytest.raises(NotSupported, match="get_task_instance"):
         adapter.describe(SEEDED, {})
@@ -1382,15 +1396,13 @@ def test_reported_file_matches_the_phase5_context(tmp_path: Path) -> None:
 # =========================================================================== Remediator
 
 
-def test_retry_step_clears_the_task_instance(tmp_path: Path) -> None:
+def test_retry_step_clears_the_task_instance_and_its_failed_downstream_tasks(tmp_path: Path) -> None:
     adapter, server, _cfg = served_adapter(tmp_path)
     path = "/api/v2/dags/customers_sync/clearTaskInstances"
     assert adapter.available(SEEDED, {}) == (RemediationKind.RETRY_STEP,)
     result = adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k1", actor="ann")
-    assert (
-        result.detail
-        == f"ann cleared transform in run {RUN} (1 task instance(s)); Airflow will run it again."
-    )
+    # the recorded answer lists transform only (nothing after it needed clearing)
+    assert result.detail == f"ann cleared transform in run {RUN}; Airflow will run it again."
     assert (result.kind, result.accepted, result.new_ref, result.warnings) == (
         RemediationKind.RETRY_STEP,
         True,
@@ -1403,15 +1415,24 @@ def test_retry_step_clears_the_task_instance(tmp_path: Path) -> None:
             "dry_run": False,
             "dag_run_id": RUN,
             "task_ids": ["transform"],
-            "only_failed": True,
+            "only_failed": True,  # failed and upstream_failed only: tasks that succeeded do not run again
+            "include_downstream": True,
             "reset_dag_runs": True,
         }
     ]
     again = adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k1", actor="bob")
     assert again is result and len(server.bodies("POST", path)) == 1
+    # load was upstream_failed after transform failed: Airflow clears it too and lists both
+    server.route("POST", path, load("airflow_api/clear_task_instances_downstream.json"))
+    both = adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k2", actor="ann")
+    assert both.detail == (
+        f"ann cleared transform and 1 downstream task (load) in run {RUN}; Airflow will run them again."
+    )
+    assert dict(both.native) == {"cleared": 2}
     mapped = SEEDED.with_step("transform", map_index=2)
-    adapter.remediate(mapped, {}, RemediationKind.RETRY_STEP, idempotency_key="k2", actor="ann")
+    adapter.remediate(mapped, {}, RemediationKind.RETRY_STEP, idempotency_key="k3", actor="ann")
     assert server.bodies("POST", path)[-1]["task_ids"] == [["transform", 2]]
+    assert server.bodies("POST", path)[-1]["include_downstream"] is True
     for kind in (RemediationKind.RESUME_RUN, RemediationKind.RERUN_PIPELINE):
         with pytest.raises(NotSupported):
             adapter.remediate(SEEDED, {}, kind, idempotency_key=f"k-{kind.value}", actor="ann")
@@ -1419,20 +1440,117 @@ def test_retry_step_clears_the_task_instance(tmp_path: Path) -> None:
         assert adapter.available(SEEDED.with_step(step), {}) == ()
 
 
-def test_retry_step_errors_are_not_remembered() -> None:
-    class Uncounted(PhaseFiveClient):
-        def clear_task_instances(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-            super().clear_task_instances(*args, **kwargs)
-            return {}
+class AnsweringClient(PhaseFiveClient):
+    """Answers ``clearTaskInstances`` with a fixed body (what Airflow says it cleared)."""
 
-    client = Uncounted()
+    def __init__(self, answer: Any) -> None:
+        super().__init__()
+        self.answer = answer
+
+    def clear_task_instances(self, *args: Any, **kwargs: Any) -> Any:
+        super().clear_task_instances(*args, **kwargs)
+        return self.answer
+
+
+MAPPED = SEEDED.with_step("transform", map_index=2)
+#: twelve downstream tasks, listed in no particular order (Airflow does not sort its answer)
+MANY_DOWNSTREAM = [
+    {"task_id": f"step_{n:02d}", "map_index": -1} for n in (7, 12, 1, 3, 10, 2, 11, 5, 9, 4, 8, 6)
+]
+
+
+@pytest.mark.parametrize(
+    ("ref", "answer", "detail"),
+    [
+        pytest.param(
+            MAPPED,
+            {
+                "task_instances": [
+                    {"task_id": "load", "map_index": 2},
+                    {"task_id": "transform", "map_index": 2},
+                ]
+            },
+            f"ann cleared transform[2] and 1 downstream task (load[2]) in run {RUN}; "
+            "Airflow will run them again.",
+            id="mapped",
+        ),
+        pytest.param(
+            SEEDED,
+            {"task_instances": [*MANY_DOWNSTREAM, {"task_id": "transform"}, MANY_DOWNSTREAM[0]]},
+            "ann cleared transform and 12 downstream tasks (step_01, step_02, step_03, step_04, step_05, "
+            f"step_06, step_07, step_08, step_09, step_10 and 2 more) in run {RUN}; "
+            "Airflow will run them again.",
+            id="many-downstream",
+        ),
+        pytest.param(
+            SEEDED,
+            {"task_instances": [{"task_id": "load", "map_index": -1}], "total_entries": 1},
+            f"ann cleared 1 downstream task (load) in run {RUN}; Airflow will run it again. "
+            "transform itself was not cleared because it is not failed.",
+            id="failed-task-already-rerun",
+        ),
+        pytest.param(
+            SEEDED,
+            {"task_instances": [], "total_entries": 0},
+            f"ann asked Airflow to clear transform in run {RUN}, but nothing was cleared: "
+            "neither transform nor a task after it is failed or upstream_failed.",
+            id="nothing-cleared",
+        ),
+        pytest.param(
+            SEEDED,
+            {"total_entries": 3},
+            f"ann cleared transform and any failed downstream tasks in run {RUN} (3 task instance(s)); "
+            "Airflow will run them again.",
+            id="count-only",
+        ),
+        pytest.param(
+            SEEDED,
+            ["not", "a", "mapping"],
+            f"ann cleared transform and any failed downstream tasks in run {RUN}; "
+            "Airflow will run them again.",
+            id="unreadable",
+        ),
+    ],
+)
+def test_retry_step_names_what_airflow_cleared(ref: AttemptRef, answer: Any, detail: str) -> None:
+    client = AnsweringClient(answer)
+    adapter = AirflowAdapter(HealerConfig(), client=client)
+    result = adapter.remediate(ref, {}, RemediationKind.RETRY_STEP, idempotency_key="k", actor="ann")
+    assert result.detail == detail
+    assert result.accepted is True
+    expected_ids: list[Any] = ["transform"] if ref.map_index < 0 else [("transform", ref.map_index)]
+    assert client.calls == [("clear", "customers_sync", RUN, expected_ids, True, True)]
+
+
+def test_cleared_task_instances_reads_the_answer() -> None:
+    answer = {
+        "task_instances": [
+            {"task_id": "load", "map_index": 1},
+            {"task_id": "extract"},
+            {"task_id": "load", "map_index": 1},
+            {"task_id": "load", "map_index": "0"},
+            {"map_index": 3},
+            {"task_id": ""},
+            "transform",
+        ]
+    }
+    assert cleared_task_instances(answer) == [("extract", -1), ("load", 0), ("load", 1)]
+    assert cleared_task_instances({"task_instances": []}) == []
+    assert cleared_task_instances({"total_entries": 2}) is None
+    assert cleared_task_instances({"task_instances": None}) is None
+
+
+def test_retry_step_errors_are_not_remembered() -> None:
+    client = AnsweringClient({})
     adapter = AirflowAdapter(HealerConfig(), client=client)
     client.errors["clear"] = AirflowAPIError("Forbidden", status_code=403)
     with pytest.raises(PermissionDenied):
         adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k", actor="ann")
     del client.errors["clear"]
     result = adapter.remediate(SEEDED, {}, RemediationKind.RETRY_STEP, idempotency_key="k", actor="ann")
-    assert result.detail == f"ann cleared transform in run {RUN}; Airflow will run it again."
+    assert result.detail == (
+        f"ann cleared transform and any failed downstream tasks in run {RUN}; Airflow will run them again."
+    )
     assert dict(result.native) == {"cleared": None}
     assert [call[0] for call in client.calls] == ["clear", "clear"]
     assert cleared_count({"total_entries": 3}) == 3 and cleared_count({"total_entries": True}) is None

@@ -21,7 +21,7 @@ This failure was classified as a data issue. The code was not changed.
 {{ m.text_block("Error", incident.error_summary) }}
 {{ m.list_block("Evidence", incident.evidence) }}
 {{ m.heading("Next steps") }}
-- Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab.
+- Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab. Retrying also runs the {{ words.steps }} after it that failed or were blocked by it.
 - If the change in the data is intended, update the data contract and approve it again.
 
 {{ m.links_block(links, words) }}

@@ -18,14 +18,15 @@
 {% endif %}
 {{ m.list_section("Notes", notes) }}
 {% call m.section("Review") %}
+{% set retry_scope = " Retrying also runs the " ~ words.steps ~ " after it that failed or were blocked by it." %}
 {% if links.pr_kind == "pull_request" %}
-{{ m.paragraph("A pull request is waiting for your review. Merge it like any other contribution; once the fix is deployed, retry the " ~ words.step ~ " from the Healer incident tab.") }}
+{{ m.paragraph("A pull request is waiting for your review. Merge it like any other contribution; once the fix is deployed, retry the " ~ words.step ~ " from the Healer incident tab." ~ retry_scope) }}
 {{ m.button(links.pr, "Review the pull request", accent) }}
 {% elif links.pr %}
-{{ m.paragraph("No GitHub pull request was opened (no GitHub token or repository configured): the fix was saved as PR.md and fix.patch" ~ (" and pushed to the local branch " ~ incident.branch if incident.branch else "") ~ ". Once the fix is merged and deployed, retry the " ~ words.step ~ " from the Healer incident tab.") }}
+{{ m.paragraph("No GitHub pull request was opened (no GitHub token or repository configured): the fix was saved as PR.md and fix.patch" ~ (" and pushed to the local branch " ~ incident.branch if incident.branch else "") ~ ". Once the fix is merged and deployed, retry the " ~ words.step ~ " from the Healer incident tab." ~ retry_scope) }}
 {{ m.button(links.pr, "Review PR.md", accent) }}
 {% else %}
-{{ m.paragraph("Review the proposed change in the Healer incident tab; once the fix is merged and deployed, retry the " ~ words.step ~ " from there.") }}
+{{ m.paragraph("Review the proposed change in the Healer incident tab; once the fix is merged and deployed, retry the " ~ words.step ~ " from there." ~ retry_scope) }}
 {% endif %}
 {{ m.button(links.task_instance, "Open the Healer incident", "#374151") }}
 {{ m.secondary_links(links, words) }}

@@ -179,10 +179,22 @@ class FakeAirflowClient:
         return None
 
     def clear_task_instances(
-        self, dag_id: str, run_id: str, task_ids: list[Any], *, only_failed: bool = True
+        self,
+        dag_id: str,
+        run_id: str,
+        task_ids: list[Any],
+        *,
+        only_failed: bool = True,
+        include_downstream: bool = False,
     ) -> dict[str, Any]:
         self.cleared.append(
-            {"dag_id": dag_id, "run_id": run_id, "task_ids": list(task_ids), "only_failed": only_failed}
+            {
+                "dag_id": dag_id,
+                "run_id": run_id,
+                "task_ids": list(task_ids),
+                "only_failed": only_failed,
+                "include_downstream": include_downstream,
+            }
         )
         return {"task_instances": [{"task_id": str(t if isinstance(t, str) else t[0])} for t in task_ids]}
 
@@ -585,7 +597,13 @@ def test_full_flow_on_the_example_repo(bench: Bench, tmp_path: Path, monkeypatch
     sales = bench.incident("sales_daily_etl")
     assert (sales["status"], sales["resolution"], sales["resolved_by"]) == ("ignored", "ignore", "dave")
     assert bench.client.cleared == [
-        {"dag_id": "customers_sync", "run_id": RUN_1, "task_ids": ["transform"], "only_failed": True}
+        {
+            "dag_id": "customers_sync",
+            "run_id": RUN_1,
+            "task_ids": ["transform"],
+            "only_failed": True,
+            "include_downstream": True,
+        }
     ]
     assert bench.incident("customers_sync")["status"] == "repaired"
     retry_event = [e for e in bench.events(customers["id"]) if e["kind"] == "command"][-1]

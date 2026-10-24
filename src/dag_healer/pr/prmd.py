@@ -66,7 +66,8 @@ def review_checklist(vocabulary: Mapping[str, str] | None = None) -> tuple[str, 
         "No unrelated files, secrets or data files are changed.",
         "The full test suite passes in CI.",
         f'After merging, retry the failed {words["step"]} (Healer tab, "{words["retry_action"]}") '
-        "to confirm the pipeline recovers.",
+        f"to confirm the pipeline recovers. Retrying also runs the {words['steps']} after it that "
+        "failed or were blocked by it.",
     )
 
 

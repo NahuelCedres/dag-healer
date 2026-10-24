@@ -18,8 +18,9 @@ Port                   Airflow
 ``inspector``          ``get_task_instance`` (describe), ``get_task_log`` (logs), ``get_dag`` and
                        ``get_dag_source`` (pipeline_source)
 ``code``               :class:`AirflowCodeLocator` (``scan_dags`` and the container path mappings)
-``remediator``         ``clear_task_instances`` (``RETRY_STEP``); ``trigger_dag_run``
-                       (``RERUN_PIPELINE``, off by default)
+``remediator``         ``clear_task_instances`` of the task instance and its failed downstream
+                       tasks (``RETRY_STEP``); ``trigger_dag_run`` (``RERUN_PIPELINE``, off by
+                       default)
 ``links``              :class:`AirflowNativeLinks` (the task instance page of the Airflow UI)
 =====================  ===========================================================================
 
@@ -111,6 +112,8 @@ MAX_SOURCE_CHARS = 32
 DEFAULT_LOG_MAX_CHARS = 2_000_000
 #: Remediation results remembered for their idempotency keys (per adapter).
 MAX_REMEMBERED_REMEDIATIONS = 256
+#: Cleared task instances a retry names in its detail per group (the others are counted).
+MAX_NAMED_TASK_INSTANCES = 10
 #: How long the outcome of a ``pipeline_source`` call without the text is kept for the call
 #: with the text that may follow it in the same gathering, and how many DAGs are kept.
 PIPELINE_MEMO_SECONDS = 60.0
@@ -323,6 +326,70 @@ def cleared_count(response: Mapping[str, Any]) -> int | None:
         return len(items)
     total = response.get("total_entries")
     return int(total) if isinstance(total, int) and not isinstance(total, bool) else None
+
+
+def cleared_task_instances(response: Mapping[str, Any]) -> list[tuple[str, int]] | None:
+    """Sorted ``(task_id, map_index)`` of the task instances a ``clearTaskInstances`` answer lists.
+
+    ``None`` when the answer has no ``task_instances`` list; items without a task id are skipped.
+    """
+    items = response.get("task_instances")
+    if not isinstance(items, list):
+        return None
+    cleared = {
+        (item["task_id"], _as_int(item.get("map_index"), NO_MAP_INDEX))
+        for item in items
+        if isinstance(item, Mapping) and isinstance(item.get("task_id"), str) and item["task_id"]
+    }
+    return sorted(cleared)
+
+
+def _ti_label(task_id: str, map_index: int) -> str:
+    """``task`` or, for a mapped task instance, ``task[map_index]``."""
+    return f"{task_id}[{map_index}]" if map_index >= 0 else task_id
+
+
+def _names(labels: list[str]) -> str:
+    """``a, b, c``: at most :data:`MAX_NAMED_TASK_INSTANCES` names, then ``and N more``."""
+    shown = ", ".join(labels[:MAX_NAMED_TASK_INSTANCES])
+    hidden = len(labels) - MAX_NAMED_TASK_INSTANCES
+    return f"{shown} and {hidden} more" if hidden > 0 else shown
+
+
+def _retry_detail(actor: str, ref: AttemptRef, response: Mapping[str, Any]) -> str:
+    """What a ``RETRY_STEP`` cleared, with the task instances named when the answer lists them.
+
+    The failed task comes first, then its downstream task instances in task id order
+    ("``<actor> cleared transform_sales and 1 downstream task (load_sales) in run <run>;
+    Airflow will run them again.``").
+    """
+    step = _ti_label(ref.step_id, int(ref.map_index))
+    cleared = cleared_task_instances(response)
+    if cleared is None:
+        count = cleared_count(response)
+        return (
+            f"{actor} cleared {step} and any failed downstream tasks in run {ref.run_id}"
+            + (f" ({count} task instance(s))" if count is not None else "")
+            + "; Airflow will run them again."
+        )
+    if not cleared:
+        return (
+            f"{actor} asked Airflow to clear {step} in run {ref.run_id}, but nothing was cleared: "
+            f"neither {step} nor a task after it is failed or upstream_failed."
+        )
+    own = [_ti_label(*ti) for ti in cleared if ti[0] == ref.step_id]
+    downstream = [_ti_label(*ti) for ti in cleared if ti[0] != ref.step_id]
+    parts = [_names(own)] if own else []
+    if downstream:
+        noun = "downstream task" if len(downstream) == 1 else "downstream tasks"
+        parts.append(f"{len(downstream)} {noun} ({_names(downstream)})")
+    detail = (
+        f"{actor} cleared {' and '.join(parts)} in run {ref.run_id}; "
+        f"Airflow will run {'it' if len(cleared) == 1 else 'them'} again."
+    )
+    if not own:
+        detail += f" {step} itself was not cleared because it is not failed."
+    return detail
 
 
 def airflow_instance(cfg: Any) -> str:
@@ -1001,9 +1068,12 @@ class AirflowAdapter:
         """Clear the task instance so Airflow runs it again (or trigger a new run, when allowed).
 
         ``RETRY_STEP`` -> ``clear_task_instances(dag, run, [task] or [(task, map_index)],
-        only_failed=True)``; the detail is the phase-5 text "``<actor> cleared <task> in run
-        <run> (N task instance(s)); Airflow will run it again.``" (the core adds the "not merged
-        yet" sentence of a CODE incident). The same ``idempotency_key`` returns the first result
+        only_failed=True, include_downstream=True)``: Airflow clears the task instance and the
+        ``failed`` or ``upstream_failed`` task instances after it, so the rest of the run goes
+        on; tasks that succeeded do not run again. The detail names what Airflow cleared
+        ("``<actor> cleared <task> and 1 downstream task (<task>) in run <run>; Airflow will run
+        them again.``"; the core adds the "not merged yet" sentence of a CODE incident) and
+        ``native["cleared"]`` counts it. The same ``idempotency_key`` returns the first result
         without calling Airflow again. Raises :class:`~dag_healer.core.errors.NotSupported` for a
         kind :meth:`available` does not offer.
         """
@@ -1028,17 +1098,17 @@ class AirflowAdapter:
         task_ids: list[Any] = [ref.step_id] if map_index < 0 else [(ref.step_id, map_index)]
         try:
             client = self._client_for("clear_task_instances")
-            response = client.clear_task_instances(ref.pipeline_id, ref.run_id, task_ids, only_failed=True)
+            response = client.clear_task_instances(
+                ref.pipeline_id, ref.run_id, task_ids, only_failed=True, include_downstream=True
+            )
         except Exception as exc:
             self._raise(exc, "clearing a task instance")
-        count = cleared_count(response if isinstance(response, Mapping) else {})
-        detail = (
-            f"{actor} cleared {ref.step_id} in run {ref.run_id}"
-            + (f" ({count} task instance(s))" if count is not None else "")
-            + "; Airflow will run it again."
-        )
+        answer = response if isinstance(response, Mapping) else {}
+        count = cleared_count(answer)
+        detail = _retry_detail(actor, ref, answer)
         logger.info(
-            "Airflow adapter %s: cleared %s.%s in run %s (%s task instance(s))",
+            "Airflow adapter %s: cleared %s.%s and its failed downstream tasks in run %s "
+            "(%s task instance(s))",
             self.instance,
             ref.pipeline_id,
             ref.step_id,
@@ -1212,6 +1282,7 @@ __all__ = [
     "attempt_state",
     "clean_dags_dir",
     "cleared_count",
+    "cleared_task_instances",
     "confirm_try",
     "cursor_from_state",
     "format_cursor_time",

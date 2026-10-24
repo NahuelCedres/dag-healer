@@ -25,3 +25,8 @@ Synthetic, modelled on the recorded shapes:
   line with an e-mail address and a phone number to check masking.
 * `inventory_report_build_report_plain.json`: `content` as a list of plain strings (Airflow 2
   style file log with source lines and caret markers in the traceback).
+* `airflow_api/clear_task_instances_downstream.json`: the answer of a real clear of
+  `transform` with `include_downstream: true` (`dry_run: false`): the recorded `transform` and
+  the recorded `upstream_failed` `load` of `task_instances.json`, each with a new `id`, `state:
+  null` and `max_tries` = `try_number` + retries, which is what Airflow 3.3.2 does to the task
+  instances it clears.

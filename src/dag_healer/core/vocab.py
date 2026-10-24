@@ -56,7 +56,7 @@ def render_vocabulary(text: str, vocabulary: Vocabulary) -> str:
 class RemediationKind(str, Enum):
     """What a human can ask the orchestrator to do after an incident."""
 
-    RETRY_STEP = "retry_step"  # Airflow: clear exactly this task instance
+    RETRY_STEP = "retry_step"  # Airflow: clear this task instance and its failed downstream tasks
     RESUME_RUN = "resume_run"  # SFN: RedriveExecution (all failed branches/iterations)
     RERUN_PIPELINE = "rerun_pipeline"  # new run with the same input/conf (opt-in)
 

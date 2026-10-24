@@ -433,16 +433,25 @@ def test_alerts_speak_the_orchestrator_words(event: str) -> None:
 
 
 def test_event_texts_use_the_step_word() -> None:
+    scope = "Retrying also runs the steps after it that failed or were blocked by it."
     reported = render_alert(make_cfg(), make_incident(), "reported", extra=_fakeflow())
     for body in (reported.text, reported.html):
         assert "The input data of this step does not match its data contract." in body
-        assert "then retry the step from the Healer incident tab." in body
+        assert f"then retry the step from the Healer incident tab. {scope}" in body
     repaired = render_alert(make_cfg(), make_incident(category="code"), "repaired", extra=_fakeflow())
-    assert "Once the fix is deployed, retry the step from the Healer incident tab." in repaired.text
-    assert "retry the step from there." in repaired.html
+    assert f"Once the fix is deployed, retry the step from the Healer incident tab. {scope}" in repaired.text
+    assert f"retry the step from there. {scope}" in repaired.html
     with_pr = make_incident(category="code", pr_url="https://github.com/acme/etl/pull/12")
     reviewed = render_alert(make_cfg(), with_pr, "repaired", extra=_fakeflow())
-    assert "retry the step from the Healer incident tab." in reviewed.html
+    assert f"retry the step from the Healer incident tab. {scope}" in reviewed.html
+    waiting = render_alert(
+        make_cfg(), make_incident(category="ambiguous"), "waiting_human", extra=_fakeflow()
+    )
+    for body in (waiting.text, waiting.html):
+        assert (
+            "run the failed step again once an external cause is fixed, then the steps after it that "
+            "failed or were blocked by it (the incident stays open)."
+        ) in body
     failed = render_alert(make_cfg(), make_incident(category="code"), "repair_failed", extra=_fakeflow())
     assert "Original step error" in failed.text and "Original step error" in failed.html
 

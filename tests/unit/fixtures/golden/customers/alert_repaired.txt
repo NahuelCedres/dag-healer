@@ -39,7 +39,7 @@ Notes
 Next steps
 ----------
 - Review and merge the change like any other contribution.
-- Once the fix is deployed, retry the task from the Healer incident tab.
+- Once the fix is deployed, retry the task from the Healer incident tab. Retrying also runs the tasks after it that failed or were blocked by it.
 
 Links
 -----

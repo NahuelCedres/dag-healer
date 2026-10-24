@@ -143,7 +143,7 @@ exit code 0: 2 passed, 0 failed, 0 errors, 0 skipped, 2 collected in 0.0s
 - [ ] The fix addresses the root cause and is limited to what the test needs.
 - [ ] No unrelated files, secrets or data files are changed.
 - [ ] The full test suite passes in CI.
-- [ ] After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers.
+- [ ] After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers. Retrying also runs the tasks after it that failed or were blocked by it.
 
 ---
 

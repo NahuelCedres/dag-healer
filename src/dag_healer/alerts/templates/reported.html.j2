@@ -12,7 +12,7 @@
 {{ m.list_section("Evidence", incident.evidence) }}
 {% call m.section("Next steps") %}
 <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
-  <li style="margin:0 0 4px 0;">Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab.</li>
+  <li style="margin:0 0 4px 0;">Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab. Retrying also runs the {{ words.steps }} after it that failed or were blocked by it.</li>
   <li style="margin:0 0 4px 0;">If the change in the data is intended, update the data contract and approve it again.</li>
 </ul>
 {{ m.button(links.task_instance, "Open the Healer incident", accent) }}

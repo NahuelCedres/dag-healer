@@ -15,8 +15,9 @@ Command (payload)         Effect
 ``retry_repair``          ``resolution`` = ``code``, status ``resumed``: a new repair attempt.
 ``retry_task``            the orchestrator runs the failed step again through the adapter's
                           remediator (Airflow: ``clearTaskInstances`` for the failed task
-                          instance); the status does not change (for CODE incidents the fix
-                          stays on its branch until it is merged).
+                          instance and its failed or upstream_failed downstream tasks); the
+                          status does not change (for CODE incidents the fix stays on its
+                          branch until it is merged).
 ``approve_contract``      approves ``<contracts dir>/<dag_id>.yaml`` in the working tree
                           (refused when the file changed since the user reviewed it, see
                           ``source_hash``) and caches the state in ``healer_contracts``.

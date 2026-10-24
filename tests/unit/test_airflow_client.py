@@ -527,16 +527,27 @@ def test_clear_task_instances_and_trigger(server: FakeAirflow, client: AirflowCl
         "dag_run_id": RUN_ID,
         "task_ids": ["transform", ["load", 2]],
         "only_failed": True,
+        "include_downstream": False,
         "reset_dag_runs": True,
     }
     client.clear_task_instances("customers_sync", RUN_ID, ["transform"], only_failed=False)
     assert json.loads(server.api_requests[1].content)["only_failed"] is False
+    # Retry task: the failed task and its failed or upstream_failed downstream tasks
+    client.clear_task_instances("customers_sync", RUN_ID, [("transform", 3)], include_downstream=True)
+    assert json.loads(server.api_requests[2].content) == {
+        "dry_run": False,
+        "dag_run_id": RUN_ID,
+        "task_ids": [["transform", 3]],
+        "only_failed": True,
+        "include_downstream": True,
+        "reset_dag_runs": True,
+    }
 
     run = client.trigger_dag_run("customers_sync")
     assert run["dag_run_id"].startswith("manual__")
-    assert json.loads(server.api_requests[2].content) == {"logical_date": None, "conf": {}}
+    assert json.loads(server.api_requests[3].content) == {"logical_date": None, "conf": {}}
     client.trigger_dag_run("customers_sync", conf={"reason": "dag-healer retry"})
-    assert json.loads(server.api_requests[3].content)["conf"] == {"reason": "dag-healer retry"}
+    assert json.loads(server.api_requests[4].content)["conf"] == {"reason": "dag-healer retry"}
 
 
 def test_validation_errors_are_flattened(server: FakeAirflow, client: AirflowClient) -> None:

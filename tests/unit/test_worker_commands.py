@@ -40,19 +40,36 @@ RUN = "manual__2026-10-17T10:00:00+00:00"
 
 
 class ClearingClient:
-    """Airflow stand-in that records ``clearTaskInstances`` calls."""
+    """Airflow stand-in that records ``clearTaskInstances`` calls.
 
-    def __init__(self, error: Exception | None = None) -> None:
+    It answers like Airflow: the requested task instances, plus the ``downstream`` task ids
+    when the call includes the downstream tasks.
+    """
+
+    def __init__(self, error: Exception | None = None, downstream: tuple[str, ...] = ()) -> None:
         self.error = error
-        self.calls: list[tuple[str, str, list[Any], bool]] = []
+        self.downstream = downstream
+        self.calls: list[tuple[str, str, list[Any], bool, bool]] = []
 
     def clear_task_instances(
-        self, dag_id: str, run_id: str, task_ids: list[Any], *, only_failed: bool = True
+        self,
+        dag_id: str,
+        run_id: str,
+        task_ids: list[Any],
+        *,
+        only_failed: bool = True,
+        include_downstream: bool = False,
     ) -> dict[str, Any]:
-        self.calls.append((dag_id, run_id, list(task_ids), only_failed))
+        self.calls.append((dag_id, run_id, list(task_ids), only_failed, include_downstream))
         if self.error is not None:
             raise self.error
-        return {"task_instances": [{"task_id": "t"}], "total_entries": 1}
+        cleared = [
+            {"task_id": t, "map_index": -1} if isinstance(t, str) else {"task_id": t[0], "map_index": t[1]}
+            for t in task_ids
+        ]
+        if include_downstream:
+            cleared += [{"task_id": task_id, "map_index": -1} for task_id in self.downstream]
+        return {"task_instances": cleared, "total_entries": len(cleared)}
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +92,7 @@ def incident(
     status: str,
     *,
     dag_id: str = "etl",
+    task_id: str = "load",
     map_index: int = -1,
     source: str = "rest",
     **fields: Any,
@@ -84,7 +102,7 @@ def incident(
             session,
             dag_id=dag_id,
             run_id=RUN,
-            task_id="load",
+            task_id=task_id,
             map_index=map_index,
             try_number=1,
             source=source,
@@ -224,18 +242,58 @@ def test_retry_task_clears_the_task_instance_and_keeps_the_status(cfg: HealerCon
     mapped_id = incident(cfg, "reported", dag_id="mapped", map_index=3, category="data")
     command(cfg, "retry_task", incident_id=incident_id, run_id=RUN, task_id="load", map_index=-1)
     command(cfg, "retry_task", dag_id="mapped", incident_id=mapped_id)
-    client = ClearingClient()
+    client = ClearingClient(downstream=("publish",))
 
     outcomes = apply_commands(cfg, None, client)
 
     assert [o.status for o in outcomes] == ["applied", "applied"]
-    assert client.calls == [("etl", RUN, ["load"], True), ("mapped", RUN, [("load", 3)], True)]
+    assert client.calls == [("etl", RUN, ["load"], True, True), ("mapped", RUN, [("load", 3)], True, True)]
     data = load(cfg, incident_id)
     assert data["status"] == "repaired"
     event = last_event(data, "command")
-    assert "Airflow will run it again" in event["message"] and "not merged yet" in event["message"]
-    assert event["data"]["cleared"] == 1
-    assert load(cfg, mapped_id)["status"] == "reported"
+    assert event["message"] == (
+        f"alice cleared load and 1 downstream task (publish) in run {RUN}; Airflow will run them again. "
+        "The proposed fix is not merged yet, so the task runs the current code."
+    )
+    assert event["data"]["cleared"] == 2
+    mapped = load(cfg, mapped_id)
+    assert mapped["status"] == "reported"
+    assert last_event(mapped, "command")["message"] == (
+        f"alice cleared load[3] and 1 downstream task (publish) in run {RUN}; Airflow will run them again."
+    )
+
+
+def test_retry_task_also_clears_the_downstream_tasks_the_failure_blocked(cfg: HealerConfig) -> None:
+    """Retrying transform_sales also clears load_sales, left upstream_failed by the failure."""
+    incident_id = incident(
+        cfg, "reported", dag_id="sales_daily_etl", task_id="transform_sales", category="data"
+    )
+    command_id = command(cfg, "retry_task", dag_id="sales_daily_etl", incident_id=incident_id)
+    client = ClearingClient(downstream=("load_sales",))
+
+    (outcome,) = apply_commands(cfg, None, client)
+
+    assert (outcome.status, outcome.command_id) == ("applied", command_id)
+    # only_failed keeps the failed and upstream_failed ones: a downstream task that succeeded does not rerun
+    assert client.calls == [("sales_daily_etl", RUN, ["transform_sales"], True, True)]
+    expected = (
+        f"alice cleared transform_sales and 1 downstream task (load_sales) in run {RUN}; "
+        "Airflow will run them again."
+    )
+    assert outcome.message == expected
+    data = load(cfg, incident_id)
+    assert data["status"] == "reported"
+    event = last_event(data, "command")
+    assert event["message"] == expected
+    assert event["data"] == {
+        "command_id": command_id,
+        "kind": "retry_task",
+        "status": "applied",
+        "run_id": RUN,
+        "task_id": "transform_sales",
+        "map_index": -1,
+        "cleared": 2,
+    }
 
 
 def test_retry_task_keeps_an_incident_waiting_for_a_human(cfg: HealerConfig) -> None:
@@ -246,11 +304,11 @@ def test_retry_task_keeps_an_incident_waiting_for_a_human(cfg: HealerConfig) -> 
     (outcome,) = apply_commands(cfg, None, client)
 
     assert outcome.status == "applied"
-    assert client.calls == [("etl", RUN, ["load"], True)]
+    assert client.calls == [("etl", RUN, ["load"], True, True)]
     data = load(cfg, incident_id)
     assert data["status"] == "waiting_human"
     message = last_event(data, "command")["message"]
-    assert "Airflow will run it again" in message and "not merged yet" not in message
+    assert message == f"alice cleared load in run {RUN}; Airflow will run it again."
 
 
 def test_retry_task_without_client_or_with_an_api_error_fails(cfg: HealerConfig) -> None:

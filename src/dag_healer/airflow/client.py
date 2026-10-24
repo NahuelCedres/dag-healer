@@ -567,10 +567,15 @@ class AirflowClient:
         task_ids: Sequence[str | tuple[str, int]],
         *,
         only_failed: bool = True,
+        include_downstream: bool = False,
     ) -> dict[str, Any]:
         """Clear task instances so the scheduler runs them again (not a dry run).
 
-        ``task_ids`` items are task ids or ``(task_id, map_index)`` pairs.
+        ``task_ids`` items are task ids or ``(task_id, map_index)`` pairs. With
+        ``include_downstream`` Airflow also clears the tasks after them in the run.
+        ``only_failed`` keeps the ``failed`` and ``upstream_failed`` task instances only, so
+        tasks that succeeded do not run again. The answer lists the cleared task instances
+        (``task_instances``, ``total_entries``).
         """
         ids: list[Any] = [list(item) if isinstance(item, (tuple, list)) else str(item) for item in task_ids]
         body = {
@@ -578,6 +583,7 @@ class AirflowClient:
             "dag_run_id": run_id,
             "task_ids": ids,
             "only_failed": bool(only_failed),
+            "include_downstream": bool(include_downstream),
             "reset_dag_runs": True,
         }
         data = self._json("POST", f"{API_PREFIX}/dags/{_segment(dag_id)}/clearTaskInstances", json=body)

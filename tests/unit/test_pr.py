@@ -270,7 +270,7 @@ ValueError: time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'
 - [ ] The fix addresses the root cause and is limited to what the test needs.
 - [ ] No unrelated files, secrets or data files are changed.
 - [ ] The full test suite passes in CI.
-- [ ] After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers.
+- [ ] After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers. Retrying also runs the tasks after it that failed or were blocked by it.
 
 ---
 
@@ -354,6 +354,7 @@ def test_pr_markdown_in_the_words_of_another_orchestrator() -> None:
     assert "| Map index | 3 |" in md
     assert "Failure reported by Fakeflow (masked):" in md
     assert '- [ ] After merging, retry the failed step (Healer tab, "Retry step") to confirm' in md
+    assert "Retrying also runs the steps after it that failed or were blocked by it." in md
     assert "Airflow" not in md
     assert "| DAG |" not in md and "| Task |" not in md and "| Try |" not in md
 
@@ -368,11 +369,13 @@ def test_review_checklist_and_title_follow_the_vocabulary() -> None:
     fake = FAKE_VOCABULARY.as_dict()
     assert REVIEW_CHECKLIST == review_checklist() == review_checklist({}) == lazy_review_checklist(None)
     assert REVIEW_CHECKLIST[-1] == (
-        'After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers.'
+        'After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers. '
+        "Retrying also runs the tasks after it that failed or were blocked by it."
     )
     assert review_checklist(fake)[:-1] == REVIEW_CHECKLIST[:-1]
     assert review_checklist(fake)[-1] == (
-        'After merging, retry the failed step (Healer tab, "Retry step") to confirm the pipeline recovers.'
+        'After merging, retry the failed step (Healer tab, "Retry step") to confirm the pipeline recovers. '
+        "Retrying also runs the steps after it that failed or were blocked by it."
     )
     assert render_pr_title(INCIDENT, vocabulary={}) == render_pr_title(INCIDENT)
     assert render_pr_title(INCIDENT, vocabulary=fake) == (

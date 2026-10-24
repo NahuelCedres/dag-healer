@@ -128,7 +128,7 @@ KeyError: &#39;qty&#39;</pre>
   <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
   <li style="margin:0 0 4px 0;"><strong>Resolve as data</strong>: report it as a data issue and alert the data owners (no code change).</li>
   <li style="margin:0 0 4px 0;"><strong>Resolve as code</strong>: dag-healer writes a failing test and proposes a minimal fix.</li>
-  <li style="margin:0 0 4px 0;"><strong>Retry task</strong>: run the failed task again once an external cause is fixed (the incident stays open).</li>
+  <li style="margin:0 0 4px 0;"><strong>Retry task</strong>: run the failed task again once an external cause is fixed, then the tasks after it that failed or were blocked by it (the incident stays open).</li>
   <li style="margin:0 0 4px 0;"><strong>Ignore</strong>: close the incident without further action.</li>
 </ul>
 <a href="http://localhost:8080/dags/inventory_report/runs/manual__2026-10-18T09%3A00%3A00%2B00%3A00/tasks/build_report/plugin/healer-ti" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:#7c3aed;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">Decide in the Healer incident tab</a>

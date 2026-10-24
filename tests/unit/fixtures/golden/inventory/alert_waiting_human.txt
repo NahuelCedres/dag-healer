@@ -66,7 +66,7 @@ What you can do
 Open the Healer incident tab and choose one of:
 - Resolve as data: report it as a data issue and alert the data owners (no code change).
 - Resolve as code: dag-healer writes a failing test and proposes a minimal fix.
-- Retry task: run the failed task again once an external cause is fixed (the incident stays open).
+- Retry task: run the failed task again once an external cause is fixed, then the tasks after it that failed or were blocked by it (the incident stays open).
 - Ignore: close the incident without further action.
 
 Links
