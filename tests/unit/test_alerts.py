@@ -97,7 +97,11 @@ def _free_port() -> int:
 def _start_sink(**smtp_kwargs: Any) -> tuple[Controller, Sink]:
     handler = SinkHandler()
     port = _free_port()
-    controller = Controller(handler, hostname="127.0.0.1", port=port, **smtp_kwargs)
+    # A fixed server_hostname: aiosmtpd would call socket.getfqdn() for its greeting, which can
+    # outlast the start-up timeout on CI hosts whose name does not resolve quickly (macOS).
+    controller = Controller(
+        handler, hostname="127.0.0.1", port=port, server_hostname="localhost", **smtp_kwargs
+    )
     controller.start()
     return controller, Sink("127.0.0.1", port, handler)
 
