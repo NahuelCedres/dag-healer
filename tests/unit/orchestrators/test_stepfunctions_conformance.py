@@ -17,20 +17,24 @@ after its three executions failed:
 
 Step Functions retries are not visible as failed attempts, so there is no retrying failure to
 seed. The end-to-end check (14) runs the feed, the inspector and the logs of the three cases,
-then skips until the worker can run an incident through the adapter (step 6 of the refactor).
+then the worker's ``process_incident`` through the adapter: DATA -> reported, CODE -> repaired
+(a PR.md and a test), AMBIGUOUS -> waiting for a human.
 
 The rest of the module checks what the suite cannot see, against the same world: the push
 samples and the forged hint, the seeded native, queue mode end to end, the inventory function's
 own log group, the definitions that ran against the repository, a redrive that fails again
-(attempt 2), the doctor checks and the health, and the fixture repository's ``healer.yaml``
-building the adapter through the registry without I/O.
+(attempt 2), the doctor checks and the health, the fixture repository's ``healer.yaml``
+building the adapter through the registry without I/O, and ``dag-healer worker --once`` handling
+the three cases from the command line (the CODE fix limited to the customers code and its test).
 """
 
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import pkgutil
+import re
 import shutil
 from collections.abc import Iterator
 from dataclasses import replace
@@ -270,7 +274,7 @@ class StepFunctionsHarness:
 
 
 class TestStepFunctionsConformance(OrchestratorConformance):
-    """The packaged suite against Step Functions (check 14 runs its setup, then waits for step 6)."""
+    """The packaged suite against Step Functions (every check; 04's retrying case does not apply)."""
 
     @pytest.fixture
     def harness(self, healer_env: Path) -> Iterator[StepFunctionsHarness]:
@@ -525,3 +529,86 @@ def test_the_fixture_healer_yaml_builds_the_adapter_through_the_registry(
     assert adapter.capabilities.remediations == (RemediationKind.RESUME_RUN,)
     assert not adapter.clients.injected
     assert repr(adapter) == f"StepFunctionsAdapter(instance={INSTANCE!r}, region={REGION!r})"
+
+
+# =========================================================================== the worker gate
+
+#: Files the CODE repair of ``customers_sync`` may change, besides the regression test it adds.
+CODE_FIX_SCOPE = ("functions/customers/", "src/etl/customers.py")
+_DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
+
+
+def changed_files(pr_md: str) -> set[str]:
+    """The files of the unified diff a PR.md reproduces (its ``diff --git a/... b/...`` lines)."""
+    return {match.group(2) for match in _DIFF_FILE.finditer(pr_md)}
+
+
+def test_worker_once_handles_the_three_cases(
+    healer_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``dag-healer worker --once`` with ``type: stepfunctions`` on the offline world, without AWS
+    credentials: DATA (the S3 contract is violated), CODE (a fix of the customers code plus a new
+    test) and AMBIGUOUS.
+
+    The command builds its adapter through the registry from the repository's ``healer.yaml``;
+    the test only hands the factory the offline world and its clock, the worker the same clock
+    (the poll window follows the worker's iteration time) and the S3 dataset reader the world's
+    S3 client. The poll and the queue (the world's SQS message of the customers failure) both
+    run; the queued hint confirms to the polled incident key.
+    """
+    from dag_healer.cli.main import main
+    from dag_healer.store import dispose_engines, session_scope
+    from dag_healer.store import repo as store_repo
+    from dag_healer.worker import loop
+
+    repo = tmp_path / "gate_repo"
+    prepare_e2e_repo(repo)
+    world = OfflineAws.load(WORLD_FILE)
+    monkeypatch.setattr(
+        FACTORY, "create", functools.partial(type(FACTORY).create, FACTORY, client=world, clock=lambda: NOW)
+    )
+    monkeypatch.setattr(loop, "Worker", functools.partial(loop.Worker, clock=lambda: NOW))
+    s3_storage.set_client_factory(lambda: world.client_factory("s3"))
+    try:
+        assert main(["-c", str(repo / "healer.yaml"), "worker", "--once"]) == 0
+        cfg = load_config(repo / "healer.yaml")
+        with session_scope(cfg.database_url) as session:
+            incidents = {
+                incident.dag_id: incident.to_dict()
+                for incident in store_repo.list_incidents(session, orchestrator=INSTANCE)
+            }
+    finally:
+        s3_storage.set_client_factory(None)
+        dispose_engines()
+    out = capsys.readouterr().out
+    assert "3 incident(s) created" in out, out
+
+    assert set(incidents) == set(E2E_CASES)
+    for pipeline, (run, step, index, category, status) in E2E_CASES.items():
+        incident = incidents[pipeline]
+        assert (incident["run_id"], incident["task_id"], incident["map_index"], incident["try_number"]) == (
+            run,
+            step,
+            index,
+            1,
+        )
+        assert (incident["category"], incident["status"]) == (category, status), pipeline
+        assert incident["orchestrator"] == INSTANCE and incident["source"] in ("poll", "sqs")
+
+    customers = incidents["customers_sync"]
+    assert customers["test_path"], "a CODE repair adds a test"
+    pr_md = Path(customers["pr_md_path"]).read_text(encoding="utf-8")
+    assert "AWS Step Functions" in pr_md
+    changed = changed_files(pr_md)
+    tests = {path for path in changed if path.startswith("tests/")}
+    fixed = changed - tests
+    assert customers["test_path"] in tests, changed
+    assert fixed and all(path.startswith(CODE_FIX_SCOPE) for path in fixed), changed
+    assert {call.operation for call in world.calls} >= {
+        "ListExecutions",
+        "GetExecutionHistory",
+        "ReceiveMessage",
+        "DeleteMessageBatch",
+        "GetObject",
+    }
+    assert not world.calls_to("stepfunctions", "RedriveExecution")  # nothing is retried by itself
