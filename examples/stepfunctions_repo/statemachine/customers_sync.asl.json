@@ -1,0 +1,90 @@
+{
+  "Comment": "customers_sync: CRM export -> customers dim (owner: crm-team). Input: {\"run_date\", \"requested_by\"}",
+  "StartAt": "ExtractCustomers",
+  "States": {
+    "ExtractCustomers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CustomersFunctionArn}",
+        "Payload": {
+          "step": "extract",
+          "execution.$": "$$.Execution.Id",
+          "requested_by.$": "$.requested_by"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "TransformCustomers"
+    },
+    "TransformCustomers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CustomersFunctionArn}",
+        "Payload": {
+          "step": "transform",
+          "execution.$": "$$.Execution.Id",
+          "requested_by.$": "$.requested_by"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "LoadCustomers"
+    },
+    "LoadCustomers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CustomersFunctionArn}",
+        "Payload": {
+          "step": "load",
+          "execution.$": "$$.Execution.Id",
+          "requested_by.$": "$.requested_by",
+          "args": {
+            "target": "customers_dim"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    }
+  }
+}

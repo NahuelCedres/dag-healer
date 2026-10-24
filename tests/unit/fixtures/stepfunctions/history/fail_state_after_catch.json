@@ -1,0 +1,152 @@
+{
+  "description": "TransformSales' KeyError is caught and the Catch goes to a Fail state (SalesFailed) with its own Error/Cause: the step is the Fail state and its error and cause are the Fail state's (carried by ExecutionFailed).",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.340Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.400Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.460Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:04.160Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:04.200Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:00:04.240Z",
+      "type": "FailStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "SalesFailed"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:00:04.280Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "SalesTransformFailed",
+        "cause": "TransformSales could not read the landing file; see its error in the execution history."
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "SalesFailed",
+    "map_index": -1,
+    "error": "SalesTransformFailed",
+    "cause": "TransformSales could not read the landing file; see its error in the execution history.",
+    "event_type": "FailStateEntered",
+    "failed_event_id": 12,
+    "entered_event_id": 12,
+    "retry_attempts": 0,
+    "resource": null,
+    "resource_type": null,
+    "function_name": null,
+    "step_path": null,
+    "failed_at": "2026-10-02T06:00:04.240Z",
+    "terminal": true,
+    "notes": []
+  }
+}

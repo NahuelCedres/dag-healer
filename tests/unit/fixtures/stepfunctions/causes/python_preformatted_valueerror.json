@@ -1,0 +1,61 @@
+{
+  "description": "Python 3.11 runtime, preformatted frame strings with caret lines and a Cython frame",
+  "error": "ValueError",
+  "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 27, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].map(parse_signup_date)\\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4691, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"lib.pyx\\\", line 2972, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"], \"requestId\": \"3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b\"}",
+  "expected": {
+    "error_type": "ValueError",
+    "error_message": "time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'",
+    "request_id": "3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b",
+    "shape": "lambda-preformatted",
+    "truncated": false,
+    "frames": [
+      [
+        "/var/task/app.py",
+        14,
+        "handler",
+        "return STEPS[event[\"step\"]](event)"
+      ],
+      [
+        "/opt/python/etl/customers.py",
+        27,
+        "transform_customers",
+        "df[\"signup_date\"] = df[\"signup_date\"].map(parse_signup_date)"
+      ],
+      [
+        "/opt/python/pandas/core/series.py",
+        4691,
+        "map",
+        "new_values = self._map_values(arg, na_action=na_action)"
+      ],
+      [
+        "lib.pyx",
+        2972,
+        "pandas._libs.lib.map_infer",
+        null
+      ],
+      [
+        "/opt/python/etl/customers.py",
+        12,
+        "parse_signup_date",
+        "return datetime.strptime(value, \"%Y-%m-%d\").date()"
+      ],
+      [
+        "/var/lang/lib/python3.11/_strptime.py",
+        568,
+        "_strptime_datetime",
+        "tt, fraction, gmtoff_fraction = _strptime(data_string, format)"
+      ],
+      [
+        "/var/lang/lib/python3.11/_strptime.py",
+        349,
+        "_strptime",
+        "raise ValueError(\"time data %r does not match format %r\" %"
+      ]
+    ],
+    "exception": [
+      "ValueError",
+      "time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'"
+    ],
+    "summary": "ValueError: time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'"
+  }
+}

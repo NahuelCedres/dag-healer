@@ -1,0 +1,20 @@
+{
+  "version": "0",
+  "id": "0d4f3e1a-7c2b-4e5f-9a8d-6b1c2d3e4f50",
+  "detail-type": "Step Functions Execution Status Change",
+  "source": "aws.states",
+  "account": "123456789012",
+  "time": "2026-10-02T06:00:01Z",
+  "region": "eu-west-1",
+  "resources": ["arn:aws:states:eu-west-1:123456789012:execution:orders-etl:orders-2026-10-02"],
+  "detail": {
+    "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:orders-etl:orders-2026-10-02",
+    "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:orders-etl",
+    "name": "orders-2026-10-02",
+    "status": "FAILED",
+    "startDate": 1790920800000,
+    "stopDate": 1790920801530,
+    "error": "KeyError",
+    "redriveCount": 0
+  }
+}

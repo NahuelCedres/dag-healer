@@ -1,0 +1,8 @@
+{
+  "description": "StartExecution answer of the restart of customers-2026-10-02 with the idempotency key healer-cmd-0001-customers (the name is <original[:52]>-healer-<first 12 hex digits of sha256(key)>)",
+  "idempotency_key": "healer-cmd-0001-customers",
+  "response": {
+    "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02-healer-588bd3c9f929",
+    "startDate": "2026-10-02T07:00:00.500Z"
+  }
+}

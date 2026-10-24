@@ -1,0 +1,20 @@
+{
+  "Messages": [
+    {
+      "MessageId": "7d3c2b1a-0f9e-4d8c-b7a6-958473625140",
+      "ReceiptHandle": "AQEBwJnKyrHigUMZj6rYigCgxlaS3SLy0a+receipt-handle-1==",
+      "MD5OfBody": "6a1f0e1d2c3b4a5968778695a4b3c2d1",
+      "Body": "{\"version\": \"0\", \"id\": \"315c1398-40ff-a850-213b-158f73e60175\", \"detail-type\": \"Step Functions Execution Status Change\", \"source\": \"aws.states\", \"account\": \"123456789012\", \"time\": \"2026-10-02T06:00:04Z\", \"region\": \"eu-west-1\", \"resources\": [\"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\"], \"detail\": {\"executionArn\": \"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\", \"stateMachineArn\": \"arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync\", \"name\": \"customers-2026-10-02\", \"status\": \"FAILED\", \"startDate\": 1790920800000, \"stopDate\": 1790920803700, \"input\": \"{\\\"date\\\": \\\"2026-10-02\\\", \\\"notify\\\": \\\"alice.pii@example.com\\\"}\", \"output\": null, \"stateMachineVersionArn\": null, \"stateMachineAliasArn\": null, \"redriveCount\": 0, \"redriveDate\": null, \"redriveStatus\": \"REDRIVABLE\", \"redriveStatusReason\": \"Execution is FAILED and can be redriven\", \"inputDetails\": {\"included\": true}, \"outputDetails\": null, \"error\": \"ValueError\", \"cause\": \"{\\\"errorMessage\\\": \\\"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\\\", \\\"errorType\\\": \\\"ValueError\\\", \\\"requestId\\\": \\\"3d9c1f0a-8b2e-4c7d-9e6f-5a4b3c2d1e0f\\\", \\\"stackTrace\\\": [\\\"  File \\\\\\\"/var/task/app.py\\\\\\\", line 14, in handler\\\\n    return STEPS[event[\\\\\\\"step\\\\\\\"]](event)\\\\n\\\", \\\"  File \\\\\\\"/opt/python/etl/customers.py\\\\\\\", line 31, in transform_customers\\\\n    frame[\\\\\\\"signup\\\\\\\"] = frame[\\\\\\\"signup\\\\\\\"].map(parse_signup_date)\\\\n\\\", \\\"  File \\\\\\\"/opt/python/pandas/core/series.py\\\\\\\", line 4540, in map\\\\n    new_values = self._map_values(arg, na_action=na_action)\\\\n\\\", \\\"  File \\\\\\\"/opt/python/etl/customers.py\\\\\\\", line 12, in parse_signup_date\\\\n    return datetime.strptime(value, \\\\\\\"%Y-%m-%d\\\\\\\").date()\\\\n\\\", \\\"  File \\\\\\\"/var/lang/lib/python3.11/_strptime.py\\\\\\\", line 568, in _strptime_datetime\\\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\\\n\\\", \\\"  File \\\\\\\"/var/lang/lib/python3.11/_strptime.py\\\\\\\", line 349, in _strptime\\\\n    raise ValueError(\\\\\\\"time data %r does not match format %r\\\\\\\" %\\\\n\\\"]}\"}}",
+      "Attributes": {
+        "ApproximateReceiveCount": "1",
+        "SentTimestamp": "1790920844512"
+      }
+    },
+    {
+      "MessageId": "c1b2a3f4-e5d6-4c7b-8a9f-0e1d2c3b4a50",
+      "ReceiptHandle": "AQEBzbVv7Qk0EVpW+receipt-handle-2==",
+      "MD5OfBody": "0f9e8d7c6b5a49384756a1b2c3d4e5f6",
+      "Body": "{\"version\": \"0\", \"id\": \"b8a5c8f2-91d3-4c6e-a1f0-7e2d3c4b5a69\", \"detail-type\": \"Step Functions Execution Status Change\", \"source\": \"aws.states\", \"account\": \"123456789012\", \"time\": \"2026-10-01T07:00:01Z\", \"region\": \"eu-west-1\", \"resources\": [\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-01\"], \"detail\": {\"executionArn\": \"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-01\", \"stateMachineArn\": \"arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789\", \"name\": \"inventory-2026-10-01\", \"status\": \"TIMED_OUT\", \"startDate\": 1790834400000, \"stopDate\": 1790838000215, \"input\": \"{\\\"date\\\": \\\"2026-10-01\\\", \\\"warehouses\\\": [\\\"WH-1\\\", \\\"WH-2\\\", \\\"WH-3\\\"]}\", \"output\": null, \"stateMachineVersionArn\": null, \"stateMachineAliasArn\": null, \"redriveCount\": 0, \"redriveDate\": null, \"redriveStatus\": \"REDRIVABLE\", \"redriveStatusReason\": \"Execution is TIMED_OUT and can be redriven\", \"inputDetails\": {\"included\": true}, \"outputDetails\": null, \"error\": \"States.Timeout\", \"cause\": null}}"
+    }
+  ]
+}

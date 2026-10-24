@@ -1,0 +1,35 @@
+{
+  "Configuration": {
+    "FunctionName": "sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+    "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+    "Runtime": "python3.11",
+    "Role": "arn:aws:iam::123456789012:role/sfn-etl-FunctionRole-2ASDFGH",
+    "Handler": "app.handler",
+    "CodeSize": 4096,
+    "Timeout": 60,
+    "MemorySize": 512,
+    "LastModified": "2026-10-01T18:00:00.000+0000",
+    "CodeSha256": "uB4ZTt0yTSSaSlFl2wPpRUgjXdK00P6ySYozmD/UnPk=",
+    "Version": "$LATEST",
+    "Environment": {
+      "Variables": {
+        "LANDING_BUCKET": "acme-landing"
+      }
+    },
+    "Layers": [
+      {
+        "Arn": "arn:aws:lambda:eu-west-1:123456789012:layer:sfn-etl-EtlLayer:3",
+        "CodeSize": 2048
+      }
+    ],
+    "State": "Active",
+    "PackageType": "Zip",
+    "Architectures": [
+      "x86_64"
+    ]
+  },
+  "Code": {
+    "RepositoryType": "S3",
+    "Location": "https://awslambda-eu-west-1-tasks.s3.eu-west-1.amazonaws.com/snapshots/123456789012/sfn-etl-CustomersFunction-7G8H9I0J1K2L-example"
+  }
+}

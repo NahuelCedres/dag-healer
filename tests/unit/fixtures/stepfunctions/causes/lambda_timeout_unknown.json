@@ -1,0 +1,18 @@
+{
+  "description": "Lambda.Unknown: the payload (no errorType) follows 'Returned payload:' [U]",
+  "error": "Lambda.Unknown",
+  "cause": "The cause could not be determined because Lambda did not return an error type. Returned payload: {\"errorMessage\":\"2026-10-02T06:00:44.512Z 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Task timed out after 3.00 seconds\"}",
+  "expected": {
+    "error_type": "Lambda.Unknown",
+    "error_message": "2026-10-02T06:00:44.512Z 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Task timed out after 3.00 seconds",
+    "request_id": "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "Lambda.Unknown",
+      "2026-10-02T06:00:44.512Z 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Task timed out after 3.00 seconds"
+    ],
+    "summary": "Lambda.Unknown: 2026-10-02T06:00:44.512Z 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Task timed out after 3.00 seconds"
+  }
+}

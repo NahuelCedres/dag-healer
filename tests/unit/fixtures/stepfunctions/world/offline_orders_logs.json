@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2026-10-02T06:00:00.080Z",
+    "message": "{\"time\":\"2026-10-02T06:00:00.080Z\",\"type\":\"platform.start\",\"record\":{\"requestId\":\"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\",\"version\":\"$LATEST\"}}"
+  },
+  {
+    "timestamp": "2026-10-02T06:00:00.412Z",
+    "message": "{\"timestamp\":\"2026-10-02T06:00:00.412Z\",\"level\":\"INFO\",\"message\":\"loading orders\",\"logger\":\"root\",\"requestId\":\"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\"}"
+  },
+  {
+    "timestamp": "2026-10-02T06:00:01.498Z",
+    "message": "{\"timestamp\":\"2026-10-02T06:00:01.498Z\",\"log_level\":\"ERROR\",\"errorMessage\":\"'amount'\",\"errorType\":\"KeyError\",\"requestId\":\"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\",\"stackTrace\":[\"  File \\\"/var/task/app.py\\\", line 12, in handler\\n    return load(event)\\n\"]}"
+  },
+  {
+    "timestamp": "2026-10-02T06:00:01.505Z",
+    "message": "{\"time\":\"2026-10-02T06:00:01.505Z\",\"type\":\"platform.report\",\"record\":{\"requestId\":\"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\",\"metrics\":{\"durationMs\":1425.3,\"billedDurationMs\":1426,\"memorySizeMB\":128,\"maxMemoryUsedMB\":91},\"status\":\"error\"}}"
+  }
+]

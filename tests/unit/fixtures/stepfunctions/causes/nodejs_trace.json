@@ -1,0 +1,18 @@
+{
+  "description": "Node.js runtime: 'trace' lines are not Python frames",
+  "error": "TypeError",
+  "cause": "{\"errorType\":\"TypeError\",\"errorMessage\":\"Cannot read properties of undefined (reading 'amount')\",\"trace\":[\"TypeError: Cannot read properties of undefined (reading 'amount')\",\"    at transform (file:///var/task/index.mjs:12:24)\",\"    at Runtime.handler (file:///var/task/index.mjs:30:10)\",\"    at Runtime.handleOnceNonStreaming (file:///var/runtime/index.mjs:1173:29)\"]}",
+  "expected": {
+    "error_type": "TypeError",
+    "error_message": "Cannot read properties of undefined (reading 'amount')",
+    "request_id": null,
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "TypeError",
+      "Cannot read properties of undefined (reading 'amount')"
+    ],
+    "summary": "TypeError: Cannot read properties of undefined (reading 'amount')"
+  }
+}

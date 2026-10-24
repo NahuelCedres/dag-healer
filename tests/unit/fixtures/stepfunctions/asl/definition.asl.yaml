@@ -1,0 +1,19 @@
+# A YAML definition (*.asl.yaml): unquoted timestamps stay text.
+Comment: Daily refresh
+StartAt: Check
+States:
+  Check:
+    Type: Choice
+    Choices:
+      - Variable: $.since
+        TimestampGreaterThan: 2026-10-01T00:00:00Z
+        Next: Refresh
+    Default: Refresh
+  Refresh:
+    Type: Task
+    Resource: arn:aws:states:::lambda:invoke
+    Parameters:
+      FunctionName: ${RefreshFunctionArn}
+      Payload:
+        since.$: $.since
+    End: true

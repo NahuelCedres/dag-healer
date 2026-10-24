@@ -1,0 +1,86 @@
+{
+  "description": "A Distributed Map (ProcessFiles, ToleratedFailurePercentage 5) whose child executions fail too often: MapRunFailed with States.ExceedToleratedFailureThreshold. The incident is the parent's Map state (map_index -1) with the Map Run ARN.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ProcessFiles"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 0
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.380Z",
+      "type": "MapRunStarted",
+      "mapRunStartedEventDetails": {
+        "mapRunArn": "arn:aws:states:eu-west-1:123456789012:mapRun:InventoryReportStateMachine-XyZ789/ProcessFiles:3c39a231-69bb-3d89-8607-9e124eddbb0b"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:48.380Z",
+      "type": "MapRunFailed",
+      "mapRunFailedEventDetails": {
+        "error": "States.ExceedToleratedFailureThreshold",
+        "cause": "The specified tolerated failure threshold was exceeded"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:48.400Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:48.440Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "States.ExceedToleratedFailureThreshold",
+        "cause": "The specified tolerated failure threshold was exceeded"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "ProcessFiles",
+    "map_index": -1,
+    "error": "States.ExceedToleratedFailureThreshold",
+    "cause": "The specified tolerated failure threshold was exceeded",
+    "event_type": "MapRunFailed",
+    "failed_event_id": 5,
+    "entered_event_id": 2,
+    "retry_attempts": 0,
+    "resource": null,
+    "resource_type": null,
+    "function_name": null,
+    "step_path": null,
+    "map_run_arn": "arn:aws:states:eu-west-1:123456789012:mapRun:InventoryReportStateMachine-XyZ789/ProcessFiles:3c39a231-69bb-3d89-8607-9e124eddbb0b",
+    "started_at": "2026-10-02T06:00:00.380Z",
+    "failed_at": "2026-10-02T06:00:48.380Z",
+    "terminal": true,
+    "notes": []
+  }
+}

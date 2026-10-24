@@ -1,0 +1,68 @@
+{
+  "events": [
+    {
+      "logStreamName": "2026/10/02/[$LATEST]c0ffee00c0ffee00c0ffee00c0ffee00",
+      "timestamp": 1790920815150,
+      "message": "START RequestId: 3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b Version: $LATEST\n",
+      "ingestionTime": 1790920815400,
+      "eventId": "386717909208151500001"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]c0ffee00c0ffee00c0ffee00c0ffee00",
+      "timestamp": 1790920815300,
+      "message": "[INFO]\t2026-10-02T06:00:15.300Z\t3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b\tReceived event {\"step\": \"transform\", \"run_date\": \"2026-10-02\", \"notify\": \"alice.pii@example.com\"}\n",
+      "ingestionTime": 1790920815550,
+      "eventId": "386717909208153000002"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]bead0000bead0000bead0000bead0000",
+      "timestamp": 1790920820000,
+      "message": "START RequestId: 5e5e5e5e-1111-4222-8333-944444444444 Version: $LATEST\n",
+      "ingestionTime": 1790920820250,
+      "eventId": "386717909208200000006"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]bead0000bead0000bead0000bead0000",
+      "timestamp": 1790920820100,
+      "message": "[INFO]\t2026-10-02T06:00:20.100Z\t5e5e5e5e-1111-4222-8333-944444444444\tBackfill of 2026-09-30\n",
+      "ingestionTime": 1790920820350,
+      "eventId": "386717909208201000007"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]bead0000bead0000bead0000bead0000",
+      "timestamp": 1790920831000,
+      "message": "END RequestId: 5e5e5e5e-1111-4222-8333-944444444444\n",
+      "ingestionTime": 1790920831250,
+      "eventId": "386717909208310000008"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]bead0000bead0000bead0000bead0000",
+      "timestamp": 1790920831000,
+      "message": "REPORT RequestId: 5e5e5e5e-1111-4222-8333-944444444444\tDuration: 11000.00 ms\tBilled Duration: 11000 ms\tMemory Size: 512 MB\tMax Memory Used: 140 MB\n",
+      "ingestionTime": 1790920831250,
+      "eventId": "386717909208310000009"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]c0ffee00c0ffee00c0ffee00c0ffee00",
+      "timestamp": 1790920833100,
+      "message": "[ERROR] ValueError: time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\rTraceback (most recent call last):\r  File \"/var/task/app.py\", line 14, in handler\r    return STEPS[event[\"step\"]](event)\r  File \"/opt/python/etl/customers.py\", line 27, in transform_customers\r    df[\"signup_date\"] = df[\"signup_date\"].map(parse_signup_date)\r                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r  File \"/opt/python/pandas/core/series.py\", line 4691, in map\r    new_values = self._map_values(arg, na_action=na_action)\r  File \"lib.pyx\", line 2972, in pandas._libs.lib.map_infer\r  File \"/opt/python/etl/customers.py\", line 12, in parse_signup_date\r    return datetime.strptime(value, \"%Y-%m-%d\").date()\r           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\r  File \"/var/lang/lib/python3.11/_strptime.py\", line 568, in _strptime_datetime\r    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\r  File \"/var/lang/lib/python3.11/_strptime.py\", line 349, in _strptime\r    raise ValueError(\"time data %r does not match format %r\" %\n",
+      "ingestionTime": 1790920833350,
+      "eventId": "386717909208331000003"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]c0ffee00c0ffee00c0ffee00c0ffee00",
+      "timestamp": 1790920833150,
+      "message": "END RequestId: 3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b\n",
+      "ingestionTime": 1790920833400,
+      "eventId": "386717909208331500004"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]c0ffee00c0ffee00c0ffee00c0ffee00",
+      "timestamp": 1790920833150,
+      "message": "REPORT RequestId: 3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b\tDuration: 18000.00 ms\tBilled Duration: 18000 ms\tMemory Size: 512 MB\tMax Memory Used: 150 MB\n",
+      "ingestionTime": 1790920833400,
+      "eventId": "386717909208331500005"
+    }
+  ],
+  "searchedLogStreams": []
+}

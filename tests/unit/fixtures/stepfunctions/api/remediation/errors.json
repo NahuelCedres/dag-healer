@@ -1,0 +1,51 @@
+{
+  "description": "AWS error answers of RedriveExecution and StartExecution (codes from the API reference; messages are representative, not recorded)",
+  "redrive": {
+    "ExecutionNotRedrivable": {
+      "status": 400,
+      "message": "Execution arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02 cannot be redriven: the execution closed more than 14 days ago."
+    },
+    "ValidationException": {
+      "status": 400,
+      "message": "1 validation error detected: Value at 'clientToken' failed to satisfy constraint."
+    },
+    "ExecutionLimitExceeded": {
+      "status": 400,
+      "message": "The maximum number of running executions has been reached."
+    },
+    "ExecutionDoesNotExist": {
+      "status": 400,
+      "message": "Execution Does Not Exist: 'arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02'"
+    },
+    "AccessDeniedException": {
+      "status": 400,
+      "message": "arn:aws:sts::123456789012:assumed-role/healer-read/dag-healer is not authorized to perform: states:RedriveExecution"
+    },
+    "ThrottlingException": {
+      "status": 400,
+      "message": "Rate exceeded"
+    },
+    "InternalFailure": {
+      "status": 500,
+      "message": "Internal service error"
+    }
+  },
+  "start": {
+    "ExecutionAlreadyExists": {
+      "status": 400,
+      "message": "Execution Already Exists: 'arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02-healer-588bd3c9f929'"
+    },
+    "InvalidExecutionInput": {
+      "status": 400,
+      "message": "Invalid State Machine Execution Input: 'Unexpected character'"
+    },
+    "StateMachineDeleting": {
+      "status": 400,
+      "message": "State Machine is being deleted: 'arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync'"
+    },
+    "StateMachineDoesNotExist": {
+      "status": 400,
+      "message": "State Machine Does Not Exist: 'arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync'"
+    }
+  }
+}

@@ -1,0 +1,77 @@
+# Globals.Function fallbacks and merging, and the layer and log group variants.
+Globals:
+  Function:
+    Runtime: python3.11
+    Handler: app.handler
+    CodeUri: shared/
+    Layers:
+      - !Ref Base
+    LoggingConfig:
+      LogFormat: JSON
+      LogGroup: /acme/default
+
+Resources:
+  Base:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: layers/base/
+    Metadata:
+      BuildMethod: python3.11
+
+  Extra:  # prebuilt: layers/extra/python/ holds the code
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: layers/extra
+
+  Plain:  # prebuilt without a python/ folder
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: layers/plain
+
+  Remote:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: s3://acme-artifacts/layer.zip
+
+  NotALayer:
+    Type: AWS::SQS::Queue
+
+  OwnLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /acme/own
+
+  UnnamedLogs:
+    Type: AWS::Logs::LogGroup
+
+  Defaults:
+    Type: AWS::Serverless::Function
+    Properties: {}
+
+  Own:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./functions/own/
+      Handler: own.main
+      Runtime: python3.12
+      Layers:
+        - !Ref Extra
+        - !Ref Plain
+        - !Ref Remote
+        - !Ref NotALayer
+        - arn:aws:lambda:eu-west-1:123456789012:layer:extern:1
+        - !Ref Base
+      LoggingConfig:
+        LogGroup: !Ref OwnLogs
+
+  RefWithoutName:
+    Type: AWS::Serverless::Function
+    Properties:
+      LoggingConfig:
+        LogGroup: !Ref UnnamedLogs
+
+  SubLogGroup:
+    Type: AWS::Serverless::Function
+    Properties:
+      LoggingConfig:
+        LogGroup: !Sub "/acme/${AWS::StackName}"

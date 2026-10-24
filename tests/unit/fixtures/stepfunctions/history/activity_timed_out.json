@@ -1,0 +1,126 @@
+{
+  "description": "An Activity task (ManualReview) whose worker stops sending heartbeats: ActivityTimedOut with States.HeartbeatTimeout; the resource is the activity ARN.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.340Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ManualReview"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.380Z",
+      "type": "ActivityScheduled",
+      "activityScheduledEventDetails": {
+        "resource": "arn:aws:states:eu-west-1:123456789012:activity:inventory-manual-review",
+        "timeoutInSeconds": 3600,
+        "heartbeatInSeconds": 300
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:06.380Z",
+      "type": "ActivityStarted",
+      "activityStartedEventDetails": {
+        "workerName": "review-worker-1"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:05:06.380Z",
+      "type": "ActivityTimedOut",
+      "activityTimedOutEventDetails": {
+        "error": "States.HeartbeatTimeout"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:05:06.420Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "States.HeartbeatTimeout"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "ManualReview",
+    "error": "States.HeartbeatTimeout",
+    "cause": null,
+    "event_type": "ActivityTimedOut",
+    "failed_event_id": 10,
+    "entered_event_id": 7,
+    "retry_attempts": 0,
+    "resource": "arn:aws:states:eu-west-1:123456789012:activity:inventory-manual-review",
+    "resource_type": "activity",
+    "function_name": null,
+    "started_at": "2026-10-02T06:00:06.380Z",
+    "terminal": true,
+    "notes": []
+  }
+}

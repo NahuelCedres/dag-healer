@@ -1,0 +1,190 @@
+{
+  "description": "A Parallel state (PublishOutputs) with two branches: PublishCatalog raises TypeError while LoadWarehouse is still running (it is aborted) and the Parallel state fails the execution.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.340Z",
+      "type": "ParallelStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PublishOutputs"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.380Z",
+      "type": "ParallelStateStarted"
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.420Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "LoadWarehouse"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.460Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PublishCatalog"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:02.520Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"load\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:02.580Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-PublishFunction-9S8T7U6V5W4X\",\"Payload\":{\"target\":\"catalog\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:00:02.640Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:00:02.700Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 15,
+      "previousEventId": 14,
+      "timestamp": "2026-10-02T06:00:03.600Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "TypeError",
+        "cause": "{\"errorMessage\": \"Object of type Decimal is not JSON serializable\", \"errorType\": \"TypeError\", \"requestId\": \"5c4b3a29-1807-4f6e-9d5c-4b3a29180706\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 21, in handler\\n    body = json.dumps(catalog)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/__init__.py\\\", line 231, in dumps\\n    return _default_encoder.encode(obj)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/encoder.py\\\", line 180, in default\\n    raise TypeError(f'Object of type {o.__class__.__name__} '\\n\"]}"
+      }
+    },
+    {
+      "id": 16,
+      "previousEventId": 13,
+      "timestamp": "2026-10-02T06:00:03.620Z",
+      "type": "TaskStateAborted"
+    },
+    {
+      "id": 17,
+      "previousEventId": 15,
+      "timestamp": "2026-10-02T06:00:03.630Z",
+      "type": "ParallelStateFailed"
+    },
+    {
+      "id": 18,
+      "previousEventId": 17,
+      "timestamp": "2026-10-02T06:00:03.670Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "TypeError",
+        "cause": "{\"errorMessage\": \"Object of type Decimal is not JSON serializable\", \"errorType\": \"TypeError\", \"requestId\": \"5c4b3a29-1807-4f6e-9d5c-4b3a29180706\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 21, in handler\\n    body = json.dumps(catalog)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/__init__.py\\\", line 231, in dumps\\n    return _default_encoder.encode(obj)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/encoder.py\\\", line 180, in default\\n    raise TypeError(f'Object of type {o.__class__.__name__} '\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "PublishCatalog",
+    "map_index": -1,
+    "error": "TypeError",
+    "event_type": "TaskFailed",
+    "failed_event_id": 15,
+    "entered_event_id": 10,
+    "retry_attempts": 0,
+    "resource": "invoke",
+    "resource_type": "lambda",
+    "function_name": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-PublishFunction-9S8T7U6V5W4X",
+    "step_path": "PublishOutputs/PublishCatalog",
+    "terminal": true,
+    "notes": []
+  }
+}

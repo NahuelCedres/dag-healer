@@ -1,0 +1,18 @@
+{
+  "description": "Ruby runtime: the error type is reduced to what a Python exception line holds",
+  "error": "Function<NoMethodError>",
+  "cause": "{\"errorMessage\":\"undefined method `[]' for nil:NilClass\",\"errorType\":\"Function<NoMethodError>\",\"stackTrace\":[\"/var/task/lambda_function.rb:3:in `lambda_handler'\"]}",
+  "expected": {
+    "error_type": "Function<NoMethodError>",
+    "error_message": "undefined method `[]' for nil:NilClass",
+    "request_id": null,
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "Function_NoMethodError",
+      "undefined method `[]' for nil:NilClass"
+    ],
+    "summary": "Function<NoMethodError>: undefined method `[]' for nil:NilClass"
+  }
+}

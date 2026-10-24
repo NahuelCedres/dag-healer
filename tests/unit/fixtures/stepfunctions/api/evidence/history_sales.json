@@ -1,0 +1,116 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-10-02T06:00:41.512Z",
+      "type": "ExecutionFailed",
+      "id": 11,
+      "previousEventId": 10,
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\", \"stackTrace\": [[\"/var/task/app.py\", 14, \"handler\", \"return STEPS[event[\\\"step\\\"]](event)\"], [\"/opt/python/etl/sales.py\", 31, \"transform_sales\", \"df[\\\"total\\\"] = df[\\\"amount\\\"] * df[\\\"unit_price\\\"]\"], [\"/opt/python/pandas/core/frame.py\", 4102, \"__getitem__\", \"indexer = self.columns.get_loc(key)\"], [\"/opt/python/pandas/core/indexes/base.py\", 3812, \"get_loc\", \"raise KeyError(key) from err\"]]}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:41.400Z",
+      "type": "TaskFailed",
+      "id": 10,
+      "previousEventId": 9,
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\", \"stackTrace\": [[\"/var/task/app.py\", 14, \"handler\", \"return STEPS[event[\\\"step\\\"]](event)\"], [\"/opt/python/etl/sales.py\", 31, \"transform_sales\", \"df[\\\"total\\\"] = df[\\\"amount\\\"] * df[\\\"unit_price\\\"]\"], [\"/opt/python/pandas/core/frame.py\", 4102, \"__getitem__\", \"indexer = self.columns.get_loc(key)\"], [\"/opt/python/pandas/core/indexes/base.py\", 3812, \"get_loc\", \"raise KeyError(key) from err\"]]}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:20.100Z",
+      "type": "TaskStarted",
+      "id": 9,
+      "previousEventId": 8,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:20.030Z",
+      "type": "TaskScheduled",
+      "id": 8,
+      "previousEventId": 7,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"run_date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:20.020Z",
+      "type": "TaskStateEntered",
+      "id": 7,
+      "previousEventId": 6,
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:20.010Z",
+      "type": "TaskStateExited",
+      "id": 6,
+      "previousEventId": 5,
+      "stateExitedEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:20.000Z",
+      "type": "TaskSucceeded",
+      "id": 5,
+      "previousEventId": 4,
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.120Z",
+      "type": "TaskStarted",
+      "id": 4,
+      "previousEventId": 3,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.060Z",
+      "type": "TaskScheduled",
+      "id": 3,
+      "previousEventId": 2,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"run_date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.050Z",
+      "type": "TaskStateEntered",
+      "id": 2,
+      "previousEventId": 0,
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "id": 1,
+      "previousEventId": 0,
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-1QWERTY"
+      }
+    }
+  ]
+}

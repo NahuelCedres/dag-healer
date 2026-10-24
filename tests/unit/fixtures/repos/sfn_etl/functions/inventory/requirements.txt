@@ -1,0 +1,1 @@
+# no dependencies of its own: pandas and the etl package come from the shared EtlLayer (src/)

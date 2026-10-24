@@ -1,0 +1,241 @@
+{
+  "description": "A JSONata Pass state (ShapeRow) inside the inline Map PerWarehouse: in iteration 1 its Output expression yields nothing and EvaluationFailed (States.Runtime) names the state; the same state succeeded in iteration 0.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 2
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.085Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.090Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:00.130Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:00.190Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"WH-1\"}}"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:00.250Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:01.550Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:01.590Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:01.630Z",
+      "type": "PassStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ShapeRow"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:00:01.670Z",
+      "type": "PassStateExited",
+      "stateExitedEventDetails": {
+        "name": "ShapeRow"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:00:01.710Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:01.750Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 15,
+      "previousEventId": 14,
+      "timestamp": "2026-10-02T06:00:01.810Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"WH-2\"}}"
+      }
+    },
+    {
+      "id": 16,
+      "previousEventId": 15,
+      "timestamp": "2026-10-02T06:00:01.870Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 17,
+      "previousEventId": 16,
+      "timestamp": "2026-10-02T06:00:03.120Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 18,
+      "previousEventId": 17,
+      "timestamp": "2026-10-02T06:00:03.160Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 19,
+      "previousEventId": 18,
+      "timestamp": "2026-10-02T06:00:03.200Z",
+      "type": "PassStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ShapeRow"
+      }
+    },
+    {
+      "id": 20,
+      "previousEventId": 19,
+      "timestamp": "2026-10-02T06:00:03.240Z",
+      "type": "EvaluationFailed",
+      "evaluationFailedEventDetails": {
+        "error": "States.Runtime",
+        "cause": "The JSONata expression '{% $states.input.report.rows[0] %}' specified for the field 'Output' returned nothing: an Output must evaluate to a JSON value.",
+        "location": "Output",
+        "state": "ShapeRow"
+      }
+    },
+    {
+      "id": 21,
+      "previousEventId": 20,
+      "timestamp": "2026-10-02T06:00:03.280Z",
+      "type": "MapIterationFailed",
+      "mapIterationFailedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 22,
+      "previousEventId": 21,
+      "timestamp": "2026-10-02T06:00:03.290Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 23,
+      "previousEventId": 22,
+      "timestamp": "2026-10-02T06:00:03.330Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "States.Runtime",
+        "cause": "The JSONata expression '{% $states.input.report.rows[0] %}' specified for the field 'Output' returned nothing: an Output must evaluate to a JSON value."
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "ShapeRow",
+    "map_index": 1,
+    "error": "States.Runtime",
+    "cause": "The JSONata expression '{% $states.input.report.rows[0] %}' specified for the field 'Output' returned nothing: an Output must evaluate to a JSON value.",
+    "event_type": "EvaluationFailed",
+    "failed_event_id": 20,
+    "entered_event_id": 19,
+    "retry_attempts": 0,
+    "resource": null,
+    "step_path": "PerWarehouse[1]/ShapeRow",
+    "terminal": true,
+    "notes": []
+  }
+}

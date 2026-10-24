@@ -1,0 +1,18 @@
+{
+  "description": "an older Node.js runtime: 'stackTrace' holds 'at ...' lines",
+  "error": "ReferenceError",
+  "cause": "{\"errorMessage\":\"amount is not defined\",\"errorType\":\"ReferenceError\",\"stackTrace\":[\"exports.handler (/var/task/index.js:5:20)\",\"    at Runtime.handler (/var/runtime/node_modules/awslambda/index.js:45:12)\"]}",
+  "expected": {
+    "error_type": "ReferenceError",
+    "error_message": "amount is not defined",
+    "request_id": null,
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "ReferenceError",
+      "amount is not defined"
+    ],
+    "summary": "ReferenceError: amount is not defined"
+  }
+}

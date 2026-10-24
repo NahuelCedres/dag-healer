@@ -1,0 +1,3 @@
+# dependencies of the shared EtlLayer (sam build installs them under /opt/python);
+# boto3 comes with the Lambda Python runtime
+pandas>=2.1

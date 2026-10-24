@@ -1,0 +1,31 @@
+{
+  "executions": [
+    {
+      "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-02",
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123",
+      "name": "sales-2026-10-02",
+      "status": "FAILED",
+      "startDate": "2026-10-02T06:00:00.000Z",
+      "stopDate": "2026-10-02T06:00:13.590Z",
+      "redriveCount": 0
+    },
+    {
+      "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-01-rerun",
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123",
+      "name": "sales-2026-10-01-rerun",
+      "status": "FAILED",
+      "startDate": "2026-10-01T09:30:00.000Z",
+      "stopDate": "2026-10-01T09:30:41.207Z",
+      "redriveCount": 0
+    },
+    {
+      "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-09-30",
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123",
+      "name": "sales-2026-09-30",
+      "status": "FAILED",
+      "startDate": "2026-09-30T06:00:00.000Z",
+      "stopDate": "2026-09-30T06:00:12.950Z",
+      "redriveCount": 0
+    }
+  ]
+}

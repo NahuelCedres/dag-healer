@@ -1,0 +1,54 @@
+{
+  "events": [
+    {
+      "logStreamName": "2026/10/02/[$LATEST]1f2e3d4c5b6a79881f2e3d4c5b6a7988",
+      "timestamp": 1790920800200,
+      "message": "{\"time\": \"2026-10-02T06:00:00.200Z\", \"type\": \"platform.start\", \"record\": {\"requestId\": \"c4a8e2f6-9b1d-4f3e-a5c7-2e4f6a8b0c1d\", \"version\": \"$LATEST\"}}\n",
+      "ingestionTime": 1790920800450,
+      "eventId": "386717909208002000001"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]9a8b7c6d5e4f30219a8b7c6d5e4f3021",
+      "timestamp": 1790920800210,
+      "message": "{\"time\": \"2026-10-02T06:00:00.210Z\", \"type\": \"platform.start\", \"record\": {\"requestId\": \"d1d2d3d4-e5e6-4f70-8a9b-0c1d2e3f4a5b\", \"version\": \"$LATEST\"}}\n",
+      "ingestionTime": 1790920800460,
+      "eventId": "386717909208002100005"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]1f2e3d4c5b6a79881f2e3d4c5b6a7988",
+      "timestamp": 1790920800400,
+      "message": "{\"timestamp\": \"2026-10-02T06:00:00.400Z\", \"level\": \"INFO\", \"message\": \"Building the report of warehouse north\", \"logger\": \"etl.inventory\", \"requestId\": \"c4a8e2f6-9b1d-4f3e-a5c7-2e4f6a8b0c1d\"}\n",
+      "ingestionTime": 1790920800650,
+      "eventId": "386717909208004000002"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]9a8b7c6d5e4f30219a8b7c6d5e4f3021",
+      "timestamp": 1790920800420,
+      "message": "{\"timestamp\": \"2026-10-02T06:00:00.420Z\", \"level\": \"INFO\", \"message\": \"Building the report of warehouse south\", \"logger\": \"etl.inventory\", \"requestId\": \"d1d2d3d4-e5e6-4f70-8a9b-0c1d2e3f4a5b\"}\n",
+      "ingestionTime": 1790920800670,
+      "eventId": "386717909208004200006"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]9a8b7c6d5e4f30219a8b7c6d5e4f3021",
+      "timestamp": 1790920829990,
+      "message": "{\"time\": \"2026-10-02T06:00:29.990Z\", \"type\": \"platform.report\", \"record\": {\"requestId\": \"d1d2d3d4-e5e6-4f70-8a9b-0c1d2e3f4a5b\", \"metrics\": {\"durationMs\": 29780.0, \"billedDurationMs\": 29780, \"memorySizeMB\": 512, \"maxMemoryUsedMB\": 150}, \"status\": \"success\"}}\n",
+      "ingestionTime": 1790920830240,
+      "eventId": "386717909208299900007"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]1f2e3d4c5b6a79881f2e3d4c5b6a7988",
+      "timestamp": 1790920841250,
+      "message": "{\"timestamp\": \"2026-10-02T06:00:41.250Z\", \"log_level\": \"ERROR\", \"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"c4a8e2f6-9b1d-4f3e-a5c7-2e4f6a8b0c1d\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 11, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 22, in build_report\\n    totals[row[\\\"sku\\\"]] += int(row[\\\"qty\\\"])\\n                              ~~~^^^^^^^\\n\"]}\n",
+      "ingestionTime": 1790920841500,
+      "eventId": "386717909208412500003"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]1f2e3d4c5b6a79881f2e3d4c5b6a7988",
+      "timestamp": 1790920841280,
+      "message": "{\"time\": \"2026-10-02T06:00:41.280Z\", \"type\": \"platform.report\", \"record\": {\"requestId\": \"c4a8e2f6-9b1d-4f3e-a5c7-2e4f6a8b0c1d\", \"metrics\": {\"durationMs\": 41080.25, \"billedDurationMs\": 41081, \"memorySizeMB\": 512, \"maxMemoryUsedMB\": 160}, \"status\": \"error\"}}\n",
+      "ingestionTime": 1790920841530,
+      "eventId": "386717909208412800004"
+    }
+  ],
+  "searchedLogStreams": []
+}

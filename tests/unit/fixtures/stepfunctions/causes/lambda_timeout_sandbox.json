@@ -1,0 +1,18 @@
+{
+  "description": "a Lambda timeout of a newer runtime: Sandbox.Timedout, request id in the message [U]",
+  "error": "Sandbox.Timedout",
+  "cause": "{\"errorType\":\"Sandbox.Timedout\",\"errorMessage\":\"RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Error: Task timed out after 3.00 seconds\"}",
+  "expected": {
+    "error_type": "Sandbox.Timedout",
+    "error_message": "RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Error: Task timed out after 3.00 seconds",
+    "request_id": "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "Sandbox.Timedout",
+      "RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Error: Task timed out after 3.00 seconds"
+    ],
+    "summary": "Sandbox.Timedout: RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Error: Task timed out after 3.00 seconds"
+  }
+}

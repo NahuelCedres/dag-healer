@@ -1,0 +1,195 @@
+{
+  "description": "Every *StateEntered points to previousEventId 0, also inside the inline Map, so walking up from BuildReport's entry stops at once: the MapIterationFailed on the terminal event's chain still gives the iteration (1) and the Map.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 2
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.085Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.090Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.130Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.170Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:00.180Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"WH-1\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:00.190Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"WH-2\"}}"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:00.200Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:00.210Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:01.610Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:00:01.650Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 13,
+      "timestamp": "2026-10-02T06:00:01.690Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 15,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:00:01.780Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    },
+    {
+      "id": 16,
+      "previousEventId": 15,
+      "timestamp": "2026-10-02T06:00:01.820Z",
+      "type": "MapIterationFailed",
+      "mapIterationFailedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 17,
+      "previousEventId": 16,
+      "timestamp": "2026-10-02T06:00:01.830Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 18,
+      "previousEventId": 17,
+      "timestamp": "2026-10-02T06:00:01.870Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "BuildReport",
+    "map_index": 1,
+    "error": "KeyError",
+    "event_type": "TaskFailed",
+    "failed_event_id": 15,
+    "entered_event_id": 7,
+    "retry_attempts": 0,
+    "function_name": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+    "step_path": "PerWarehouse[1]/BuildReport",
+    "started_at": "2026-10-02T06:00:00.210Z",
+    "terminal": true,
+    "notes": []
+  }
+}

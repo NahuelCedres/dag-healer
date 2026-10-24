@@ -1,0 +1,59 @@
+# dag-healer configuration of the sfn-etl test repository (AWS Step Functions, offline tests).
+# The ARNs, the account and the queue are those of the offline world
+# (tests/unit/fixtures/stepfunctions/world/sfn_etl.json); nothing here reaches AWS.
+version: 1
+
+repo:
+  path: "."
+  base_branch: main
+  dags_dir: "statemachine"         # the ASL definitions
+  tests_dir: null                  # a minimal tests/ folder is created when a fix needs one
+  test_command: "python -m pytest -q"
+  allowed_paths: ["functions/", "src/"]   # the repair may only edit the Lambda code
+  pytest_timeout: 600
+
+orchestrator:
+  type: stepfunctions
+  instance: sfn-test
+  options:
+    region: eu-west-1
+    template: template.yaml        # SAM template that maps Task states to Lambda code
+    pipelines:                     # pipeline id -> state machine (deployed names carry a suffix)
+      sales_daily_etl:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123
+        logical_id: SalesDailyEtlStateMachine
+      customers_sync:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync
+        logical_id: CustomersSyncStateMachine
+      inventory_report:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789
+        logical_id: InventoryReportStateMachine
+    statuses: [FAILED, TIMED_OUT]
+    queue_url: https://sqs.eu-west-1.amazonaws.com/123456789012/healer-sfn-events
+    log_lookup: true
+    retry_strategy: redrive
+    rerun: false
+
+monitor:
+  dags: ["*"]
+  modes: [poll, queue]             # poll: ListExecutions; queue: the EventBridge -> SQS rule
+  poll_interval_seconds: 60
+  trigger: final_failure
+
+contracts:
+  dir: healer/contracts
+
+# The input each failing state reads (the landing bucket of the template).
+datasets:
+  sales_daily_etl:
+    TransformSales: {"type": "csv", "path": "s3://acme-landing/incoming/sales.csv"}
+  customers_sync:
+    TransformCustomers: {"type": "csv", "path": "s3://acme-landing/incoming/customers.csv"}
+  inventory_report:
+    BuildReport: {"type": "csv", "path": "s3://acme-landing/incoming/inventory.csv"}
+
+llm:
+  provider: fake                   # replays fixtures/fake_llm (no API key, no network)
+
+store:
+  url: "${HEALER_DATABASE_URL}"    # null: SQLite under $HEALER_HOME

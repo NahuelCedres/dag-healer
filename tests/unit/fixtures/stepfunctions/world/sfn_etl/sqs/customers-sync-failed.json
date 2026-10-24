@@ -1,0 +1,34 @@
+{
+  "version": "0",
+  "id": "4c503ca6-7761-e5c4-aaec-fe996244c25d",
+  "detail-type": "Step Functions Execution Status Change",
+  "source": "aws.states",
+  "account": "123456789012",
+  "time": "2026-10-02T06:00:10Z",
+  "region": "eu-west-1",
+  "resources": [
+    "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02"
+  ],
+  "detail": {
+    "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02",
+    "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+    "name": "customers-2026-10-02",
+    "status": "FAILED",
+    "startDate": 1790920807348,
+    "stopDate": 1790920810284,
+    "input": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+    "output": null,
+    "inputDetails": {
+      "included": true
+    },
+    "outputDetails": null,
+    "error": "ValueError",
+    "cause": "{\"errorMessage\": \"unconverted data remains: T08:30:00Z\", \"errorType\": \"ValueError\", \"requestId\": \"adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 27, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 37, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].apply(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 5575, in apply\\n    ).apply()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1749, in apply\\n    return self.apply_standard()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1807, in apply_standard\\n    mapped = obj._map_values(mapper=curried)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 1076, in _map_values\\n    return arr.map(mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/arrays/base.py\\\", line 3006, in map\\n    result = map_array(self, mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/algorithms.py\\\", line 2007, in map_array\\n    return lib.map_infer(values, mapper)\\n\", \"  File \\\"pandas/_libs/lib.pyx\\\", line 3390, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 20, in parse_signup_date\\n    return datetime.strptime(value.strip(), \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 567, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 352, in _strptime\\n    raise ValueError(\\\"unconverted data remains: %s\\\" %\\n\"]}",
+    "stateMachineVersionArn": null,
+    "stateMachineAliasArn": null,
+    "redriveCount": 0,
+    "redriveDate": null,
+    "redriveStatus": "REDRIVABLE",
+    "redriveStatusReason": "Execution is FAILED and can be redriven"
+  }
+}

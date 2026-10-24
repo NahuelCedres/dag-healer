@@ -1,0 +1,31 @@
+{
+  "description": "Python runtime without requestId in the payload [U]",
+  "error": "KeyError",
+  "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 11, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 22, in build_report\\n    totals[row[\\\"sku\\\"]] += int(row[\\\"qty\\\"])\\n                              ~~~^^^^^^^\\n\"]}",
+  "expected": {
+    "error_type": "KeyError",
+    "error_message": "'qty'",
+    "request_id": null,
+    "shape": "lambda-preformatted",
+    "truncated": false,
+    "frames": [
+      [
+        "/var/task/app.py",
+        11,
+        "handler",
+        "return STEPS[event[\"step\"]](event)"
+      ],
+      [
+        "/opt/python/etl/inventory.py",
+        22,
+        "build_report",
+        "totals[row[\"sku\"]] += int(row[\"qty\"])"
+      ]
+    ],
+    "exception": [
+      "KeyError",
+      "'qty'"
+    ],
+    "summary": "KeyError: 'qty'"
+  }
+}
