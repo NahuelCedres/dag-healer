@@ -344,7 +344,8 @@ def retry_task(
     instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.CommandAccepted:
-    """Ask the orchestrator to run the failed step again (Airflow: clear the task instance).
+    """Ask the orchestrator to run the failed step again (Airflow: clear the task instance and
+    its failed downstream tasks).
 
     409 when the orchestrator cannot serve it for this incident (``views.retry_available``).
     """

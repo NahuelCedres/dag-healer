@@ -207,8 +207,8 @@ describe("views without words (Airflow plugin)", () => {
 
     expect(
       within(dialog).getByText(
-        "Clear the failed task instance in Airflow so the scheduler runs it again. A code fix only takes " +
-          "effect once its branch is merged.",
+        "Clear the failed task instance in Airflow so the scheduler runs it again, then the tasks after it " +
+          "that failed or were blocked by it. A code fix only takes effect once its branch is merged.",
       ),
     ).toBeInTheDocument();
     expect(within(dialog).queryByTestId("action-warning")).toBeNull();

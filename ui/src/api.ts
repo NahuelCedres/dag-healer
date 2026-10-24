@@ -570,7 +570,7 @@ export const resolveIncident = (dagId: string, incidentId: string, resolution: R
 export const retryRepair = (dagId: string, incidentId: string, note?: string) =>
   apiPost<CommandAccepted>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}/retry-repair`, noteBody(note));
 
-/** `POST .../retry-task`: clear the failed task instance in Airflow. */
+/** `POST .../retry-task`: clear the failed task instance and its failed downstream tasks in Airflow. */
 export const retryTask = (dagId: string, incidentId: string, note?: string) =>
   apiPost<CommandAccepted>(`dags/${seg(dagId)}/incidents/${seg(incidentId)}/retry-task`, noteBody(note));
 

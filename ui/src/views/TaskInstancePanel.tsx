@@ -65,8 +65,8 @@ const ACTION_DESCRIPTIONS: Record<IncidentAction, string> = {
     "and alerts the data team. No code is changed.",
   retry_repair: "Run the repair agent again on a fresh clone of the repository.",
   retry_task:
-    "Clear the failed task instance in Airflow so the scheduler runs it again. A code fix only takes " +
-    "effect once its branch is merged.",
+    "Clear the failed task instance in Airflow so the scheduler runs it again, then the tasks after it " +
+    "that failed or were blocked by it. A code fix only takes effect once its branch is merged.",
 };
 
 /** What an action does; outside Airflow, `retry_task` is the orchestrator's own remediation. */
