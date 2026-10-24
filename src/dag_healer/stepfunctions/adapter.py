@@ -171,6 +171,20 @@ class StepFunctionsAdapter:
         return f"StepFunctionsAdapter(instance={self.instance!r}, region={self.options.region!r})"
 
     @property
+    def base_url(self) -> str:
+        """The Step Functions endpoint the adapter talks to (no I/O; the worker's start line):
+        ``endpoint_urls.stepfunctions`` / ``endpoint_url``, else the regional endpoint, else
+        ``"the default AWS region"``."""
+        endpoint = self.options.endpoint_for("stepfunctions")
+        if endpoint:
+            return endpoint
+        region = self.options.region
+        if not region:
+            return "the default AWS region"
+        suffix = "amazonaws.com.cn" if region.startswith("cn-") else "amazonaws.com"
+        return f"https://states.{region}.{suffix}"
+
+    @property
     def clients(self) -> AwsClients:
         return self.runtime.clients
 

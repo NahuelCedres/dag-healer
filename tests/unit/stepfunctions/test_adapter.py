@@ -178,6 +178,27 @@ def test_defaults_without_options() -> None:
     assert adapter.runtime.now().tzinfo is not None
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, f"https://states.{REGION}.amazonaws.com"),
+        ({"region": "cn-north-1"}, "https://states.cn-north-1.amazonaws.com.cn"),
+        ({"region": None}, "the default AWS region"),
+        ({"endpoint_url": "http://localhost:4566"}, "http://localhost:4566"),
+        (
+            {
+                "endpoint_url": "http://localhost:4566",
+                "endpoint_urls": {"stepfunctions": "https://vpce-1.states.eu-west-1.vpce.amazonaws.com"},
+            },
+            "https://vpce-1.states.eu-west-1.vpce.amazonaws.com",
+        ),
+    ],
+)
+def test_base_url_names_the_step_functions_endpoint(overrides: dict[str, Any], expected: str) -> None:
+    adapter = StepFunctionsAdapter(None, options=sfn_options(**overrides), clients=lambda service: None)
+    assert adapter.base_url == expected
+
+
 def test_the_vocabulary() -> None:
     assert SFN_VOCABULARY == Vocabulary(
         product="AWS Step Functions",
