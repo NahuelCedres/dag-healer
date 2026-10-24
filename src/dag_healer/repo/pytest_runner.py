@@ -5,7 +5,8 @@ the test process gets as little as possible from the worker:
 
 * **Environment** (:func:`scrubbed_env`): no LLM/GitHub/SMTP credentials, no
   ``HEALER_*`` settings, no Airflow metadata-database or JWT settings, no
-  ``PYTHONPATH``/``PYTEST_*`` injection, and nothing whose name looks like a secret.
+  ``PYTHONPATH``/``PYTEST_*`` injection, no CI markers that change pytest's report
+  (``CI``, ``BUILD_NUMBER``), and nothing whose name looks like a secret.
   Airflow is pointed at a throw-away ``AIRFLOW_HOME`` with an SQLite database in
   unit-test mode, so tests that import Airflow never touch the real deployment.
 * **Cloud credentials** are always removed, whatever the orchestrator (the worker may run
@@ -82,6 +83,10 @@ SCRUB_EXACT = frozenset(
         "GIT_ASKPASS",
         "SSH_ASKPASS",
         "SSH_AUTH_SOCK",
+        # pytest reports differently when it sees these (full crash messages in the short
+        # summary, untruncated diffs), so the output would depend on the worker's host.
+        "CI",
+        "BUILD_NUMBER",
     }
 )
 #: Variable-name prefixes removed from the pytest environment.
@@ -251,7 +256,8 @@ def scrubbed_env(
     Removes credentials and settings that must never reach user code (see the
     ``SCRUB_*`` constants: ``ANTHROPIC_API_KEY``, ``GITHUB_TOKEN``, ``HEALER_*``,
     ``AIRFLOW__DATABASE__*``, ``AIRFLOW__API_AUTH__*``, ``AIRFLOW__CORE__FERNET_KEY``, SMTP
-    settings, ``PYTHONPATH``, ``PYTEST_*`` and any name containing SECRET/TOKEN/PASSWORD/...)
+    settings, ``PYTHONPATH``, ``PYTEST_*``, ``CI``, ``BUILD_NUMBER`` and any name containing
+    SECRET/TOKEN/PASSWORD/...)
     and the cloud credentials (``CLOUD_SCRUB_*``: ``AWS_ACCESS_KEY_ID``,
     ``AWS_SECRET_ACCESS_KEY``, ``AWS_SESSION_TOKEN``, ``AWS_SECURITY_TOKEN``, ``AWS_PROFILE``,
     ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE``, ``AWS_CONTAINER_CREDENTIALS_*``,

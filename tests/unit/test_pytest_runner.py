@@ -365,11 +365,13 @@ def test_scrubbed_env_from_explicit_base(tmp_path: Path) -> None:
         "AIRFLOW__CORE__DAGS_FOLDER": "/opt/airflow/repo/dags",
         "AIRFLOW_CONFIG": "/opt/airflow/airflow.cfg",
         "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "CI": "true",
+        "BUILD_NUMBER": "42",
     }
     env = scrubbed_env(base, airflow_home=tmp_path / "home")
     assert env["PATH"] == "/usr/bin" and env["HOME"] == "/home/airflow"
     assert env["AIRFLOW__CORE__DAGS_FOLDER"] == "/opt/airflow/repo/dags"
-    for key in ("GITHUB_TOKEN", "healer_debug", "AIRFLOW_CONFIG", "SSH_AUTH_SOCK"):
+    for key in ("GITHUB_TOKEN", "healer_debug", "AIRFLOW_CONFIG", "SSH_AUTH_SOCK", "CI", "BUILD_NUMBER"):
         assert key not in env
     assert env["AIRFLOW_HOME"] == str(tmp_path / "home")
     assert (tmp_path / "home").is_dir()
