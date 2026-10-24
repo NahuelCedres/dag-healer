@@ -11,6 +11,8 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["functions/", "src/"]   # the repair may only edit the Lambda code
   pytest_timeout: 600
+  sandbox:
+    backend: process               # the offline tests have no container engine (development and tests only)
 
 orchestrator:
   type: stepfunctions

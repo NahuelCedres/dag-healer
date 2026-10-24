@@ -20,10 +20,15 @@
 sessions. The workspace is deleted afterwards unless ``debug`` is on. :func:`run_repair`
 never raises: every failure becomes a ``repair_failed`` result with a clear ``error``.
 
-Every pytest run (the agent's ``run_tests`` tool and the repair's own checks) gets the
-orchestrator's sandbox overrides (``extra_env``, the adapter's ``sandbox_env()``) on top of
-:func:`dag_healer.repo.pytest_runner.scrubbed_env`. The prompts, the commit message and PR.md
-use the orchestrator's words (the context's vocabulary; the Airflow words by default).
+Every pytest run (the agent's ``run_tests`` tool and the repair's own checks) happens in the
+test sandbox of ``repo.sandbox`` (:mod:`dag_healer.repo.sandbox`; by default a fresh container
+without network, on a throw-away copy of the clone) and gets the orchestrator's sandbox
+overrides (``extra_env``, the adapter's ``sandbox_env()``) on top of
+:func:`dag_healer.repo.pytest_runner.scrubbed_env`. Without a usable sandbox no code runs at
+all, not even the existing suite: the repair fails with the reason and how to fix it. A
+sandbox that cannot start pytest during the repair stops it the same way. The prompts, the
+commit message and PR.md use the orchestrator's words (the context's vocabulary; the Airflow
+words by default).
 
 Masking: pytest output and error text pass through :func:`dag_healer.masking.mask_text`
 before they reach the LLM, the result or the logs, and the tools refuse to read data files.
@@ -71,12 +76,14 @@ from dag_healer.repo.git import (
 )
 from dag_healer.repo.profile import detect_test_layout
 from dag_healer.repo.pytest_runner import PytestResult, run_pytest
+from dag_healer.repo.sandbox import build_sandbox, sandbox_launch_failure, sandbox_refusal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from dag_healer.agent.context import IncidentContext
     from dag_healer.agent.llm import LLMProvider, RepairSessionResult
     from dag_healer.config import HealerConfig
     from dag_healer.repo.profile import TestLayout
+    from dag_healer.repo.sandbox import Sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +302,9 @@ class RepairTools:
     ``.github/**``, ``.git/**``, lockfiles, dependency manifests, ``.env*``, ``fixtures/**``,
     ``data/**`` and data files; data files, ``.env*`` and ``healer.yaml`` cannot be read
     either. Every write is recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
-    ``extra_env`` (the orchestrator's sandbox overrides) reaches every pytest run.
+    Every pytest run happens in ``sandbox`` (default: the one ``cfg.repo.sandbox`` configures)
+    with ``extra_env`` (the orchestrator's sandbox overrides). When the sandbox cannot start
+    pytest, :attr:`sandbox_error` keeps the (masked) reason and no later run is attempted.
     """
 
     def __init__(
@@ -310,6 +319,7 @@ class RepairTools:
         max_writes: int = MAX_WRITES_PER_SESSION,
         max_test_runs: int = MAX_TEST_RUNS_PER_SESSION,
         extra_env: Mapping[str, str | None] | None = None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         if phase not in ("test", "fix"):
             raise ValueError(f"unknown repair phase: {phase!r}")
@@ -319,6 +329,8 @@ class RepairTools:
         self.tests_dir = _norm_prefix(tests_dir or ".")
         self.python = python
         self.extra_env = extra_env
+        self.sandbox: Sandbox = sandbox if sandbox is not None else build_sandbox(cfg.repo.sandbox)
+        self.sandbox_error: str | None = None
         self.timeout = int(timeout or cfg.repo.pytest_timeout)
         self.max_writes = max_writes
         self.max_test_runs = max_test_runs
@@ -682,6 +694,8 @@ class RepairTools:
 
     def run_tests(self, paths: list[str] | None = None) -> str:
         """Run pytest on ``paths`` (default: the tests folder) and return a masked summary."""
+        if self.sandbox_error is not None:
+            return self._sandbox_error_message()
         if len(self.test_runs) >= self.max_test_runs:
             return f"Error: test-run limit reached ({self.max_test_runs} runs in this session)."
         targets: list[str] | None
@@ -703,10 +717,25 @@ class RepairTools:
         else:
             targets = self.default_test_targets()
         result = run_pytest(
-            self.root, targets, timeout=self.timeout, python=self.python, extra_env=self.extra_env
+            self.root,
+            targets,
+            timeout=self.timeout,
+            python=self.python,
+            extra_env=self.extra_env,
+            sandbox=self.sandbox,
         )
+        if result.launch_error is not None:  # not a test result: no test can run in this sandbox
+            self.sandbox_error = mask_text(result.launch_error)
+            logger.warning("repair tool (%s): the test sandbox failed: %s", self.phase, self.sandbox_error)
+            return self._sandbox_error_message()
         self.test_runs.append(result)
         return _format_run(result, targets, limit=MAX_TOOL_PYTEST_CHARS)
+
+    def _sandbox_error_message(self) -> str:
+        return (
+            f"Error: the test sandbox could not run pytest ({self.sandbox_error}); stop: no test can run "
+            "until the sandbox works."
+        )
 
     # ------------------------------------------------------------------ provider view
 
@@ -911,6 +940,7 @@ class _Repair:
         workspace_root: Path | None,
         github_token: str | None,
         extra_env: Mapping[str, str | None] | None = None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         self.cfg = cfg
         self.incident = dict(incident)
@@ -918,6 +948,7 @@ class _Repair:
         self.provider = provider
         self.github_token = github_token
         self.extra_env = extra_env
+        self.sandbox = sandbox  # None: the configured one, built by run() (never an implicit process run)
         self.vocabulary: dict[str, str] = dict(getattr(ctx, "vocabulary", None) or {})
         self.words = prompt_words(ctx)
         self.incident_id = str(self.incident.get("id") or getattr(ctx, "incident_id", "") or "")
@@ -949,16 +980,41 @@ class _Repair:
         return self.result.notes
 
     def _pytest(self, targets: list[str] | None) -> PytestResult:
-        assert self.ws is not None
-        return run_pytest(
-            self.ws.path, targets, timeout=self.cfg.repo.pytest_timeout, extra_env=self.extra_env
+        assert self.ws is not None and self.sandbox is not None
+        result = run_pytest(
+            self.ws.path,
+            targets,
+            timeout=self.cfg.repo.pytest_timeout,
+            extra_env=self.extra_env,
+            sandbox=self.sandbox,
         )
+        if result.launch_error is not None:  # not a test result: stop instead of judging the code
+            raise RepairAborted(sandbox_launch_failure(mask_text(result.launch_error)))
+        return result
 
     def _tools(self, phase: Phase) -> RepairTools:
-        assert self.ws is not None
+        assert self.ws is not None and self.sandbox is not None
         return RepairTools(
-            self.ws.path, self.cfg, phase=phase, tests_dir=self.tests_dir, extra_env=self.extra_env
+            self.ws.path,
+            self.cfg,
+            phase=phase,
+            tests_dir=self.tests_dir,
+            extra_env=self.extra_env,
+            sandbox=self.sandbox,
         )
+
+    def _check_sandbox(self) -> None:
+        """Refuse to run any code, the existing suite included, without a usable test sandbox."""
+        try:
+            if self.sandbox is None:
+                self.sandbox = build_sandbox(self.cfg.repo.sandbox)
+            reason = self.sandbox.unavailable_reason()
+        except ValueError as exc:  # an unknown backend
+            reason = str(exc)
+        except Exception as exc:  # the check itself failed: no code runs either
+            reason = f"the check of the test sandbox failed ({type(exc).__name__}: {exc})"
+        if reason is not None:
+            raise RepairAborted(sandbox_refusal(mask_text(reason)))
 
     def _scenario(self, phase: Phase) -> dict[str, Any]:
         return {
@@ -1001,6 +1057,8 @@ class _Repair:
         self.result.tokens_used = self.budget.used
         if session.final_text:
             self.agent_summary = mask_text(session.final_text).strip()[:1500] or self.agent_summary
+        if tools.sandbox_error is not None:  # the agent's run_tests could not start pytest
+            raise RepairAborted(sandbox_launch_failure(tools.sandbox_error))
         if getattr(session, "budget_exhausted", False) or self.budget.exhausted:
             raise RepairAborted(self._budget_message(phase))
         return session
@@ -1413,6 +1471,7 @@ class _Repair:
         try:
             if not self.incident_id:
                 raise RepairAborted("The incident has no id.")
+            self._check_sandbox()  # before prepare(), which already runs the existing suite
             self.prepare()
             self.test_phase()
             self.fix_phase()
@@ -1467,6 +1526,7 @@ def run_repair(
     workspace_root: Path | None = None,
     github_token: str | None = None,
     extra_env: Mapping[str, str | None] | None = None,
+    sandbox: Sandbox | None = None,
 ) -> RepairResult:
     """Reproduce a CODE incident with a failing test, fix it minimally and publish the fix.
 
@@ -1480,6 +1540,8 @@ def run_repair(
         github_token: Token for the push and the pull request (default ``cfg.github.token``).
         extra_env: The orchestrator's pytest sandbox overrides (the adapter's
             ``sandbox_env()``; ``None`` removes a variable), applied to every pytest run.
+        sandbox: The test sandbox of every pytest run (default: the one ``cfg.repo.sandbox``
+            configures). When it is not usable the repair fails before any code runs.
 
     Returns:
         A :class:`RepairResult`; ``status`` is ``"repaired"`` or ``"repair_failed"`` (with
@@ -1493,6 +1555,7 @@ def run_repair(
         workspace_root=workspace_root,
         github_token=github_token,
         extra_env=extra_env,
+        sandbox=sandbox,
     ).run()
 
 

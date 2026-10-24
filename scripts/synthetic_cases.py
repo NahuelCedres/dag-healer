@@ -11,14 +11,16 @@ repository it leaves in ``.demo/repo``. Then it
    repository;
 3. **contracts** - runs ``dag-healer init`` (it keeps the existing contracts and drafts the
    new ones) and approves the three new contracts;
-4. **day 2** - copies the day-2 files over ``data/incoming/`` (uncommitted), triggers the three
-   DAGs and waits until dag-healer has handled every failure.
+4. **day 2** - checks the test sandbox first (``dag-healer doctor`` in healer-worker, as the
+   demo does), then copies the day-2 files over ``data/incoming/`` (uncommitted), triggers the
+   three DAGs and waits until dag-healer has handled every failure.
 
 Expected outcomes: ``payments_settlement`` DATA reported, ``orders_enrichment`` CODE repaired
-(with a PR.md) and ``fx_rates_publish`` AMBIGUOUS waiting for a human, because the pricing
-service it publishes to is down. ``pricing-up`` starts a stand-in for that service in the
-scheduler container (LocalExecutor runs the tasks there), so that clearing the failed task in
-Airflow succeeds; ``pricing-down`` stops it.
+(with a PR.md; its pytest runs happen in the test sandbox, a fresh container of the stack
+image without network) and ``fx_rates_publish`` AMBIGUOUS waiting for a human, because the
+pricing service it publishes to is down. ``pricing-up`` starts a stand-in for that service in
+the scheduler container (LocalExecutor runs the tasks there), so that clearing the failed task
+in Airflow succeeds; ``pricing-down`` stops it.
 
 Running it again is safe: unchanged files are not committed again, approved contracts stay
 approved and a repeated failure is folded into its open incident.
@@ -328,6 +330,8 @@ def run(args: argparse.Namespace) -> None:
         return
 
     say("4/4 day 2: new files in data/incoming/, triggering the three DAGs")
+    label, detail = demo.check_sandbox()
+    say(f"test sandbox [{label}]: {detail} (orders_enrichment's CODE repair runs its tests there)")
     if pricing_running():
         say("stopping the pricing stand-in so that fx_rates_publish fails as in the story")
         pricing_down()

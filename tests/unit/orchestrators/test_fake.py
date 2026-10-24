@@ -272,6 +272,7 @@ class FakeHarness:
         repo = tmp_path / "e2e_repo"
         prepare_example_repo(repo)
         cfg = load_config(repo / "healer.yaml")
+        cfg.repo.sandbox.backend = "process"  # the unit tests have no container engine
         world = FakeWorld(clock=lambda: T0)
         for dag in scan_dags(repo, cfg.repo.dags_dir):
             world.add_pipeline(

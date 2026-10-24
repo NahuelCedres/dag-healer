@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -11,10 +14,12 @@ from dag_healer.repo import git as gitmod
 from dag_healer.repo.git import (
     ASKPASS_SCRIPT,
     ASKPASS_TOKEN_ENV,
+    GIT_SAFE_CONFIG,
     GitError,
     Workspace,
     askpass_env,
     detect_eol,
+    empty_hooks_dir,
     git_environment,
     github_https_url,
     is_git_repo,
@@ -33,6 +38,14 @@ IDENTITY = {
     "GIT_COMMITTER_EMAIL": "owner@example.com",
 }
 CRLF_SOURCE = b"def legacy():\r\n    return 1\r\n\r\n\r\ndef other():\r\n    return 2\r\n"
+#: Index of the first git argument of a command built by run_git: "git", GIT_SAFE_CONFIG, then
+#: "-c core.hooksPath=<empty dir>" and "-c core.fsmonitor=false".
+FIRST_ARG = 1 + len(GIT_SAFE_CONFIG) + 4
+
+
+def _args(cmd: list[str]) -> list[str]:
+    """The git arguments of a command built by run_git (its configuration prefix removed)."""
+    return cmd[FIRST_ARG:]
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +125,13 @@ def test_run_git_always_passes_safe_config(monkeypatch: pytest.MonkeyPatch, tmp_
         "-c",
         "core.filemode=false",
     ]
-    assert seen[0][-1] == "status"
+    assert seen[0][7:FIRST_ARG] == [
+        "-c",
+        f"core.hooksPath={empty_hooks_dir().as_posix()}",
+        "-c",
+        "core.fsmonitor=false",
+    ]
+    assert _args(seen[0]) == ["status"]
     assert result.stdout == "ok\r\n"  # no newline translation
 
 
@@ -326,7 +345,7 @@ def test_push_with_token_uses_askpass_and_never_argv(monkeypatch: pytest.MonkeyP
     def fake_run(cmd, **kwargs):
         env = kwargs["env"]
         calls.append((cmd, env))
-        args = cmd[7:]
+        args = _args(cmd)
         stdout = b""
         if args == ["remote"]:
             stdout = b"origin\n"
@@ -361,7 +380,7 @@ def test_push_with_token_strips_url_credentials_and_redacts_errors(
     token = "ghp_AnotherSecret456"
 
     def fake_run(cmd, **kwargs):
-        args = cmd[7:]
+        args = _args(cmd)
         if "push" in args:
             return subprocess.CompletedProcess(cmd, 128, b"", f"fatal: auth failed for {token}\n".encode())
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -405,6 +424,169 @@ def test_askpass_script_answers_git_credential_prompts(tmp_path: Path) -> None:
     assert "username=x-access-token" in out
     assert "password=tok-123" in out
     assert not script.exists()
+
+
+# --------------------------------------------------------------------------- no hooks, no fsmonitor
+
+#: Hooks git runs while the worker branches, stages and commits in its clone.
+COMMIT_HOOKS = (
+    "post-checkout",
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "reference-transaction",
+    "post-index-change",
+)
+#: Hooks the receiving repository runs when the worker pushes into it.
+RECEIVE_HOOKS = ("pre-receive", "update", "post-receive", "post-update", "reference-transaction")
+
+
+def _plant_hook(path: Path, marker: Path) -> None:
+    """A hook (or fsmonitor program) that appends its own name to ``marker``.
+
+    Written with LF line endings and a ``#!/bin/sh`` line: git runs it through sh, also on Windows.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(f"#!/bin/sh\necho {path.name} >> '{marker.as_posix()}'\n".encode())
+    path.chmod(0o755)
+
+
+def _plain_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    """git without dag-healer's settings: the control that shows a planted program would run."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        env=git_environment(IDENTITY),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _ran(marker: Path) -> list[str]:
+    return marker.read_text(encoding="utf-8").split() if marker.exists() else []
+
+
+def test_no_hook_planted_in_the_clone_runs_when_the_worker_commits(
+    workspace: Workspace, tmp_path: Path
+) -> None:
+    marker = tmp_path / "hooks-ran.txt"
+    for name in COMMIT_HOOKS:
+        _plant_hook(workspace.path / ".git" / "hooks" / name, marker)
+
+    sha = _prepare_fix(workspace)
+    assert workspace.changed_files() == [] and workspace.diff(sha) == ""
+    assert _ran(marker) == []
+
+    # control: plain git runs the planted hooks
+    write_text_preserving_eol(workspace.path / "src/etl/sales.py", "def load():\n    return 'v3'\n")
+    control = _plain_git(["commit", "-q", "-am", "control"], workspace.path)
+    assert control.returncode == 0, control.stderr
+    assert "pre-commit" in _ran(marker)
+
+
+def test_a_hooks_path_planted_in_the_clone_config_is_ignored(workspace: Workspace, tmp_path: Path) -> None:
+    marker = tmp_path / "hooks-ran.txt"
+    planted = tmp_path / "planted hooks"
+    for name in COMMIT_HOOKS:
+        _plant_hook(planted / name, marker)
+    run_git(["config", "core.hooksPath", planted.as_posix()], workspace.path)
+
+    _prepare_fix(workspace)
+    assert _ran(marker) == []
+
+    write_text_preserving_eol(workspace.path / "src/etl/sales.py", "def load():\n    return 'v3'\n")
+    control = _plain_git(["commit", "-q", "-am", "control"], workspace.path)
+    assert control.returncode == 0, control.stderr
+    assert "pre-commit" in _ran(marker)
+
+
+def test_no_hook_of_the_receiving_repository_runs_when_the_worker_pushes(
+    workspace: Workspace, source_repo: Path, tmp_path: Path
+) -> None:
+    """``receive-pack`` runs in the target repository, with git's ``-c`` settings cleared."""
+    marker = tmp_path / "hooks-ran.txt"
+    bare = tmp_path / "remote.git"
+    run_git(["init", "-q", "--bare", str(bare)], tmp_path)
+    for name in RECEIVE_HOOKS:
+        _plant_hook(source_repo / ".git" / "hooks" / name, marker)
+        _plant_hook(bare / "hooks" / name, marker)
+    sha = _prepare_fix(workspace)
+
+    workspace.push_to_path(source_repo, "healer/sales-load-abcd1234")
+    workspace.push(str(bare), "healer/sales-load-abcd1234")
+    for repo in (source_repo, bare):
+        assert run_git(["rev-parse", "refs/heads/healer/sales-load-abcd1234"], repo).stdout.strip() == sha
+    assert _ran(marker) == []
+
+    control = _plain_git(["push", "-q", os.fspath(source_repo), "HEAD:refs/heads/control"], workspace.path)
+    assert control.returncode == 0, control.stderr
+    assert "pre-receive" in _ran(marker)
+
+
+def test_no_fsmonitor_planted_in_the_clone_config_runs(workspace: Workspace, tmp_path: Path) -> None:
+    marker = tmp_path / "fsmonitor-ran.txt"
+    program = tmp_path / "fsmonitor-hook.sh"
+    _plant_hook(program, marker)
+    run_git(["config", "core.fsmonitor", program.as_posix()], workspace.path)
+    # control first: plain git status runs the program (and stores fsmonitor data in the index)
+    for _ in range(2):
+        _plain_git(["status", "--porcelain"], workspace.path)
+    if not _ran(marker) and os.name == "nt":
+        pytest.skip("this git does not run an fsmonitor hook program")
+    assert _ran(marker)
+    marker.unlink()
+
+    write_text_preserving_eol(workspace.path / "src/etl/sales.py", "def load():\n    return 'v2'\n")
+    for _ in range(2):
+        assert workspace.changed_files() == ["src/etl/sales.py"]
+        assert "+    return 'v2'" in workspace.diff()
+        assert workspace.diff_stats() == (1, 2)
+    workspace.create_branch("healer/fsmonitor")
+    workspace.commit_all("fix", author_name="dag-healer", author_email="healer@example.com")
+    assert _ran(marker) == []
+
+
+def test_empty_hooks_dir_is_replaced_when_something_is_planted_in_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = empty_hooks_dir()
+    assert first.is_dir() and not any(first.iterdir())
+    assert first.name.startswith(gitmod.NO_HOOKS_PREFIX)
+    assert empty_hooks_dir() == first  # stable while it stays empty
+    (first / "pre-commit").write_bytes(b"#!/bin/sh\nexit 0\n")
+
+    with caplog.at_level(logging.WARNING, logger="dag_healer.repo.git"):
+        second = empty_hooks_dir()
+    assert second != first and second.is_dir() and not any(second.iterdir())
+    assert not first.exists()
+    assert "was changed or removed" in caplog.text
+
+
+def test_local_transport_commands_carry_safe_directory_and_the_hook_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Shell-quoted and with forward slashes: Windows temporary paths hold ``~`` (8.3 names)."""
+    hooks = tmp_path / "RUNNER~1" / "no hooks"
+    hooks.mkdir(parents=True)
+    monkeypatch.setattr(gitmod, "empty_hooks_dir", lambda: hooks)
+    for program, command in (
+        ("upload-pack", gitmod._local_upload_pack()),
+        ("receive-pack", gitmod._local_receive_pack()),
+    ):
+        assert shlex.split(command) == [
+            "git",
+            "-c",
+            "safe.directory=*",
+            "-c",
+            f"core.hooksPath={hooks.as_posix()}",
+            "-c",
+            "core.fsmonitor=false",
+            program,
+        ]
 
 
 # --------------------------------------------------------------------------- remotes

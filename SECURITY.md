@@ -51,9 +51,10 @@ service-level agreement for responses or fixes.
 In scope: the `dag-healer` package (the Airflow plugin, the HTTP API, the UI, the worker and the
 repair agent) and its documented defaults.
 
-[docs/security.md](docs/security.md) lists the known gaps of 0.1.x. One example: the pytest
-sandbox does not isolate hostile code. Reports that show a new way to exploit a known gap, or a
-way around a documented mitigation, are welcome.
+[docs/security.md](docs/security.md) lists the known gaps of 0.1.x. One example: the test
+sandbox's containers share the host's kernel (G1), and its `process` backend isolates nothing.
+Reports that show a new way to exploit a known gap, or a way around a documented mitigation, are
+welcome.
 
 Out of scope:
 
@@ -62,5 +63,5 @@ Out of scope:
 - Vulnerabilities in Apache Airflow, the Anthropic API or other dependencies. Report those to
   their projects, but do report here if the way dag-healer uses a dependency makes a
   vulnerability exploitable.
-- Attacks that require control of `healer.yaml`, the worker's environment or the masking hook.
-  Administrators control these inputs, and dag-healer trusts them.
+- Attacks that require control of `healer.yaml`, the worker's environment, the masking hook or
+  the sandbox image. Administrators control these inputs, and dag-healer trusts them.

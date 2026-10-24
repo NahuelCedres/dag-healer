@@ -72,6 +72,56 @@ jobs:
       - name: Run the unit tests
         run: python -m pytest tests/unit
 
+  # The container backend of the test sandbox against a real Docker engine (the unit tests use a
+  # fake engine and skip tests/unit/test_sandbox_engine.py while HEALER_SANDBOX_TEST_IMAGE is unset).
+  sandbox-engine:
+    name: Container sandbox (Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dag-healer with the dev extras
+        run: python -m pip install -e ".[dev]"
+      - name: Show the Docker engine
+        run: docker version
+      # A slim Python image with pytest in the site-packages of a non-root user.
+      - name: Build the sandbox test image
+        run: docker build --tag dag-healer/sandbox-test:ci tests/sandbox
+      - name: Run the sandbox tests against the engine
+        env:
+          HEALER_SANDBOX_TEST_IMAGE: dag-healer/sandbox-test:ci
+        run: python -m pytest --junitxml=sandbox-engine.xml tests/unit/test_sandbox_engine.py
+      # The module skips itself without HEALER_SANDBOX_TEST_IMAGE: a green run must have run tests.
+      - name: Check that the sandbox tests ran
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+
+          suites = list(ET.parse("sandbox-engine.xml").getroot().iter("testsuite"))
+          tests = sum(int(suite.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+          print(f"{tests} sandbox tests, {skipped} skipped")
+          if tests - skipped <= 0:
+              raise SystemExit("no sandbox test ran against the Docker engine")
+      - name: Check that no sandbox container is left
+        if: always()
+        run: |
+          left="$(docker ps --all --filter label=dag-healer.sandbox=1 --format '{{.Names}}')"
+          if [ -n "$left" ]; then
+            echo "$left"
+            echo "::error::the sandbox tests left containers behind (label dag-healer.sandbox=1)"
+            exit 1
+          fi
+
   ui-bundle:
     name: UI bundle and wheel
     runs-on: ubuntu-latest

@@ -38,7 +38,7 @@ Extra checks (all [V]):
 | Standalone UI | `dag-healer serve` mounts the same `create_app()` at `/healer` and serves a second Vite build (React bundled) on **the same URL shapes** as the Airflow host | `links.py`, `ui/src/links.ts` and the `pluginContext` pathname resolver are reused unchanged. |
 | Contracts | `dag_id`/`task_id` stay the canonical YAML keys. `pipeline_id`/`step_id` are accepted only as input aliases. | `compute_source_hash` hashes `contract_to_dict()`. Renaming the keys would mark every approved contract stale. |
 | Poll cursor | New `healer_kv` table, one key per orchestrator instance. A phase-5 `state.json` is imported once. | Safe with several containers and several instances. |
-| Sandbox | The core always scrubs cloud credentials and disables IMDS in the pytest sandbox | LLM-written tests run user code inside a worker that has AWS permissions. |
+| Sandbox | The core always scrubs cloud credentials and disables IMDS in the pytest sandbox. Every pytest run happens in the test sandbox (`repo.sandbox`): by default a fresh container without network | LLM-written tests run user code for a worker that has AWS permissions. |
 | "Repaired" ≠ "retry now" | Remediation gets a delivery gate (`fix_delivery = "ci_deploy"` for Step Functions). The UI warns that a redrive reruns the *deployed* code with the *original* definition. | Merging a PR does not deploy anything on AWS. |
 
 ---
@@ -47,7 +47,7 @@ Extra checks (all [V]):
 
 ### Goals
 
-1. **Neutral core.** The core is `agent/`, `worker/`, `store/`, `contracts/`, `alerts/`, `pr/`, `repo/{git,profile,pytest_runner}.py`, `masking.py`, `datasets.py`, `links.py`, `api/` (except `api/auth.py`) and `ui/`. It never imports `airflow`, `boto3`, `botocore`, `dag_healer.airflow.*` (other than the two re-exported constants, which move to `core`) or `dag_healer.stepfunctions.*`. It reaches an orchestrator only through `dag_healer.core.ports`, from an adapter that `dag_healer.orchestrators.registry` returns or that is injected.
+1. **Neutral core.** The core is `agent/`, `worker/`, `store/`, `contracts/`, `alerts/`, `pr/`, `repo/{git,profile,pytest_runner,sandbox}.py`, `masking.py`, `datasets.py`, `links.py`, `api/` (except `api/auth.py`) and `ui/`. It never imports `airflow`, `boto3`, `botocore`, `dag_healer.airflow.*` (other than the two re-exported constants, which move to `core`) or `dag_healer.stepfunctions.*`. It reaches an orchestrator only through `dag_healer.core.ports`, from an adapter that `dag_healer.orchestrators.registry` returns or that is injected.
 2. **Airflow is one adapter.** It passes the same conformance suite as the fake orchestrator and the Step Functions reference adapter.
 3. **The Airflow plugin UX stays exactly as it is:**
    - same entry point `dag_healer = "dag_healer.airflow.plugin:HealerPlugin"`, same `HealerPlugin` class, same listener module object;
@@ -1952,8 +1952,9 @@ In v1:
    - *Mitigation:* the deployed definition joined by state name with drift notes; `doctor` flags unmapped states; the future `deployed_fix_check`.
 7. **Weak evidence on Step Functions.** `cause` is capped at 32 KB, logs lag, `stackTrace` shapes vary, correlation without a request id is heuristic.
    - *Mitigation:* the cause is primary; a tolerant, fixture-driven parser; confidence flags in the prompt and UI; recommend logging `$$.Execution.Id` and JSON Lambda logs.
-8. **The credential sandbox.** LLM-written tests run with the worker's network access, and ECS task-role endpoints are still reachable by raw HTTP even after the scrub.
-   - *Mitigation:* the scrub plus IMDS disable, tested; network isolation stays out of scope and must be documented loudly for AWS deployments.
+8. **The credential sandbox.** LLM-written tests run user code for a worker that has AWS permissions.
+   - *Mitigation:* the scrub plus IMDS disable, tested; every pytest run happens in the test sandbox (`repo.sandbox`), by default a fresh container without network, so neither the instance metadata nor the ECS task-role endpoints are reachable, and without the worker's environment.
+   - *Residual risk:* the `process` backend (development and tests only) keeps the worker's network access, so the task-role endpoints stay reachable by raw HTTP even after the scrub; a container shares the host's kernel (G1 of `docs/security.md`).
 9. **The privacy surface grows** (EventBridge input, history data, CloudWatch lines).
    - *Mitigation:* `includeExecutionData=false`; normalisers keep a whitelist; the `native_ref` size limit and denylist; the core as the single masking point; a conformance check for PII in adapter logs.
 10. **Standalone authorization duplicates policy** held in IAM or the IdP.

@@ -18,10 +18,10 @@ own default applies.
 
 ``version: 1`` stays: the orchestrator abstraction (section 5 of
 ``docs/architecture/orchestrators.md``) only adds sections. ``orchestrator:`` selects
-the adapter (absent: Airflow, configured by the ``airflow:`` section as before) and
-``serve:`` configures the standalone host ``dag-healer serve``. Both are left out of
-dumps while they hold their defaults, so ``dag-healer check`` prints an existing
-``healer.yaml`` exactly as before.
+the adapter (absent: Airflow, configured by the ``airflow:`` section as before),
+``serve:`` configures the standalone host ``dag-healer serve`` and ``repo.sandbox``
+where a repair runs pytest. The three are left out of dumps while they hold their
+defaults, so ``dag-healer check`` prints an existing ``healer.yaml`` exactly as before.
 """
 
 from __future__ import annotations
@@ -94,6 +94,9 @@ TEMPLATE_ORCHESTRATORS: tuple[str, ...] = ("airflow", "stepfunctions")
 MonitorMode = Literal["rest", "listener", "callback", "poll", "push", "queue"]
 RbacAction = Literal["read", "act", "approve_contract"]
 ServeAuthBackend = Literal["dev", "token", "trusted_header", "alb_oidc"]
+#: ``repo.sandbox.backend`` / ``engine`` values (``dag_healer.repo.sandbox`` implements them).
+SandboxBackend = Literal["container", "process"]
+SandboxEngine = Literal["docker", "podman"]
 
 _BASE_SECRET_FIELDS: tuple[str, ...] = SECRET_FIELDS
 _secret_fields_lock = threading.Lock()
@@ -114,6 +117,11 @@ _ALB_ARN = re.compile(
     rf"^arn:aws[a-z-]*:elasticloadbalancing:(?P<region>{_REGION}):\d{{12}}:loadbalancer/app/[^/\s]+/[^/\s]+$"
 )
 _TOKEN_KEYS = frozenset({"name", "sha256", "groups"})
+# repo.sandbox values that reach the container engine's command line, never as an option.
+_SANDBOX_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
+_SANDBOX_PYTHON = re.compile(r"^[A-Za-z0-9_./+-]+$")
+_SANDBOX_USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?$")
+_SANDBOX_SIZE = re.compile(r"^[1-9][0-9]*[kmg]?$")
 _warned_missing: set[str] = set()
 
 
@@ -271,8 +279,98 @@ def _blank_to_none(value: Any) -> Any:
     return value
 
 
+class SandboxConfig(_Model):
+    """Where pytest runs the repository's tests and the model-written test and fix (``repo.sandbox``).
+
+    ``container`` (the default) starts a fresh container for every run with the ``engine``
+    CLI: ``image`` (Python, pytest and the repository's requirements; never pulled) as
+    ``user`` (``None``: the image's own ``USER``; root is refused), without network and
+    within the ``memory``, ``cpus``, ``pids``, ``work_size`` and ``tmp_size`` limits.
+    ``process`` runs pytest as the worker's OS user without any isolation (development and
+    tests only). A container backend without an image loads: it is reported when a CODE
+    repair would need it (the repair fails before any code runs) and by ``dag-healer doctor``.
+    """
+
+    backend: SandboxBackend = "container"
+    engine: SandboxEngine = "docker"
+    image: str | None = None
+    python: str = "python"
+    user: str | None = None
+    memory: str = "2g"
+    cpus: float | None = Field(default=2.0, gt=0)
+    pids: int = Field(default=512, ge=16)
+    work_size: str = "1g"
+    tmp_size: str = "512m"
+
+    @field_validator("image", "user", mode="before")
+    @classmethod
+    def _optional_text(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator("image")
+    @classmethod
+    def _image_reference(cls, value: str | None) -> str | None:
+        if value is not None and not _SANDBOX_IMAGE.match(value):
+            raise ValueError(
+                f"{value!r} is not an image reference such as registry.example.com/etl-tests:1.4"
+            )
+        return value
+
+    @field_validator("python", mode="before")
+    @classmethod
+    def _python_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip() or "python"
+        return value
+
+    @field_validator("python")
+    @classmethod
+    def _interpreter(cls, value: str) -> str:
+        if value.startswith("-") or not _SANDBOX_PYTHON.match(value):
+            raise ValueError(
+                "expected the name or the path of the Python interpreter inside the image, such as "
+                "python or /usr/local/bin/python3"
+            )
+        return value
+
+    @field_validator("user")
+    @classmethod
+    def _non_root_user(cls, value: str | None) -> str | None:
+        """``name``, ``uid``, ``name:group`` or ``uid:gid``; root (``root``, uid 0) is refused."""
+        if value is None:
+            return None
+        if not _SANDBOX_USER.match(value):
+            raise ValueError("expected a user name or uid, optionally with a group (name:group or uid:gid)")
+        name = value.split(":", 1)[0]
+        if name == "root" or (name.isdigit() and int(name) == 0):
+            raise ValueError(
+                "the sandbox never runs as root: use a non-root user, or null for the image's USER"
+            )
+        return value
+
+    @field_validator("memory", "work_size", "tmp_size", mode="before")
+    @classmethod
+    def _size_text(cls, value: Any) -> Any:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("memory", "work_size", "tmp_size")
+    @classmethod
+    def _size(cls, value: str) -> str:
+        if not _SANDBOX_SIZE.match(value):
+            raise ValueError("expected a size such as 512m or 2g")
+        return value
+
+
 class RepoConfig(_Model):
-    """The user's repository (the one holding the DAGs)."""
+    """The user's repository (the one holding the DAGs).
+
+    ``sandbox`` is where a repair runs pytest (:class:`SandboxConfig`); dumps leave it out
+    while it holds its defaults.
+    """
 
     path: Path = Path(".")
     base_branch: str = "main"
@@ -281,6 +379,15 @@ class RepoConfig(_Model):
     test_command: str = "python -m pytest -q"
     allowed_paths: list[str] = Field(default_factory=lambda: ["src/", "dags/"])
     pytest_timeout: int = Field(default=600, ge=1)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+
+    @model_serializer(mode="wrap")
+    def _leave_out_default_sandbox(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Dump as usual, without ``sandbox`` while it holds its defaults (an older dump stays the same)."""
+        data = handler(self)
+        if isinstance(data, dict) and "sandbox" in data and _holds_default(self, "sandbox"):
+            del data["sandbox"]
+        return data
 
     @field_validator("dags_dir", "tests_dir")
     @classmethod
@@ -865,6 +972,7 @@ class HealerConfig(_Model):
 
         An existing ``healer.yaml`` therefore dumps exactly as before (``dag-healer check``
         output, content digests); a section that differs from its default is always shown.
+        ``repo`` leaves out ``repo.sandbox`` the same way.
         """
         data = handler(self)
         if isinstance(data, dict):
@@ -1153,8 +1261,8 @@ def _yaml_str(value: str | Path | None) -> str:
 
 
 # The templates are str.format strings: literal braces are doubled. The Airflow template is the
-# phase-5 one plus the commented ``orchestrator:`` block; both share the sections between
-# ``classification:`` and ``masking:``.
+# phase-5 one plus the commented ``orchestrator:`` block and ``repo.sandbox``; both share the
+# sections between ``classification:`` and ``masking:``.
 _AIRFLOW_HEAD = """\
 # dag-healer configuration (healer.yaml), generated by `dag-healer init`.
 # Review it and commit it next to your DAGs.
@@ -1176,7 +1284,7 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["src/", "dags/"]   # the repair agent may only edit files under these prefixes
   pytest_timeout: 600            # seconds per pytest run
-
+{sandbox_block}
 # Orchestrator (optional). Without this section dag-healer watches Airflow, configured by
 # the airflow: section below; `dag-healer orchestrators list` shows the installed types.
 # orchestrator:
@@ -1205,6 +1313,24 @@ contracts:
 #     my_task: {{type: csv, path: data/incoming/input.csv}}
 {datasets_block}
 
+"""
+
+# repo.sandbox of both templates, right after repo.pytest_timeout (inserted as is: not a format string).
+_SANDBOX_BLOCK = """\
+  # Where pytest runs the repository's tests and the model-written test and fix. container: a
+  # fresh container per run, without network or credentials, on a throw-away copy of the clone;
+  # process: no isolation at all (development and tests only). See docs/security.md, 4.3.
+  sandbox:
+    backend: container           # container | process
+    engine: docker               # docker | podman: the CLI that starts the containers
+    image: "${HEALER_SANDBOX_IMAGE}"   # Python, pytest and the repository's requirements; never pulled
+    python: python               # interpreter inside the image
+    user: null                   # null: the image's own USER (root is refused)
+    memory: 2g                   # memory limit of each run (no swap)
+    cpus: 2                      # null: no CPU limit
+    pids: 512                    # processes and threads
+    work_size: 1g                # tmpfs that receives the copy of the clone
+    tmp_size: 512m               # tmpfs at /tmp (HOME and AIRFLOW_HOME of the tests)
 """
 
 _SHARED_SECTIONS = """\
@@ -1289,7 +1415,7 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["functions/", "src/"]   # the repair agent edits files under these prefixes only
   pytest_timeout: 600            # seconds per pytest run
-
+{sandbox_block}
 # One orchestrator instance is one AWS account and region (`dag-healer orchestrators list`).
 orchestrator:
   type: stepfunctions
@@ -1425,6 +1551,7 @@ def default_config_yaml(
         repo_path=_yaml_str(repo_path),
         dags_dir=_yaml_str(dags_dir),
         tests_dir=_yaml_str(tests_dir),
+        sandbox_block=_SANDBOX_BLOCK,
         datasets_block=_datasets_block(datasets),
     )
 
@@ -1450,6 +1577,7 @@ __all__ = [
     "OrchestratorConfig",
     "RbacRule",
     "RepoConfig",
+    "SandboxConfig",
     "ServeAuthConfig",
     "ServeConfig",
     "StoreConfig",

@@ -429,6 +429,81 @@ def test_worker_cli_once_reports_errors(
     )
 
 
+def _worker_cli_once(config_file: Path, monkeypatch: pytest.MonkeyPatch, sandbox: str) -> int:
+    """``dag-healer worker --once --provider fake`` with ``repo.sandbox`` set to ``sandbox`` (YAML)."""
+    text = config_file.read_text(encoding="utf-8")
+    config_file.write_text(
+        text.replace("repo: {path: .}", f"repo: {{path: ., sandbox: {sandbox}}}"), encoding="utf-8"
+    )
+    monkeypatch.setattr(worker_loop, "_default_adapter", lambda cfg_: as_adapter(cfg_, QuietClient()))
+    monkeypatch.setattr(worker_loop.Worker, "_install_signal_handlers", lambda self: {})
+    return main(["-c", str(config_file), "worker", "--once", "--provider", "fake"])
+
+
+def test_the_worker_warns_at_start_up_that_the_process_sandbox_isolates_nothing(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING
+
+    with caplog.at_level("WARNING", logger="dag_healer.cli.worker_cmd"):
+        assert _worker_cli_once(config_file, monkeypatch, "{backend: process}") == 0
+    assert f"dag-healer worker: {PROCESS_BACKEND_WARNING}" in caplog.messages
+
+
+def test_the_worker_starts_with_an_unusable_container_sandbox_and_says_why(
+    config_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    from dag_healer.repo import sandbox
+
+    missing_engine = tmp_path / "no-such-engine"  # had it been asked, the reason would be a missing CLI
+    monkeypatch.setattr(sandbox, "engine_command", lambda engine: [str(missing_engine)])
+    with caplog.at_level("WARNING", logger="dag_healer.cli.worker_cmd"):
+        assert _worker_cli_once(config_file, monkeypatch, "{backend: container}") == 0
+    (message,) = [m for m in caplog.messages if "test sandbox" in m]
+    assert message.startswith(
+        "dag-healer worker: CODE repairs will fail until the test sandbox works: "
+        "repo.sandbox.image is not set"
+    )
+
+
+def test_the_worker_names_a_usable_container_sandbox_without_starting_a_container(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    from dag_healer.repo.sandbox import ContainerSandbox
+
+    def no_container(self: Any) -> Any:
+        raise AssertionError("the start-up check never starts a container")
+
+    monkeypatch.setattr(ContainerSandbox, "unavailable_reason", lambda self: None)
+    monkeypatch.setattr(ContainerSandbox, "smoke_test", no_container)
+    monkeypatch.setattr(ContainerSandbox, "run", no_container)
+    with caplog.at_level("INFO", logger="dag_healer.cli.worker_cmd"):
+        code = _worker_cli_once(config_file, monkeypatch, "{image: 'registry.example.com/etl-tests:1.4'}")
+    assert code == 0
+    assert (
+        "dag-healer worker: test sandbox: container (docker, image registry.example.com/etl-tests:1.4)"
+        in caplog.messages
+    )
+
+
+def test_the_start_up_sandbox_check_never_raises(
+    cfg: HealerConfig, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    from dag_healer.cli import worker_cmd
+    from dag_healer.repo import sandbox
+
+    def broken(settings: Any) -> Any:
+        raise RuntimeError("the sandbox module is broken")
+
+    monkeypatch.setattr(sandbox, "build_sandbox", broken)
+    with caplog.at_level("WARNING", logger="dag_healer.cli.worker_cmd"):
+        worker_cmd._log_sandbox(cfg)
+    assert caplog.messages == [
+        "dag-healer worker: CODE repairs will fail until the test sandbox works: "
+        "RuntimeError: the sandbox module is broken"
+    ]
+
+
 def test_build_provider_names(cfg: HealerConfig, monkeypatch: pytest.MonkeyPatch) -> None:
     from dag_healer.cli.worker_cmd import build_provider
 

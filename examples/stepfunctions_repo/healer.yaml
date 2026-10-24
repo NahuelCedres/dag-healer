@@ -12,6 +12,13 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["functions/", "src/"]   # the repair may only edit the Lambda code
   pytest_timeout: 600
+  # Every pytest run of a repair is a fresh container without network (docs/security.md, 4.3).
+  # The image needs Python 3.11, pytest and src/requirements.txt, and a non-root USER; build it
+  # on the worker's engine (it is never pulled) and export HEALER_SANDBOX_IMAGE=<its name>.
+  sandbox:
+    backend: container
+    engine: docker                 # docker | podman
+    image: "${HEALER_SANDBOX_IMAGE}"
 
 orchestrator:
   type: stepfunctions

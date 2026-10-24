@@ -12,15 +12,19 @@
    branch exists in ``.demo/repo`` and the working tree was not touched; the alert e-mails
    reached Mailpit with masked samples (no raw e-mail address, name or phone number of the
    day-2 files anywhere);
-3. checks the security of the API: unauthenticated 401, viewer GET 200 / POST 403, a POST
+3. checks the test sandbox: ``dag-healer doctor`` in healer-worker reports it OK, the worker
+   log shows every pytest run of the CODE repair in the container sandbox, and ``docker
+   compose config`` mounts the engine socket into healer-worker only;
+4. checks the security of the API: unauthenticated 401, viewer GET 200 / POST 403, a POST
    without ``X-Requested-With`` 403, a cross-origin POST 403, ingest without token 401;
-4. resumes the AMBIGUOUS incident as ``code`` (admin, through the API) and follows it until
+5. resumes the AMBIGUOUS incident as ``code`` (admin, through the API) and follows it until
    the worker settles it (``resumed -> ... -> repaired`` with the fake scripts, or
    ``repair_failed`` when no script matches), printing its timeline;
-5. fails ``inventory_report`` once more and resolves that new AMBIGUOUS incident as ``data``
+6. fails ``inventory_report`` once more and resolves that new AMBIGUOUS incident as ``data``
    (``--skip-data-path`` skips it), which must end ``reported``;
-6. approves the ``inventory_report`` draft contract through the API (admin may, viewer may
-   not) and waits until the worker has written the approval.
+7. approves the ``inventory_report`` draft contract through the API (admin may, viewer may
+   not) and waits until the worker has written the approval;
+8. checks that no container of the test sandbox is left on the engine.
 
 Standard library only (it reuses scripts/demo.py and scripts/tasks.py).
 """
@@ -30,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -54,6 +59,11 @@ SUBJECTS = {
     "inventory_report": "[dag-healer] Human decision needed: inventory_report.build_report",
 }
 CODE_FILE = "src/etl/customers.py"
+#: Label of the test-sandbox containers (``dag_healer.repo.sandbox.CONTAINER_LABEL`` and its value).
+SANDBOX_LABEL = "dag-healer.sandbox=1"
+#: The line that the worker logs for each pytest run:
+#: ``pytest <targets> in <workdir> (<backend> sandbox) -> <summary>``.
+PYTEST_RUN_RE = re.compile(r"\bpytest .*? in (?P<workdir>.+?) \((?P<sandbox>[a-z]+) sandbox\) -> ")
 
 
 # --------------------------------------------------------------------------- report
@@ -135,6 +145,41 @@ def format_timeline(events: Sequence[Mapping[str, Any]]) -> list[str]:
         message = " ".join(str(event.get("message") or "").split())
         lines.append(f"{at}  {event.get('kind', '?'):<15} {event.get('actor', ''):<12} {message[:150]}")
     return lines
+
+
+def sandbox_runs(log: str, incident_id: str) -> list[str]:
+    """Sandbox backends of the pytest runs that a worker log shows in one incident's clone.
+
+    The clone of a repair is ``<healer_home>/work/<incident_id>``.
+    """
+    backends = []
+    for line in log.splitlines():
+        match = PYTEST_RUN_RE.search(line)
+        workdir = match.group("workdir").replace("\\", "/").rstrip("/") if match else ""
+        if match and incident_id and workdir.endswith(f"/{incident_id}"):
+            backends.append(match.group("sandbox"))
+    return backends
+
+
+def socket_mounts(config: Mapping[str, Any]) -> dict[str, list[str]]:
+    """``service -> [target, ...]`` of the socket mounts of a compose document.
+
+    A socket mount is a volume whose source or target ends with ``.sock`` (``docker.sock``,
+    ``podman.sock``). ``docker compose config --format json`` writes volumes in the long syntax;
+    the short one (``source:target[:mode]``, as in docker/compose.yaml) is understood too.
+    """
+    found: dict[str, list[str]] = {}
+    for name, service in (config.get("services") or {}).items():
+        for volume in (service or {}).get("volumes") or []:
+            if isinstance(volume, Mapping):
+                parts = [str(volume.get("source") or ""), str(volume.get("target") or "")]
+                target = parts[1]
+            else:  # a source such as ${VAR:-/default} contains colons too
+                parts = str(volume).split(":")
+                target = next((part for part in reversed(parts[1:]) if part.startswith("/")), "")
+            if any(part.rstrip("}").endswith(".sock") for part in parts):
+                found.setdefault(str(name), []).append(target)
+    return found
 
 
 # --------------------------------------------------------------------------- API helpers
@@ -308,6 +353,72 @@ def check_mail(report: Report, result: demo.DemoResult) -> None:
                 "missing_column" in text and "h:" in text,
                 "" if "h:" in text else "no hashed value found in the e-mail",
             )
+
+
+def compose_config() -> tuple[dict[str, Any] | None, str]:
+    """``docker compose config --format json`` with every profile: ``(document, error text)``.
+
+    stdout only: compose writes its warnings to stderr.
+    """
+    cmd = tasks.compose_base(tasks.ALL_PROFILES) + ["config", "--format", "json"]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+    if proc.returncode != 0:
+        return None, (proc.stderr or proc.stdout).strip()[-300:]
+    try:
+        document = json.loads(proc.stdout)
+    except ValueError:
+        return None, f"not JSON: {proc.stdout[:200]!r}"
+    return (document, "") if isinstance(document, dict) else (None, "not a JSON object")
+
+
+def check_sandbox(report: Report, result: demo.DemoResult) -> None:
+    """The test sandbox: the doctor's check, the CODE repair's pytest runs and the socket mount."""
+    code, out = demo.compose_exec(demo.WORKER, ["dag-healer", "doctor"], check=False)
+    found = demo.doctor_check(out)
+    report.check(
+        f"dag-healer doctor in {demo.WORKER}: the sandbox check is OK",
+        found is not None and found[0] == "OK",
+        f"[{found[0]}] {found[1]}" if found else f"no sandbox check (exit code {code})",
+    )
+
+    incident_id = str((result.incidents.get("customers_sync") or {}).get("id") or "")
+    since = (result.started_at - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status, log = tasks.capture(
+        tasks.compose_base() + ["logs", "--no-color", "--since", since, demo.WORKER], timeout=120
+    )
+    runs = sandbox_runs(log, incident_id) if status == 0 else []
+    report.check(
+        "every pytest run of the CODE repair ran in the container sandbox (worker log)",
+        bool(runs) and set(runs) == {"container"},
+        {"runs": len(runs), "sandboxes": sorted(set(runs))} if status == 0 else log.strip()[-300:],
+    )
+
+    config, problem = compose_config()
+    mounts = socket_mounts(config) if config is not None else {}
+    report.check(
+        f"the engine socket is mounted into {demo.WORKER} only",
+        config is not None and mounts == {demo.WORKER: ["/var/run/docker.sock"]},
+        mounts if config is not None else problem,
+    )
+
+
+def check_no_sandbox_left(report: Report) -> None:
+    """No container of the test sandbox is left on the engine: every run removes its own."""
+    docker = tasks.ensure_docker_running()
+    code, out = tasks.capture(
+        [docker, "ps", "--all", "--filter", f"label={SANDBOX_LABEL}", "--format", "{{.Names}}"], timeout=60
+    )
+    names = out.split() if code == 0 else []
+    report.check(
+        f"no sandbox container is left on the engine (label {SANDBOX_LABEL})",
+        code == 0 and not names,
+        names if code == 0 else out.strip()[-300:],
+    )
 
 
 def check_security(report: Report, result: demo.DemoResult) -> None:
@@ -536,6 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         check_incidents(report, result, strict_total=not args.no_demo, listener_only=args.listener_only)
         check_repository(report, result)
         check_mail(report, result)
+        check_sandbox(report, result)
         if "inventory_report" in result.incidents:
             check_security(report, result)
             if not args.skip_resume:  # the steps below change the state: resolve, approve
@@ -543,6 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not args.skip_data_path:
                     check_resolve_as_data(report, result)
                 check_contract_approval(report)
+        check_no_sandbox_left(report)
     except (demo.DemoError, tasks.TaskError) as exc:
         report.check("e2e run completed", False, str(exc))
     except KeyboardInterrupt:

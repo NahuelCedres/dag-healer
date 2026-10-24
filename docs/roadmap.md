@@ -16,11 +16,11 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
 - `dag-healer serve`: the standalone console and API, for orchestrators without a UI of their own. Sign-in with tokens, a trusted proxy or an AWS load balancer, and permissions per pipeline.
 - The AWS Step Functions adapter, with an example repository that deploys with AWS SAM ([examples/stepfunctions_repo](../examples/stepfunctions_repo/README.md)).
 - "Retry task" also re-runs the tasks after the failed one that failed or were blocked by it.
+- Model-written tests and fixes run in a container sandbox without network, credentials or host paths (G1). Stronger backends, such as ECS/Fargate tasks or Kubernetes Jobs, can come later.
 
 ## Now
 
 - Security hardening before the first pilots (see [docs/security.md](security.md)):
-  - run model-written tests and fixes in a sandbox (G1);
   - keep CI secrets away from `healer/` branches until a person reviews them (G2);
   - enforce the branch rules on GitHub instead of only in dag-healer, and use a token limited to one repository (G3).
 - Documentation for both orchestrators (step 9 of section 12.1): writing an adapter, deploying on AWS, and upgrading the store.

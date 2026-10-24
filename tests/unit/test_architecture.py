@@ -10,6 +10,10 @@
   the core nor ``hosting`` imports the CLI; the authentication backends never import the host
   modules that hand them the authorizer; the packages of the ``serve`` extra (PyJWT,
   cryptography, uvicorn) are imported lazily, each by its one user.
+* The test sandbox (``repo/sandbox.py``) is core, and stricter: the standard library and
+  ``repo/git.py`` only. It runs the engine CLI through ``subprocess`` (no container SDK) and
+  reads ``repo.sandbox`` through a protocol; ``repo/pytest_runner.py`` imports it, never the
+  other way round, and ``config.py`` never imports it at module level.
 * A text guard: no Airflow REST client call outside ``airflow/`` and ``cli/doctor_cmd.py``
   (``scripts/`` is not part of the package).
 
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
@@ -41,6 +46,7 @@ CORE_MODULES = (
     "repo/git.py",
     "repo/profile.py",
     "repo/pytest_runner.py",
+    "repo/sandbox.py",
     "masking.py",
     "datasets.py",
     "links.py",
@@ -70,6 +76,12 @@ SERVE_EXTRA_LAZILY: dict[str, str] = {
     "cryptography": "hosting/auth/alb_oidc.py",
     "uvicorn": "cli/serve_cmd.py",
 }
+
+#: The test sandbox: besides the standard library it imports ``repo/git.py`` only, and the
+#: configuration only for type checking (it reads ``repo.sandbox`` through a protocol).
+SANDBOX_MODULE = "repo/sandbox.py"
+SANDBOX_MAY_IMPORT = frozenset({f"{PACKAGE}.repo.git"})
+SANDBOX_MAY_IMPORT_FOR_TYPE_CHECKING = frozenset({f"{PACKAGE}.config"})
 
 #: Calls of the Airflow REST client (``dag_healer.airflow.client.AirflowClient``).
 AIRFLOW_CLIENT_CALL = re.compile(
@@ -383,6 +395,34 @@ def test_the_serve_extra_is_imported_only_lazily_by_its_users() -> None:
     assert misplaced == {}
     assert all(lazy for _, lazy in importers.values()), importers
     assert {package for package, _ in importers.values()} == set(SERVE_EXTRA_LAZILY)  # the guard sees them
+
+
+# =========================================================================== the test sandbox
+
+
+def test_the_sandbox_runs_the_engine_cli_with_the_standard_library_only() -> None:
+    """No container SDK, no orchestrator, no CLI and no runner: ``subprocess`` starts the engine CLI."""
+    found = imports_of(PACKAGE_DIR / SANDBOX_MODULE)
+    bad = [
+        f"line {item.line}: {item.module}"
+        for item in found
+        if item.module.split(".")[0] not in sys.stdlib_module_names
+        and item.module not in SANDBOX_MAY_IMPORT
+        and not (item.type_checking and item.module in SANDBOX_MAY_IMPORT_FOR_TYPE_CHECKING)
+    ]
+    assert bad == []
+    assert "subprocess" in {item.module for item in found}  # the guard sees the CLI's runner
+
+
+def test_the_runner_builds_on_the_sandbox_and_the_configuration_imports_it_lazily() -> None:
+    runner = imports_of(PACKAGE_DIR / "repo" / "pytest_runner.py")
+    assert any(item.module == f"{PACKAGE}.repo.sandbox" and not item.lazy for item in runner)
+    eager = [
+        f"line {item.line}: {item.module}"
+        for item in imports_of(PACKAGE_DIR / "config.py")
+        if _within(item.module, f"{PACKAGE}.repo.sandbox") and not item.lazy and not item.type_checking
+    ]
+    assert eager == []
 
 
 # =========================================================================== Airflow client calls

@@ -66,7 +66,12 @@ Install dag-healer with the AWS extra (`pip install 'dag-healer[aws]'`), then ed
   `customers-sync` has a fixed name and needs no change;
 - the bucket of the dataset locators, in `healer.yaml` and the contracts:
   `sed -i.bak "s/acme-landing/$BUCKET/" healer.yaml healer/contracts/*.yaml`;
-- the queue: `export HEALER_SFN_QUEUE_URL=<the HealerEventsQueueUrl output>`.
+- the queue: `export HEALER_SFN_QUEUE_URL=<the HealerEventsQueueUrl output>`;
+- the test sandbox, where a repair runs pytest: build an image with Python 3.11, pytest and
+  `src/requirements.txt`, with a non-root `USER`, on the worker's container engine (it is never
+  pulled), and `export HEALER_SANDBOX_IMAGE=<its name>`. Without it, the CODE repair of
+  `customers_sync` ends `repair_failed` and runs no code (see
+  [docs/security.md](../../docs/security.md), section 4.3).
 
 The Step Functions, CloudWatch Logs, Lambda and SQS clients use the default boto3 chain, or the
 `profile`/`role_arn` of the options; the datasets in the bucket (the `s3://` locators of the

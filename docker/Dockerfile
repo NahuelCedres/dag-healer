@@ -16,6 +16,11 @@
 #   wheel      python:3.12-slim builds the dag-healer wheel with the fresh plugin bundle inside
 #              (standalone/ is the one of src/: the image serves the Airflow plugin)
 #   (final)    apache/airflow:3.3.2 + the wheel (+ the demo repo requirements, + pytest)
+#              + the docker CLI, copied from the official docker:29.8.2-cli image
+#
+# The final image is also the image of the test sandbox: healer-worker starts a fresh container
+# of it for every pytest run of a repair (repo.sandbox in healer.yaml, docs/security.md 4.3).
+# It must hold no secrets.
 #
 # Requires BuildKit (default builder of Docker Desktop and Docker Engine >= 23).
 
@@ -92,6 +97,11 @@ RUN set -eu; \
     mkdir -p /opt/airflow/repo /opt/airflow/healer /opt/dag-healer/tests/airflow; \
     chown -R airflow:0 /opt/airflow/repo /opt/airflow/healer /opt/dag-healer; \
     chmod -R g+rwX /opt/airflow/repo /opt/airflow/healer /opt/dag-healer
+# The docker CLI (a static binary, no engine): healer-worker uses it to start the test sandbox
+# on the engine whose socket docker/compose.yaml mounts into that service only. Keep its major
+# version on the engine's (29).
+COPY --from=docker:29.8.2-cli /usr/local/bin/docker /usr/local/bin/docker
+RUN docker --version
 USER airflow
 
 COPY --from=wheel /dist/*.whl /tmp/wheels/

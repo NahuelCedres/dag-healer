@@ -18,6 +18,20 @@ repo:
   test_command: "python -m pytest -q"
   allowed_paths: ["src/", "dags/"]   # the repair agent may only edit files under these prefixes
   pytest_timeout: 600            # seconds per pytest run
+  # Where pytest runs the repository's tests and the model-written test and fix. container: a
+  # fresh container per run, without network or credentials, on a throw-away copy of the clone;
+  # process: no isolation at all (development and tests only). See docs/security.md, 4.3.
+  sandbox:
+    backend: container           # container | process
+    engine: docker               # docker | podman: the CLI that starts the containers
+    image: "${HEALER_SANDBOX_IMAGE}"   # Python, pytest and the repository's requirements; never pulled
+    python: python               # interpreter inside the image
+    user: null                   # null: the image's own USER (root is refused)
+    memory: 2g                   # memory limit of each run (no swap)
+    cpus: 2                      # null: no CPU limit
+    pids: 512                    # processes and threads
+    work_size: 1g                # tmpfs that receives the copy of the clone
+    tmp_size: 512m               # tmpfs at /tmp (HOME and AIRFLOW_HOME of the tests)
 
 # Orchestrator (optional). Without this section dag-healer watches Airflow, configured by
 # the airflow: section below; `dag-healer orchestrators list` shows the installed types.

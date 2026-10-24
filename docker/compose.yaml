@@ -278,6 +278,12 @@ services:
   # The command goes through the image entrypoint as `bash -c '... exec "$@"'`, so that it is
   # not turned into `airflow dag-healer ...` while the entrypoint still prepares the user/HOME
   # for an arbitrary AIRFLOW_UID.
+  #
+  # Test sandbox: every pytest run of a repair is a fresh container of the stack image, without
+  # network, started by the worker on the host's engine (a sibling of the stack's containers).
+  # The worker therefore gets the engine socket and its group. Whoever can use that socket is
+  # root on the engine's host: development only, and never mount it into an Airflow service
+  # (the scheduler runs task code).
   healer-worker:
     <<: *airflow-common
     entrypoint:
@@ -291,13 +297,32 @@ services:
           echo "dag-healer worker: waiting for $${HEALER_CONFIG} (run: python scripts/tasks.py init)"
           sleep 10
         done
+        if [ ! -S /var/run/docker.sock ] || [ ! -w /var/run/docker.sock ]; then
+          echo "dag-healer worker: cannot use /var/run/docker.sock, so CODE repairs will fail (see Test sandbox in docker/README.md)"
+        fi
         exec "$$@"
       - dag-healer-worker
     command: ["dag-healer", "worker"]
+    # A service's volumes replace the common ones: the first three are those of x-airflow-common.
+    volumes:
+      - ${HEALER_REPO_DIR:-../.demo/repo}:/opt/airflow/repo
+      - ${HEALER_LOGS_DIR:-../.demo/logs}:/opt/airflow/logs
+      - healer-home:/opt/airflow/healer
+      - ${HEALER_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    # The socket's group. Linux: the docker group of the host (scripts/tasks.py writes its id to
+    # docker/.env). Docker Desktop and OrbStack: the socket is root's inside containers
+    # (OrbStack: root:root, mode 0660), and group 0 is already the primary group of every Airflow
+    # container.
+    group_add:
+      - "${HEALER_DOCKER_GID:-0}"
     environment:
       <<: [*airflow-common-env, *healer-secrets-env]
-      # The worker never imports the user's code itself; pytest runs inside its clones.
+      # The worker never imports the user's code itself; pytest runs in the test sandbox.
       PYTHONPATH: ""
+      # Image of the test sandbox (repo.sandbox.image of the healer.yaml that `dag-healer init`
+      # writes): the stack's own image, which holds pytest and the example repository's
+      # requirements. The sandbox never pulls it: it is the image that airflow-init builds.
+      HEALER_SANDBOX_IMAGE: ${HEALER_IMAGE:-dag-healer/airflow:dev}
       # Scripts of the offline "fake" LLM provider (used when HEALER_LLM_PROVIDER=fake).
       HEALER_FAKE_LLM_DIR: /opt/airflow/repo/fixtures/fake_llm
       # Identity of the fix commits on the healer/* branches.

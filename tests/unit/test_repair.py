@@ -1,7 +1,8 @@
 """Tests for dag_healer.agent.repair: RepairTools guardrails and the run_repair flow.
 
 The flow tests use real git repositories, the real pytest runner and a scripted provider
-stand-in (``ScriptedProvider``) that calls the repair tools like a model would.
+stand-in (``ScriptedProvider``) that calls the repair tools like a model would. Their
+configuration selects the ``process`` test sandbox (the unit tests have no container engine).
 """
 
 from __future__ import annotations
@@ -25,6 +26,15 @@ from dag_healer.orchestrators.fake import FAKE_VOCABULARY
 from dag_healer.pr.github import GitHubError
 from dag_healer.repo.git import Workspace, run_git
 from dag_healer.repo.pytest_runner import PytestResult
+from dag_healer.repo.sandbox import (
+    ContainerSandbox,
+    ProcessSandbox,
+    SandboxJob,
+    SandboxProbe,
+    SandboxRun,
+    sandbox_launch_failure,
+    sandbox_refusal,
+)
 
 EXAMPLE_REPO = Path(__file__).resolve().parents[2] / "example_existing_repo"
 GIT_IDENTITY = {
@@ -125,7 +135,10 @@ def write(root: Path, files: Mapping[str, str]) -> None:
 
 
 def make_cfg(repo_path: Path, **sections: Any) -> HealerConfig:
-    data: dict[str, Any] = {"repo": {"path": str(repo_path), "pytest_timeout": 120}}
+    data: dict[str, Any] = {
+        # the unit tests have no container engine: pytest runs in the unisolated process sandbox
+        "repo": {"path": str(repo_path), "pytest_timeout": 120, "sandbox": {"backend": "process"}},
+    }
     for key, value in sections.items():
         if isinstance(value, dict) and isinstance(data.get(key), dict):
             data[key] = {**data[key], **value}
@@ -1196,3 +1209,154 @@ def test_the_repair_feedback_names_the_step(
     assert result.status == "repaired", result.error
     assert f"Assert the correct behaviour for the input that broke the {step}." in provider.calls[1]["prompt"]
     assert any(f"check that it fails for the same reason as the {step}." in note for note in result.notes)
+
+
+# =========================================================================== the test sandbox
+
+
+ENGINE_GONE = "the engine went away (jane.doe@example.com)"
+ENGINE_GONE_MASKED = "the engine went away ([email])"
+SANDBOX_TOOL_ERROR = (
+    f"Error: the test sandbox could not run pytest ({ENGINE_GONE_MASKED}); stop: no test can run until "
+    "the sandbox works."
+)
+
+
+class LaunchFailingSandbox:
+    """A sandbox that looks usable but cannot start pytest (its engine went away)."""
+
+    name = "broken"
+    isolated = True
+
+    def __init__(self) -> None:
+        self.jobs: list[SandboxJob] = []
+
+    def unavailable_reason(self) -> str | None:
+        return None
+
+    def smoke_test(self) -> SandboxProbe:  # pragma: no cover - the repair never calls it
+        return SandboxProbe(True, "looks fine")
+
+    def run(self, job: SandboxJob) -> SandboxRun:
+        self.jobs.append(job)
+        return SandboxRun(exit_code=3, launch_error=ENGINE_GONE)
+
+
+def suite_repo(tmp_path: Path) -> Path:
+    """The calc module with an existing (green) test suite, which a repair runs first."""
+    root = tmp_path / "suite_repo"
+    write(
+        root,
+        {"src/__init__.py": "", "src/calc.py": CALC_SOURCE, "tests/test_existing.py": CALC_PASSING_TEST},
+    )
+    git_commit_all(root)
+    return root
+
+
+def test_tools_use_the_configured_sandbox(workspace: Path) -> None:
+    assert isinstance(tools_for(workspace, "fix").sandbox, ProcessSandbox)
+    container = tools_for(workspace, "fix", repo={"sandbox": {"backend": "container"}})
+    assert isinstance(container.sandbox, ContainerSandbox)
+    injected = LaunchFailingSandbox()
+    cfg = make_cfg(workspace)
+    assert RepairTools(workspace, cfg, phase="test", tests_dir="tests", sandbox=injected).sandbox is injected
+
+
+def test_run_tests_stops_when_the_sandbox_cannot_start_pytest(workspace: Path) -> None:
+    sandbox = LaunchFailingSandbox()
+    tools = RepairTools(workspace, make_cfg(workspace), phase="fix", tests_dir="tests", sandbox=sandbox)
+    assert tools.run_tests(["tests/test_existing.py"]) == SANDBOX_TOOL_ERROR
+    assert tools.sandbox_error == ENGINE_GONE_MASKED and tools.test_runs == []
+    assert tools.run_tests() == SANDBOX_TOOL_ERROR  # no new attempt
+    assert len(sandbox.jobs) == 1
+
+
+def test_an_unusable_sandbox_runs_no_code_at_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_pytest(*_args: Any, **_kwargs: Any) -> PytestResult:
+        raise AssertionError("no pytest run without a usable sandbox, not even the existing suite")
+
+    monkeypatch.setattr(repair, "run_pytest", no_pytest)
+    root = suite_repo(tmp_path)
+    provider = ScriptedProvider({"test": [[WRITE_CALC_TEST, RUN_CALC_TEST]], "fix": [[FIX_CALC]]})
+    cfg = make_cfg(root, repo={"sandbox": {"backend": "container"}})  # no image: not usable
+    result = run_calc(cfg, provider, tmp_path / "work")
+    assert result.status == "repair_failed"
+    error = result.error or ""
+    assert error.startswith("The test sandbox is not usable: repo.sandbox.image is not set"), error
+    assert "No code was run" in error and "retry the repair" in error
+    assert provider.calls == [] and result.attempts == 0 and result.tokens_used == 0
+    assert not (tmp_path / "work").exists()  # not even cloned
+    assert source_branches(root) == ["main"]
+
+
+class CrashingCheckSandbox(LaunchFailingSandbox):
+    """A sandbox whose availability check itself fails."""
+
+    def unavailable_reason(self) -> str | None:
+        raise RuntimeError("the probe crashed")
+
+
+def test_a_sandbox_check_that_fails_runs_no_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_pytest(*_args: Any, **_kwargs: Any) -> PytestResult:
+        raise AssertionError("no pytest run when the sandbox check fails")
+
+    monkeypatch.setattr(repair, "run_pytest", no_pytest)
+    root = suite_repo(tmp_path)
+    provider = ScriptedProvider({"test": [[WRITE_CALC_TEST]]})
+    result = run_calc(make_cfg(root), provider, tmp_path / "work", sandbox=CrashingCheckSandbox())
+    assert result.status == "repair_failed"
+    assert result.error == sandbox_refusal(
+        "the check of the test sandbox failed (RuntimeError: the probe crashed)"
+    )
+    assert provider.calls == [] and not (tmp_path / "work").exists()
+
+
+@pytest.mark.parametrize("phase_runs_tests", [True, False])
+def test_a_sandbox_that_cannot_start_pytest_stops_the_repair(
+    calc_repo: Path, tmp_path: Path, phase_runs_tests: bool
+) -> None:
+    sandbox = LaunchFailingSandbox()
+    runs: list[Step] = [RUN_CALC_TEST, RUN_CALC_TEST] if phase_runs_tests else []
+    provider = ScriptedProvider({"test": [[WRITE_CALC_TEST, *runs]], "fix": [[FIX_CALC]]})
+    result = run_calc(make_cfg(calc_repo), provider, tmp_path / "work", sandbox=sandbox)
+    assert result.status == "repair_failed"
+    assert result.error == sandbox_launch_failure(ENGINE_GONE_MASKED)
+    # one launch attempt, then the repair stopped: the test is not regenerated, no fix session
+    assert len(sandbox.jobs) == 1
+    assert [call["phase"] for call in provider.calls] == ["test"]
+    tool_outputs = [output for name, output in provider.calls[0]["outputs"] if name == "run_tests"]
+    assert tool_outputs == ([SANDBOX_TOOL_ERROR] * 2 if phase_runs_tests else [])
+    assert source_branches(calc_repo) == ["main"]
+
+
+def test_a_launch_failure_of_the_existing_suite_stops_before_any_session(tmp_path: Path) -> None:
+    sandbox = LaunchFailingSandbox()
+    provider = ScriptedProvider({"test": [[WRITE_CALC_TEST]]})
+    result = run_calc(make_cfg(suite_repo(tmp_path)), provider, tmp_path / "work", sandbox=sandbox)
+    assert result.error == sandbox_launch_failure(ENGINE_GONE_MASKED)
+    assert provider.calls == [] and len(sandbox.jobs) == 1
+    assert sandbox.jobs[0].args[-1] == "tests"  # it was the baseline run of the existing suite
+
+
+@pytest.mark.parametrize("injected", [False, True])
+def test_every_pytest_run_happens_in_the_one_sandbox(
+    calc_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, injected: bool
+) -> None:
+    real_run_pytest = repair.run_pytest
+    used: list[Any] = []
+
+    def recording_run_pytest(workdir: Path, targets: list[str] | None = None, **kwargs: Any) -> PytestResult:
+        used.append(kwargs["sandbox"])
+        return real_run_pytest(workdir, targets, **kwargs)
+
+    monkeypatch.setattr(repair, "run_pytest", recording_run_pytest)
+    sandbox = ProcessSandbox() if injected else None
+    provider = ScriptedProvider(
+        {"test": [[WRITE_CALC_TEST, RUN_CALC_TEST]], "fix": [[FIX_CALC, ("run_tests", {})]]}
+    )
+    result = run_calc(make_cfg(calc_repo), provider, tmp_path / "work", sandbox=sandbox)
+    assert result.status == "repaired", result.error
+    assert len(used) == 4  # two tool runs, the reproducing test before and after the fix
+    assert all(item is used[0] for item in used) and isinstance(used[0], ProcessSandbox)
+    if injected:
+        assert used[0] is sandbox

@@ -16,16 +16,19 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
 - The model's output is untrusted too. A deterministic policy bounds the classification, the
   repair agent's file tools enforce path rules and size limits, and nothing is merged
   automatically.
-- **The CODE path runs model-written code before a person reviews it.** The worker runs the
-  generated test, and later the fix, with pytest under the worker's own OS user, with the
-  worker's file system and network access. The pytest runner removes credentials from the test's
-  environment and applies a timeout and resource limits. This guards against accidents, but it
-  is not a sandbox for hostile code (gap G1).
+- **The CODE path runs model-written code before a person reviews it.** Every pytest run of a
+  repair (the repository's own tests, the generated test and the fix) happens in the test
+  sandbox (`repo.sandbox`). By default, that is a fresh container for every run: no network, no
+  credentials, no host path, a non-root user, resource limits and a throw-away copy of the clone.
+  Without a usable sandbox, a CODE repair runs no code at all. The container still shares the
+  host's kernel, and the worker's access to the container engine is root-equivalent on a rootful
+  engine's host (gap G1). The `process` backend, meant for development and tests, runs the code
+  without any isolation.
 - Masking reduces, but does not prevent, the flow of personal data and secrets to the model, the
   store, alerts and pull requests (G4, G5).
-- Until these gaps are closed, deploy the worker as if it ran untrusted code: least-privilege
-  credentials, restricted network egress and a GitHub token that can reach only the one
-  repository (section 6).
+- Deploy the worker as if it ran untrusted code, because it does: a dedicated host for the worker
+  and its container engine, least-privilege credentials, restricted network egress and a GitHub
+  token that can reach only the one repository (section 6).
 
 ---
 
@@ -34,9 +37,10 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
 | Component | Runs in | Holds |
 |---|---|---|
 | Airflow plugin: the API under `/healer`, the React views and the task listener | The Airflow api-server; the listener runs in every task process | The ingest token (API and listener), the store URL (API) |
-| Worker (`dag-healer worker`) | Its own process or container | Airflow API credentials, Anthropic API key, GitHub token, SMTP password, store URL |
+| Worker (`dag-healer worker`) | Its own process or container | Airflow API credentials, Anthropic API key, GitHub token, SMTP password, store URL, access to the container engine |
 | Store | SQLite under `HEALER_HOME`, or the database at `store.url` / `HEALER_DATABASE_URL` | Incidents, events, commands, alerts |
 | Repair workspace | `<healer_home>/work/<incident_id>`: a clone of the repository | The committed history of the repository |
+| Test sandbox (`repo.sandbox`) | A fresh container for every pytest run, started by the worker with the `docker` or `podman` CLI on its container engine. The `process` backend (development and tests only): a child process of the worker | A throw-away copy of the clone without `.git`, and the scrubbed test environment |
 
 The path of one failure:
 
@@ -54,11 +58,11 @@ The path of one failure:
    - DATA: an alert with the violated rule and the masked sample.
    - AMBIGUOUS: the incident waits for a person in the dag-healer views.
    - CODE: a repair. In a fresh clone, the model first writes one failing test, then a minimal
-     fix, each in its own tool session. pytest runs both. The result is committed on a
-     `healer/...` branch. With a GitHub token and a repository (`github.repo` or a GitHub
-     `origin` remote), the branch is pushed and a pull request is opened. Otherwise, or when the
-     push or the pull request fails, the branch is pushed into the local repository, and
-     `PR.md` and `fix.patch` are written.
+     fix, each in its own tool session. pytest runs both, in the test sandbox (4.3). The result
+     is committed on a `healer/...` branch. With a GitHub token and a repository (`github.repo`
+     or a GitHub `origin` remote), the branch is pushed and a pull request is opened. Otherwise,
+     or when the push or the pull request fails, the branch is pushed into the local repository,
+     and `PR.md` and `fix.patch` are written.
 5. **People act** from the UI: resolve an incident, retry the repair, retry the task or approve a
    contract. The API checks the user's Airflow permissions and queues a command in the store. The
    worker applies the command with its own credentials.
@@ -75,6 +79,7 @@ The path of one failure:
 | Ingest token (`ingest.token`, `HEALER_INGEST_TOKEN`) | The api-server, and every task process that runs the listener | Posting failure hints (each one is confirmed through the Airflow API). |
 | Store URL (`store.url`, `HEALER_DATABASE_URL`) | The worker and the api-server (in the development stack, every Airflow container) | Reading every incident; queuing commands that the worker applies without further checks: approving contracts, starting repairs, retrying tasks (G6). |
 | SMTP password (`notify.email.password`) | The worker | Sending mail as dag-healer. |
+| Access to the container engine (its socket, `DOCKER_HOST` or `CONTAINER_HOST`) | The worker, which starts the test sandbox with it. In the development stack, the host's engine socket mounted into `healer-worker` | With a rootful engine, root on the engine's host: whoever can start containers can start a privileged one with the host's file system mounted. With a rootless engine, the account of the engine's user. |
 | Data samples | Raw dataset files read by the worker. Masked samples in the store, the prompts, the UI and the alerts | Disclosure of personal or confidential data. |
 | DAG source code and the repository | The repository working tree, the repair clone, the prompts, pull requests | Disclosure of code and of any secret committed in it or left in the working tree; changes to code that Airflow runs. |
 | Secrets of the Airflow deployment | The worker's environment when it runs from an Airflow image with the deployment's settings (`AIRFLOW__DATABASE__*`, the Fernet key, the API's JWT secret, `AIRFLOW_CONN_*`) | Access to the Airflow metadata database and to every connection; Airflow API tokens forged for any user. |
@@ -92,13 +97,14 @@ follows from untrusted input.
 | Task logs, tracebacks, exception messages | Task code, and any value that it prints or puts in an exception | Masked, then the store, the prompts, the UI, the alerts and the pull request. Files that a traceback names are read and sent to the model (G4) |
 | Dataset rows | Upstream deliveries | Contract validation; a masked sample in the store, the prompts, the UI and the alerts |
 | Pushed failure hints (`/events/task-failed` and other adapter channels) | Any holder of the ingest token, which includes every task process | Stored as pending events and confirmed through the Airflow API. The pushed error text becomes the summary of the incident |
-| Repository content (DAG files, modules, tests, committed data) | Repository committers | Sent to the model unmasked; imported and executed by pytest |
+| Repository content (DAG files, modules, tests, committed data) | Repository committers | Sent to the model unmasked; imported and executed by pytest in the test sandbox |
 | Model output: the classification | The model, steered by the inputs above | Schema check, then the deterministic policy |
 | Model output: the diagnosis, evidence and fix summary, and the repair agent's final summary | Same | Masked, then the store, the UI, the alerts and the pull request |
-| Model output: tool calls, the generated test and the fix | Same | Path rules; written to the clone; **executed by pytest in the worker**; committed, pushed and proposed as a pull request |
+| Model output: tool calls, the generated test and the fix | Same | Path rules; written to the clone; **executed by pytest in the test sandbox** (4.3); committed, pushed and proposed as a pull request |
 | People using the UI and the API | Authenticated Airflow users | Airflow permission checks, then commands in the store that the worker applies |
 | `healer.yaml` | Administrators, and every repository committer when the file is committed next to the DAGs | Trusted (section 7) |
 | The worker's environment, installed packages (the masking hook) | Administrators | Trusted (section 7) |
+| The sandbox image (`repo.sandbox.image`) | Administrators | Trusted (section 7). Everything in it is visible to the code that pytest runs |
 
 Rule of thumb: anything that a task writes to its log, and any value in an upstream file, can
 reach the model's prompt. Read the model's answer as if the author of that text had written it.
@@ -158,11 +164,12 @@ Enforced by the repair tools (`agent/repair.py`):
   files. `read_file` checks these rules on the path as written, not on the target of a symbolic
   link (G5).
 - The work happens in a fresh clone of the committed history. The clone is deleted afterwards
-  unless `debug` is on.
-- Files that the tools did not write, for example files created by a test run, are reverted
-  before the size check and before the commit. Files that git ignores and the clone's `.git`
-  folder are not checked, and the files that the tools wrote are not checked again after the
-  last test run.
+  unless `debug` is on. Test runs work on a throw-away copy of the clone, never on the clone
+  itself (4.3).
+- Files in the clone that the tools did not write are reverted before the size check and before
+  the commit. Files that git ignores and the clone's `.git` folder are not checked. This matters
+  under the `process` backend only, where the code that pytest runs can still reach the clone
+  (4.3).
 - The test must be collected and must fail before the fix. If a fix attempt changes the test,
   the test is restored and the attempt is rejected. The fix must make the test pass without
   adding failures to the existing suite.
@@ -180,17 +187,49 @@ Enforced by the repair tools (`agent/repair.py`):
 What remains: within these rules, the model chooses what the test and the fix contain. That code
 is executed (4.3), pushed to the repository where CI may run it (G2), and shown to a reviewer who
 may trust it. The path rules bind the model's file tools only. They do not bind the code that
-pytest runs.
+pytest runs: the test sandbox does (4.3).
 
-### 4.3 Running model-written code (the pytest sandbox)
+### 4.3 Running model-written code (the test sandbox)
 
-During a repair the worker runs `python -m pytest` in the clone several times: the existing
-suite, the generated test before the fix, the test and the suite after each fix attempt, and
-every run that the agent asks for through its `run_tests` tool. The generated test, the
-repository's own code and the fix all run before any person has reviewed them.
+During a repair the worker runs `python -m pytest` several times: the existing suite, the
+generated test before the fix, the test and the suite after each fix attempt, and every run that
+the agent asks for through its `run_tests` tool. The generated test, the repository's own code
+and the fix all run before any person has reviewed them.
 
-Enforced by `repo/pytest_runner.py`:
+Every one of these runs happens in the test sandbox that `repo.sandbox.backend` selects:
 
+- `container` (the default): a fresh container for every run, started with the `docker` or
+  `podman` CLI (`repo.sandbox.engine`) from the image `repo.sandbox.image`, on the local engine
+  or on the one that `DOCKER_HOST` or `CONTAINER_HOST` names;
+- `process`: pytest runs as a child process of the worker, without isolation. It is meant for
+  development and tests. It is never chosen implicitly: `dag-healer doctor` reports it as a
+  warning, `dag-healer check` prints a warning, and so does the worker when it starts.
+
+Enforced by `agent/repair.py` and `worker/pipeline.py`:
+
+- **No sandbox, no code.** Before a CODE repair clones anything, the worker checks that its
+  sandbox can run. The container backend cannot when no image is configured, the engine CLI is
+  missing, the engine does not answer, the image is not on the engine, or the image or
+  `repo.sandbox.user` would run as root. The incident then ends `repair_failed` with the reason
+  and how to fix it, and no code runs: neither the repository's tests nor the generated test or
+  fix. The classification stays CODE, and "Retry repair" works once the sandbox does (a change
+  to `healer.yaml` or to the worker's environment needs a worker restart).
+- **A run that cannot start stops the repair.** When the sandbox fails to start pytest during a
+  repair (an engine error, a missing image, pytest missing from the image), the repair ends
+  `repair_failed` in the same way. An engine error is never read as a test result.
+
+Enforced for every backend (`repo/sandbox.py`, `repo/pytest_runner.py`, `repo/git.py`):
+
+- **A throw-away copy.** Every run works on a copy of the clone without its `.git` folder,
+  deleted after the run. The copy never follows a symbolic link: links that are absolute or point
+  outside the repository are left out, and so are FIFOs, sockets and devices. A linked folder is
+  never entered. Repository tests that need git fail in the copy.
+- **No git hook runs.** Every git command of the worker (clone, status, diff, commit, push, ...)
+  runs with `core.hooksPath` pointing at an empty folder of the worker's own and with
+  `core.fsmonitor` set to `false` (off since git 2.36; older git runs the `false` program, which
+  does nothing). So do the `upload-pack` and `receive-pack` that local clones and pushes
+  start in the source repository. Hooks and fsmonitor commands planted in the clone or in the
+  source repository never run.
 - **Environment scrub.** The test process does not inherit:
   - the Anthropic, GitHub and SMTP credentials, and every `HEALER_*` and `DAG_HEALER_*` setting;
   - Airflow's metadata database, API authentication, secrets backend, Celery, SMTP and e-mail
@@ -205,22 +244,99 @@ Enforced by `repo/pytest_runner.py`:
   instance metadata or the shared credential and config files.
 - **Airflow** inside the tests points at a throw-away `AIRFLOW_HOME` with an SQLite database in
   unit-test mode.
-- **Time.** After `repo.pytest_timeout` seconds (default 600), the whole process group is killed
-  on POSIX. On Windows the process tree is killed with `taskkill /T`, best effort.
+- **Time.** After `repo.pytest_timeout` seconds (default 600), the run is killed. A container is
+  killed and removed by its name (killing the CLI alone would leave it running). Under `process`,
+  the whole process group is killed on POSIX, and the process tree with `taskkill /T` on Windows,
+  best effort.
+- **Output.** stdin is empty, and the repository's `addopts` and the pytest cache are ignored. The
+  output goes to a temporary file, and only its last 20,000 characters are kept. That output is
+  masked before it reaches the model, the store or the pull request.
+
+Enforced for the container backend (`repo/sandbox.py`):
+
+- **Isolation.** Each run is a `docker run` (or `podman run`) with `--rm`, `--network none`, a
+  read-only root file system (`--read-only`), tmpfs mounts for the copy of the clone (`/work`)
+  and for `/tmp` (`noexec`; the tests' `HOME`, `TMPDIR` and `AIRFLOW_HOME` live there),
+  `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit`, `--memory` with an equal
+  `--memory-swap` (no swap), `--cpus`, `--init`, `--shm-size 64m` and `--log-driver none`.
+  Besides the two tmpfs mounts, the engine's own small ones stay writable: `/dev/shm`, and with
+  Podman also `/run` and `/var/tmp` (its `--read-only-tmpfs`). Every process of a run ends with its
+  container. The limits come from `repo.sandbox` (defaults: 2 GB of memory, 2 CPUs, 512
+  processes and threads, 1 GB for the copy, 512 MB for `/tmp`).
+- **No host path.** There is no bind mount and no named volume. (The engine still gives an
+  image's own `VOLUME` folders anonymous volumes, removed with the container; the sandbox image
+  should declare none.) The copy of the clone reaches the container as a tar stream on its
+  standard input. A small bootstrap, run by the image's Python (`repo.sandbox.python`), unpacks
+  it into `/work` and refuses absolute paths, `..`, links that leave `/work` and special files,
+  then starts pytest. This also works with a remote or rootless engine, and when the worker
+  itself runs in a container.
+- **The image is never pulled** (`--pull never`): it must already be on the engine.
+- **Never root.** The container runs as the image's own `USER`, or as `repo.sandbox.user`.
+  `root` and uid 0 are refused in `repo.sandbox.user`, and so is an image whose `USER` is empty or
+  root while `repo.sandbox.user` is not set: no container starts. Inside the container, the
+  bootstrap refuses to run when its effective uid is 0.
+- **Environment by name only.** The engine CLI receives the test environment as `-e NAME`
+  arguments and the values in its own environment, never on its command line. Variables that
+  describe the worker's host are left out (`PATH`, `HOME`, `TMPDIR`, the locale, `XDG_*`,
+  `PYTHONHOME`, `PYTHONUSERBASE`, `VIRTUAL_ENV`, `LD_PRELOAD`, `DOCKER_*`, `CONTAINER_*`, ...), so
+  that the image's own settings apply. The proxy variables are passed empty, so the docker CLI
+  cannot add the proxies of its `config.json`, which may hold credentials. Besides the test
+  environment, the CLI process gets only what it needs to reach the engine (`PATH`, `HOME`,
+  `DOCKER_HOST`, `CONTAINER_HOST`, ...), and none of that is passed into the container.
+- **Engine errors are not test results.** A run counts as a test result only when the bootstrap
+  has reported its start and has started pytest, and the engine CLI has reported no error of its
+  own afterwards (an exit code from 125 to 127 with an error line, for example when the engine
+  goes away mid-run). Everything else (an unreachable engine, a missing image, a root user,
+  pytest missing from the image) is a launch failure, which stops the repair. When the CLI fails
+  mid-run or is killed by a signal, the container is killed and removed by its name.
+- **Output limit.** A run whose output passes 256 MiB is killed and removed like a run past its
+  timeout, and its output ends with a note that says so. Under `process`, `RLIMIT_FSIZE` plays
+  that part (below).
+- **Leftovers.** Each container has a unique name that carries an expiry time, and the label
+  `dag-healer.sandbox=1`. A later run removes the containers whose expiry has passed, such as
+  those of a worker that crashed.
+- **Doctor.** `dag-healer doctor` checks that the engine answers and holds the image, then starts
+  a probe container. The probe must run as a non-root user, see no network interface besides
+  loopback, fail to open an outbound connection and import pytest.
+
+Enforced for the `process` backend, as a guard against accidents only:
+
 - **Resources (POSIX).** The soft limits of `RLIMIT_AS` (8 GiB), `RLIMIT_NPROC` (4096) and
   `RLIMIT_FSIZE` (1 GiB) are lowered in the child process, never raised. A limit that the kernel
   refuses is skipped: macOS does not let a process lower `RLIMIT_AS`, so there is no
   address-space limit on macOS. Windows gets no resource limits.
-- **Output.** stdin is empty (`/dev/null`), and the repository's `addopts` and the pytest cache
-  are ignored. The output goes to a temporary file, and only its last 20,000 characters are kept.
-  That output is masked before it reaches the model, the store or the pull request.
 
-What the runner does not do: it does not isolate the test from the worker (G1). Code in a test
-runs as the worker's OS user, with the worker's network access. The credentials are gone from
-the test's own environment, but the code can read them from the worker process
-(`/proc/<parent pid>/environ` on Linux). It can plant a git hook in the clone, and the worker
-later runs that hook with its full environment when it commits. It can also write wherever the
-worker can, including the repository working tree.
+What remains:
+
+- **A shared kernel.** A container shares the kernel of the engine's host. Code that exploits a
+  vulnerability of the kernel or of the container runtime escapes to that host (G1).
+- **Access to the engine is root-equivalent.** The worker can start containers, so whoever
+  controls the worker process controls the engine. With a rootful engine (Docker Engine running
+  as root, the VM of Docker Desktop), that means root on the engine's host. Prefer a rootless
+  engine (rootless Podman or rootless Docker), or a host or VM dedicated to the worker and its
+  engine (section 6).
+- **The image is visible to the tests.** Its files and its `ENV` settings can be read by the code
+  that pytest runs, and can end up in the output. The image must hold no secrets: no credentials,
+  tokens or private keys, and no package index configuration with a password in it.
+- **The output still leaves the sandbox.** The last 20,000 characters of each run's output reach
+  the model, the store and the pull request, masked by pattern only (G5). A test can therefore
+  pass on what it can read (the repository and the image) to the model provider and into the pull
+  request. The engine keeps no log of a sandbox container (`--log-driver none`), whatever its
+  default log driver is.
+- **The scrub works by variable name** (G8). A secret in a variable whose name matches none of
+  its rules reaches the tests, inside the container as well.
+- **`process` is not a sandbox.** Under the `process` backend, the code runs as the worker's OS
+  user, with the worker's network access and file system (G1, G11):
+  - it can read the worker's environment from `/proc/<parent pid>/environ` on Linux, including
+    every credential that the scrub removed from its own environment;
+  - it can change the clone before the worker commits it, including the clone's git
+    configuration. Apart from hooks and fsmonitor, the worker's git still uses that
+    configuration, including the programs that it names, such as a filter driver or
+    `gpg.program`;
+  - it can plant git hooks in the source repository. dag-healer's own git commands ignore them,
+    but a person or another tool that runs git there later runs them;
+  - it can write wherever the worker can, including the repository working tree, `healer.yaml`
+    and `HEALER_HOME`.
 
 ### 4.4 Secrets and personal data in prompts, pull requests, PR.md files and alerts
 
@@ -369,9 +485,9 @@ easily untrusted input reaches them:
 
 | ID | Severity | Gap |
 |---|---|---|
-| G1 | Critical | Model-written code runs with the worker's privileges |
 | G2 | High | Healer branches run in the repository's CI before review |
 | G3 | High | Only the token's scope limits what the GitHub token can do |
+| G1 | Medium | Model-written code runs in containers that share the host kernel |
 | G4 | Medium | Files named in a traceback are read and sent as they are |
 | G5 | Medium | Masking is pattern-based, and code is never masked |
 | G6 | Medium | The worker trusts every command in the store |
@@ -379,7 +495,7 @@ easily untrusted input reaches them:
 | G8 | Medium | The environment scrub works by variable name |
 | G9 | Medium | The prompts do not mark the evidence as untrusted |
 | G10 | Low | Model-written Markdown goes into the pull request body |
-| G11 | Low | The resource limits and the timeout do not stop hostile code |
+| G11 | Low | The `process` backend's limits and timeout do not stop hostile code |
 | G12 | Low | Read permissions are coarser than they look |
 | G13 | Low | Alert e-mail uses plain SMTP by default |
 | G14 | Low | Every task process shares one ingest token |
@@ -387,34 +503,35 @@ easily untrusted input reaches them:
 | G16 | Low | Debug mode keeps clones and serves the API docs |
 | G17 | Low | git skips its repository ownership check |
 
-**G1 (Critical): model-written code runs with the worker's privileges.** The pytest runner is a
-guard against accidents, not a sandbox for hostile code. Code in a generated test or fix, or in
-the repository's own tests, runs:
+**G1 (Medium): model-written code runs in containers that share the host kernel.** Any incident
+classified CODE runs code in the test sandbox, and through prompt injection (4.1, 4.2), whoever
+controls a log line or a data value can try to get code of their choice into the test. Under the
+container backend (the default), that code runs in a fresh container without network,
+credentials or host paths, as a non-root user without capabilities (4.3). What remains:
 
-- **With the worker's network access.** It can reach the Airflow API and metadata database,
-  internal services, the internet and cloud metadata endpoints over plain HTTP. Only AWS SDKs are
-  told not to use instance metadata; Google and Azure SDKs are not.
-- **Next to the worker's secrets.** On Linux it can read the worker's environment from
-  `/proc/<parent pid>/environ`, including every credential that the scrub removed from its own
-  environment.
-- **With a way out of the sandbox.** It can write git hooks or git configuration into the clone's
-  `.git` folder, or into the source repository's. The worker runs them with its full environment
-  the next time it runs git there: a `pre-commit` hook, for example, runs when the fix is
-  committed.
-- **With the worker's file system access.** That includes the repository working tree. In the
-  development stack, that working tree is also the folder that Airflow loads DAGs from, so a test
-  can change live DAG code. It also includes `healer.yaml`, `HEALER_HOME` (the SQLite store, the
-  PR artifacts) and the data files that the repair tools refuse to read.
+- **The kernel.** The container shares the kernel of the engine's host. A vulnerability of the
+  kernel or of the container runtime lets the code escape to that host, where the engine runs,
+  and often the worker too.
+- **The engine.** On a rootful engine, the worker's access to the engine is root on the engine's
+  host (section 2). Code that escapes the container lands on the host that this access controls.
+- **The output.** The code can read the repository and the image, and write what it finds to its
+  output, which reaches the model, the store and the pull request after masking (G5).
 
-The `/proc` read and the planted `pre-commit` hook were both checked on Linux. Any incident
-classified CODE reaches this code path. Through prompt injection (4.1, 4.2), whoever controls a
-log line or a data value can try to get code of their choice into the test.
+Under the `process` backend, none of this isolation applies, and G1 is Critical. The code runs as
+the worker's OS user, with the worker's network access (the Airflow API and metadata database,
+internal services, the internet and cloud metadata endpoints). On Linux, it can read the worker's
+environment, including every credential that the scrub removed, from
+`/proc/<parent pid>/environ`. It can change the clone and its git configuration before the worker
+commits, and write wherever the worker can: the repository working tree (in the development
+stack, the folder that Airflow loads DAGs from), `healer.yaml`, `HEALER_HOME` (the SQLite store,
+the PR artifacts) and the data files that the repair tools refuse to read.
 
-- Until fixed: section 6 (isolated worker, egress allow-list, least-privilege credentials, a
-  separate working tree).
-- Possible fix: run pytest in a separate container or sandbox with no network, no credentials
-  and its own copy of the clone. Run the worker's git commands with hooks disabled, and restore
-  the clone's `.git/config` after each test run.
+- Until fixed: keep the container backend everywhere but in development and tests, and follow
+  section 6: a host or VM dedicated to the worker and its engine, preferably a rootless engine, a
+  sandbox image without secrets, and restricted egress for the worker itself.
+- Possible fix: a boundary stronger than a shared kernel: an engine whose runtime is gVisor or
+  Kata Containers, or sandbox backends that run each test run in its own VM or task (ECS/Fargate
+  `RunTask`, a Kubernetes Job) behind the same sandbox interface.
 
 **G2 (High): healer branches run in the repository's CI before review.** The `healer/...` branch
 is pushed to the repository itself, not to a fork, and the pull request is opened from it. On
@@ -429,10 +546,11 @@ person has looked at them. dag-healer does not see or change the target reposito
 
 **G3 (High): only the token's scope limits what the GitHub token can do.** The worker's code
 pushes only `healer/...` branches and only opens pull requests. GitHub itself enforces only the
-token's scope and the repository's rules, and the token sits in the worker's environment, where
-G1 applies. A token with write access to the repository contents can push to any unprotected
-branch, the base branch included. The development `docker/.env.example` asks for a classic token
-with the `repo` scope, which covers every repository the account can write to.
+token's scope and the repository's rules, and the token sits in the worker's environment, which
+code that escapes the test sandbox can reach (G1). A token with write access to the repository
+contents can push to any unprotected branch, the base branch included. The development
+`docker/.env.example` asks for a classic token with the `repo` scope, which covers every
+repository the account can write to.
 
 - Until fixed: use a fine-grained personal access token or a GitHub App installation token,
   limited to the one repository, with "Contents: read and write" and "Pull requests: read and
@@ -508,7 +626,8 @@ variables, and running any DAG.
   task instances and task logs, and edit task instances only if people use "Retry task".
 
 **G8 (Medium): the environment scrub works by variable name.** A secret in a variable whose name
-matches none of the rules reaches the test process. Examples: `GH_PAT`, `DB_PASS`, a
+matches none of the rules reaches the test process, in the container sandbox too: the container
+gets the scrubbed environment by name (4.3). Examples: `GH_PAT`, `DB_PASS`, a
 `DATABASE_URL` with a password in it, `AIRFLOW__CORE__FERNET_KEY_CMD` or the legacy
 `AIRFLOW__CORE__SQL_ALCHEMY_CONN`. The scrub does not use the variable names that `healer.yaml`
 references for its secret fields. This matters even without hostile code: a repository test that
@@ -536,7 +655,10 @@ to another host as soon as someone opens the pull request.
 
 - Possible fix: put model text in a fenced block, or escape its Markdown.
 
-**G11 (Low): the resource limits and the timeout do not stop hostile code.**
+**G11 (Low): the `process` backend's limits and timeout do not stop hostile code.** This gap
+concerns the `process` backend only. Under the container backend, the engine enforces the limits,
+the sandbox kills a run whose output passes 256 MiB, and every process of a run ends with its
+container (4.3).
 
 - Only the soft limits are lowered, so code in the test can raise them again up to the hard
   limits.
@@ -582,7 +704,9 @@ routes themselves still require it.
 **G17 (Low): git skips its repository ownership check.** Every git command of the worker runs with
 `safe.directory=*`, and the development stack sets it globally through `GIT_CONFIG_*`, so that
 bind-mounted repositories owned by another user work. This turns off git's protection against a
-repository whose configuration another user can write.
+repository whose configuration another user can write. Hooks and `core.fsmonitor` are disabled
+for every git command of the worker (4.3), which removes the most direct way such a configuration
+runs a program, but its other settings still apply.
 
 - Until fixed: let the worker's OS user own the working tree.
 
@@ -592,22 +716,36 @@ repository whose configuration another user can write.
 
 These recommendations close or reduce the gaps above until the code does.
 
-1. **Isolate the worker.** Run it in its own container or VM, as a dedicated OS user, with
-   nothing else in it. Do not run it inside the Airflow scheduler or the Airflow workers.
-2. **Restrict network egress** to what the worker needs: the Anthropic API (`api.anthropic.com`),
+1. **Isolate the worker.** Run it on a VM or host of its own, as a dedicated OS user, with nothing
+   else on it but the container engine of its test sandbox. Do not run it inside the Airflow
+   scheduler or the Airflow workers.
+2. **The test sandbox** (G1):
+   - keep `repo.sandbox.backend: container`, the default. `process` is for development and tests
+     only;
+   - prefer a rootless engine (rootless Podman or rootless Docker): the worker's access to a
+     rootful engine is root on its host. Never give the engine socket to Airflow's processes, or
+     to anything else that runs task code;
+   - build a sandbox image with Python, pytest and the repository's test requirements, a non-root
+     `USER`, no `VOLUME` and no secrets: no credentials, tokens or private keys, and no package
+     index configuration with a password in it. Build it on the worker's engine (the sandbox never
+     pulls) and rebuild it when the requirements change;
+   - run `dag-healer doctor` after every change: its `sandbox` check must be OK;
+   - for a boundary stronger than a shared kernel, consider gVisor or Kata Containers as the
+     engine's runtime.
+3. **Restrict network egress** to what the worker needs: the Anthropic API (`api.anthropic.com`),
    GitHub (`github.com`, `api.github.com`), the Airflow API, the store and the SMTP server. Block
    the Airflow metadata database, other internal services and the cloud metadata endpoints
    (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`, `metadata.google.internal`), unless the
    worker itself needs them (G1).
-3. **GitHub** (G2, G3):
+4. **GitHub** (G2, G3):
    - use a fine-grained token or a GitHub App, limited to the one repository, with "Contents"
      and "Pull requests" set to read and write;
    - protect the base branch;
    - keep CI secrets away from workflows that run on `healer/**`;
    - or run without a token, and apply `fix.patch` yourself.
-4. **Airflow** (G7): give the worker a dedicated account with the smallest role that works, never
+5. **Airflow** (G7): give the worker a dedicated account with the smallest role that works, never
    Admin.
-5. **Secrets** (G1, G8):
+6. **Secrets** (G1, G8):
    - give the worker only the credentials it needs, in variables whose names contain `TOKEN`,
      `SECRET`, `PASSWORD` or `API_KEY`;
    - keep the Airflow deployment's own secrets (metadata database URL, Fernet key, JWT secret,
@@ -616,38 +754,42 @@ These recommendations close or reduce the gaps above until the code does.
    - task processes need only `HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The development
      compose file keeps the Anthropic, GitHub and Airflow API credentials away from the
      scheduler, which runs task code, but it still gives every container the store URL (G6).
-6. **The store** (G6): give the store URL only to the api-server and the worker, with a database
+7. **The store** (G6): give the store URL only to the api-server and the worker, with a database
    user of its own.
-7. **Configuration** (section 7): protect `healer.yaml` like deployment configuration, for
+8. **Configuration** (section 7): protect `healer.yaml` like deployment configuration, for
    example with a code-owner review, when it lives in the repository.
-8. **The repository** (G1, G4, G5):
-   - where your deployment allows it, give the worker a working tree that Airflow does not load
-     DAGs from. Otherwise, accept that a repair can change live DAG files;
+9. **The repository** (G1, G4, G5):
+   - under the container backend, the code that pytest runs cannot reach the repository working
+     tree. Under the `process` backend it can: give the worker a working tree that Airflow does
+     not load DAGs from, or accept that a repair can change live DAG files;
    - keep secrets and real data out of the repository, and out of the working tree that the
      worker reads.
-9. **Masking** (G5): flag personal columns with `pii: true`, add `masking.columns`, prefer
-   `redact` for identifiers from a small set of values, and use a `masking.hook` for data-specific
-   rules. Do not log raw rows, credentials or personal data from tasks.
-10. **Transport** (G13): use STARTTLS or SMTPS for alerts, and HTTPS for the Airflow API when it
+10. **Masking** (G5): flag personal columns with `pii: true`, add `masking.columns`, prefer
+    `redact` for identifiers from a small set of values, and use a `masking.hook` for
+    data-specific rules. Do not log raw rows, credentials or personal data from tasks.
+11. **Transport** (G13): use STARTTLS or SMTPS for alerts, and HTTPS for the Airflow API when it
     is not local.
-11. **Debug** (G16): keep `debug` and `HEALER_DEBUG` off in production.
-12. **Review** every healer pull request like an outside contribution, the test as well as the
+12. **Debug** (G16): keep `debug` and `HEALER_DEBUG` off in production.
+13. **Review** every healer pull request like an outside contribution, the test as well as the
     fix. Watch for file, network, subprocess or environment access in either.
-13. **The development stack** under `docker/` uses fixed, publicly known secrets and gives the
-    worker the Airflow `admin` account. Keep it on a local machine.
+14. **The development stack** under `docker/` uses fixed, publicly known secrets and gives the
+    worker the Airflow `admin` account. It also mounts the host's container engine socket into
+    `healer-worker`, so that the worker can start the test sandbox, which makes that container
+    root-equivalent on the engine's host (on Docker Desktop and OrbStack, their Linux VM). Keep
+    the stack on a local machine.
 
 ---
 
 ## 7. Assumptions and scope
 
 - Administrators who control `healer.yaml`, the worker's environment, the installed packages
-  (including a masking hook) and the deployment are trusted.
+  (including a masking hook), the sandbox image and the deployment are trusted.
 - `dag-healer init` suggests committing `healer.yaml` next to the DAGs. Then every committer can
   change dag-healer's settings, such as the masking rules, the allowed paths, and where pull
   requests and alerts go. So can code that escapes the test sandbox (G1). The API rereads the file
   at most every 10 seconds.
 - Repository committers get the same trust as in the Airflow deployment itself: their code
-  already runs in Airflow, and it also runs in the worker during repairs.
+  already runs in Airflow, and it also runs in the test sandbox during repairs.
 - dag-healer relies on Airflow's own authentication and authorization, and inherits their
   strengths and weaknesses.
 - The owner's agreement with Anthropic governs how the Anthropic API handles prompts.

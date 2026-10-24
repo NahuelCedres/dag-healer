@@ -1,7 +1,11 @@
-"""Run pytest inside a repair workspace: scrubbed environment, timeout, resource limits.
+"""Run pytest for a repair: the environment it gets, the sandbox it runs in, the output it leaves.
 
-The repair agent runs code from the user's repository plus tests written by the LLM, so
-the test process gets as little as possible from the worker:
+The repair agent runs code from the user's repository plus tests written by the LLM.
+:func:`run_pytest` builds what such a run gets from the worker and reads what it printed;
+where pytest runs, and how it is isolated from the worker, is the job of the sandbox it is
+given (:mod:`dag_healer.repo.sandbox`, chosen by ``repo.sandbox``). Whatever the sandbox, every
+run works on a throw-away copy of the workspace without its ``.git`` folder, so a test can never
+change the clone that the worker commits and pushes.
 
 * **Environment** (:func:`scrubbed_env`): no LLM/GitHub/SMTP credentials, no
   ``HEALER_*`` settings, no Airflow metadata-database or JWT settings, no
@@ -15,21 +19,24 @@ the test process gets as little as possible from the worker:
   instance-metadata credentials and no shared credential or config file
   (:data:`CLOUD_SANDBOX_ENV`). These rules are applied after the caller's ``extra_env``, so an
   orchestrator override can never bring a credential back.
-* **Time**: the whole process group is killed when ``timeout`` expires (POSIX:
-  ``start_new_session`` + ``os.killpg``; Windows: best-effort ``taskkill /T``).
-* **Resources** (POSIX): ``RLIMIT_AS``, ``RLIMIT_NPROC`` and ``RLIMIT_FSIZE`` are lowered
-  in the child before ``exec`` (never raised above the current limits). A limit the kernel
-  refuses is skipped: macOS does not let a process lower ``RLIMIT_AS``.
 * **Output** goes to a temporary file (not memory) and only the last
   :data:`MAX_OUTPUT_CHARS` characters are kept.
+* **Launch failures** (the sandbox could not run pytest at all: an unreachable container
+  engine, a missing image, a missing interpreter) are reported with ``exit_code``
+  :data:`LAUNCH_FAILED_EXIT_CODE` and :attr:`PytestResult.launch_error`, never as test results.
 
-There is no network isolation: this is a guard against accidents, not a sandbox for
-hostile code (see docs/security.md). The command is ``python -m pytest`` so the
-workspace root is importable (``python -m`` puts the working directory on
-``sys.path``), exactly like running the suite from a checkout.
+Without a ``sandbox`` argument the run uses the ``process`` sandbox, which keeps the old
+guard-against-accidents properties: the whole process group is killed when ``timeout`` expires
+(POSIX: ``start_new_session`` + ``os.killpg``; Windows: best-effort ``taskkill /T``), and
+``RLIMIT_AS``, ``RLIMIT_NPROC`` and ``RLIMIT_FSIZE`` are lowered in the child before ``exec``
+(POSIX; never raised above the current limits, and skipped when the kernel refuses: macOS does
+not let a process lower ``RLIMIT_AS``). It isolates nothing else (see docs/security.md, section
+4.3). The command is ``python -m pytest`` so the workspace root is importable (``python -m``
+puts the working directory on ``sys.path``), exactly like running the suite from a checkout.
 
-Limitation: when the workspace has no pytest configuration file of its own, pytest
-looks for one in parent directories; keep workspaces outside other Python projects.
+Limitation: when the workspace has no pytest configuration file of its own, pytest looks for
+one in the parent directories of the copy (the system's temporary directory for the
+``process`` sandbox).
 """
 
 from __future__ import annotations
@@ -37,7 +44,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -46,20 +52,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dag_healer.masking import mask_text
+from dag_healer.repo.sandbox import (
+    LAUNCH_FAILED_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    Sandbox,
+    SandboxJob,
+)
+
+# The process sandbox's resource limits, importable from here as before.
+from dag_healer.repo.sandbox import RLIMIT_AS_BYTES as RLIMIT_AS_BYTES
+from dag_healer.repo.sandbox import RLIMIT_FSIZE_BYTES as RLIMIT_FSIZE_BYTES
+from dag_healer.repo.sandbox import RLIMIT_NPROC_COUNT as RLIMIT_NPROC_COUNT
+
 log = logging.getLogger(__name__)
 
 #: Maximum number of characters kept in :attr:`PytestResult.output_tail`.
 MAX_OUTPUT_CHARS = 20000
-#: ``exit_code`` reported when the run was killed by the timeout.
-TIMEOUT_EXIT_CODE = 124
-#: ``exit_code`` reported when pytest could not be started at all (pytest's
-#: "internal error" code, so :attr:`PytestResult.collection_error` is True).
-LAUNCH_FAILED_EXIT_CODE = 3
-
-#: POSIX resource limits applied to the pytest process (lowered, never raised).
-RLIMIT_AS_BYTES = 8 * 1024**3
-RLIMIT_NPROC_COUNT = 4096
-RLIMIT_FSIZE_BYTES = 1024**3
 
 #: Variables always removed from the pytest environment.
 SCRUB_EXACT = frozenset(
@@ -179,6 +188,8 @@ class PytestResult:
     warnings: int = 0
     collection_errors: int = 0
     summary_line: str = ""
+    #: Why the sandbox could not run pytest at all (no test result; ``exit_code`` is 3).
+    launch_error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -198,6 +209,8 @@ class PytestResult:
         """Return a one-line human summary, e.g. ``"exit 1: 1 failed, 2 passed in 0.31s"``."""
         if self.timed_out:
             return f"timed out after {self.duration:.0f} s (killed)"
+        if self.launch_error is not None:
+            return f"exit {self.exit_code}: the sandbox could not run pytest ({self.launch_error})"
         if self.summary_line:
             return f"exit {self.exit_code}: {self.summary_line}"
         return f"exit {self.exit_code}: no pytest summary line"
@@ -290,63 +303,7 @@ def scrubbed_env(
     return _enforce_cloud_sandbox(env)
 
 
-# --------------------------------------------------------------------------- process control
-
-
-def _apply_limits() -> None:  # pragma: no cover - runs in the forked child (POSIX only)
-    """preexec_fn: lower RLIMIT_AS / RLIMIT_NPROC / RLIMIT_FSIZE in the child."""
-    import resource
-
-    wanted = [
-        (getattr(resource, "RLIMIT_AS", None), RLIMIT_AS_BYTES),
-        (getattr(resource, "RLIMIT_NPROC", None), RLIMIT_NPROC_COUNT),
-        (getattr(resource, "RLIMIT_FSIZE", None), RLIMIT_FSIZE_BYTES),
-    ]
-    for limit, value in wanted:
-        if limit is None:
-            continue
-        try:
-            soft, hard = resource.getrlimit(limit)
-            new_soft = value
-            if hard != resource.RLIM_INFINITY:
-                new_soft = min(new_soft, hard)
-            if soft != resource.RLIM_INFINITY:
-                new_soft = min(new_soft, soft)
-            resource.setrlimit(limit, (new_soft, hard))
-        except (ValueError, OSError):
-            pass
-
-
-def _popen_kwargs() -> dict[str, Any]:
-    if os.name == "posix":
-        return {"start_new_session": True, "preexec_fn": _apply_limits}
-    return {}
-
-
-def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Kill the pytest process and everything it started."""
-    if os.name == "posix":
-        import signal
-
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    else:  # Windows: best effort
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
+# --------------------------------------------------------------------------- output
 
 
 def _truncation_marker(dropped: int) -> str:
@@ -441,23 +398,29 @@ def run_pytest(
     python: str | None = None,
     extra_args: Sequence[str] = (),
     extra_env: Mapping[str, str | None] | None = None,
+    sandbox: Sandbox,
 ) -> PytestResult:
     """Run ``python -m pytest -q -p no:cacheprovider -o addopts= [extra_args] [targets]``.
 
     Args:
-        workdir: directory to run in (the workspace root).
+        workdir: the workspace root; the run works on a throw-away copy of it (without
+            ``.git``) and never changes it.
         targets: test files / node ids relative to ``workdir`` (default: pytest's own
             discovery, i.e. the repository's ``testpaths`` or the whole tree).
-        timeout: seconds before the whole process tree is killed.
-        python: interpreter to use (default: the current one).
+        timeout: seconds before the run is killed.
+        python: interpreter to use (default: the current one for the ``process`` sandbox,
+            ``repo.sandbox.python`` for the ``container`` sandbox).
         extra_args: extra pytest options, placed before the targets.
         extra_env: variables set on top of :func:`scrubbed_env` (``None`` removes one); the
             cloud credential rules are applied again afterwards, so it can neither set a
             cloud credential nor enable the instance metadata service.
+        sandbox: where pytest runs (:func:`dag_healer.repo.sandbox.build_sandbox`). It has no
+            default, so that no caller runs model-written code without isolation by omission.
 
     Returns:
-        A :class:`PytestResult`. Never raises for test failures, timeouts or a missing
-        interpreter (the latter is reported with ``exit_code`` 3 and the error text).
+        A :class:`PytestResult`. Never raises for test failures, timeouts or launch failures
+        (an unusable sandbox, a missing interpreter: ``exit_code`` 3 and
+        :attr:`PytestResult.launch_error`).
 
     Raises:
         FileNotFoundError: ``workdir`` does not exist.
@@ -465,11 +428,7 @@ def run_pytest(
     root = Path(workdir)
     if not root.is_dir():
         raise FileNotFoundError(f"pytest working directory does not exist: {root}")
-    interpreter = python or sys.executable
-    cmd = [
-        interpreter,
-        "-m",
-        "pytest",
+    pytest_args = [
         "-q",
         "-p",
         "no:cacheprovider",
@@ -488,55 +447,53 @@ def run_pytest(
                 env[key] = str(value)
         _enforce_cloud_sandbox(env)
         output_path = tmpdir / "pytest-output.log"
-        timed_out = False
         start = time.monotonic()
-        with open(output_path, "wb") as sink:
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=os.fspath(root),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=sink,
-                    stderr=subprocess.STDOUT,
-                    **_popen_kwargs(),
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                log.warning("could not start pytest with %s: %s", interpreter, exc)
-                return PytestResult(
-                    exit_code=LAUNCH_FAILED_EXIT_CODE,
-                    duration=time.monotonic() - start,
-                    output_tail=f"could not start pytest ({interpreter}): {exc}",
-                    command=cmd,
-                )
-            try:
-                exit_code = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _kill_tree(proc)
-                try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:  # pragma: no cover - unkillable child
-                    log.warning("pytest process %s did not exit after kill", proc.pid)
-                exit_code = TIMEOUT_EXIT_CODE
+        run = sandbox.run(
+            SandboxJob(
+                workdir=root,
+                args=tuple(pytest_args),
+                env=env,
+                timeout=timeout,
+                output=output_path,
+                scratch=tmpdir,
+                python=python,
+            )
+        )
         duration = time.monotonic() - start
-        output = _read_tail(output_path, MAX_OUTPUT_CHARS)
+        output = _read_tail(output_path, MAX_OUTPUT_CHARS) if output_path.is_file() else ""
+    command = list(run.command) or [python or sys.executable, "-m", "pytest", *pytest_args]
+    shown = " ".join(pytest_args[5:]) or "(default discovery)"
 
-    if timed_out:
+    if run.launch_error is not None:
+        message = run.launch_error
+        log.warning(
+            "pytest %s in %s (%s sandbox) could not start: %s", shown, root, sandbox.name, mask_text(message)
+        )
+        tail = (
+            message if message.startswith("could not start pytest") else f"could not start pytest: {message}"
+        )
+        return PytestResult(
+            exit_code=LAUNCH_FAILED_EXIT_CODE,
+            duration=round(duration, 3),
+            output_tail=truncate_tail(tail, MAX_OUTPUT_CHARS),
+            command=command,
+            launch_error=message,
+        )
+    if run.timed_out:
         note = f"\n[dag-healer] pytest was killed after exceeding the {timeout} s timeout\n"
         output = truncate_tail(output.rstrip("\n") + note, MAX_OUTPUT_CHARS)
     counts = parse_summary(output)
     result = PytestResult(
-        exit_code=exit_code,
+        exit_code=TIMEOUT_EXIT_CODE if run.timed_out else run.exit_code,
         passed=counts["passed"],
         failed=counts["failed"],
         errors=counts["errors"],
         skipped=counts["skipped"],
         collected=counts["collected"],
         duration=round(duration, 3),
-        timed_out=timed_out,
+        timed_out=run.timed_out,
         output_tail=output,
-        command=cmd,
+        command=command,
         xfailed=counts["xfailed"],
         xpassed=counts["xpassed"],
         deselected=counts["deselected"],
@@ -544,12 +501,7 @@ def run_pytest(
         collection_errors=counts["collection_errors"],
         summary_line=counts["summary_line"],
     )
-    log.info(
-        "pytest %s in %s -> %s",
-        " ".join(cmd[8:]) or "(default discovery)",
-        root,
-        result.summary(),
-    )
+    log.info("pytest %s in %s (%s sandbox) -> %s", shown, root, sandbox.name, result.summary())
     return result
 
 

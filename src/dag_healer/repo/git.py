@@ -14,12 +14,20 @@ Important properties:
 * Every git invocation passes ``-c safe.directory=* -c core.autocrlf=false
   -c core.filemode=false`` so that bind-mounted repositories owned by another uid work,
   files are checked out byte-for-byte and Windows bind mounts (which report every file
-  as 0777) do not produce mode-only diffs. Git does **not** pass ``-c`` values to the
-  ``upload-pack`` / ``receive-pack`` it starts for local clones and pushes (it clears the
-  config environment of local transports), so those commands are given explicitly with
-  the same ``safe.directory`` override (:data:`LOCAL_UPLOAD_PACK`,
-  :data:`LOCAL_RECEIVE_PACK`); without it a clone of a bind mount owned by another uid
-  fails with "detected dubious ownership".
+  as 0777) do not produce mode-only diffs.
+* **No hook and no fsmonitor command runs.** Every git invocation also passes
+  ``-c core.hooksPath=<empty directory> -c core.fsmonitor=false``: no hook (``pre-commit``,
+  ``post-checkout``, ``reference-transaction``, ...) and no fsmonitor command runs, whatever
+  the clone's or the source repository's ``.git/config`` and ``.git/hooks`` hold. The empty
+  directory (:func:`empty_hooks_dir`) is private to the worker process and checked before
+  every use.
+* Git does **not** pass ``-c`` values to the ``upload-pack`` / ``receive-pack`` it starts
+  for local clones and pushes (it clears the config environment of local transports), so
+  those commands carry ``safe.directory`` and the two settings above themselves
+  (:func:`_local_upload_pack`, :func:`_local_receive_pack`). Without ``safe.directory`` a
+  clone of a bind mount owned by another uid fails with "detected dubious ownership";
+  without the hook settings, ``receive-pack`` would run the hooks of the *source*
+  repository when the worker pushes the healer branch into it.
 * Output is decoded as UTF-8 **without** newline translation, so diffs of CRLF files
   survive intact (``fix.patch`` must apply cleanly).
 * Tokens never appear on a command line or inside a URL: :meth:`Workspace.push` writes a
@@ -32,15 +40,18 @@ Nothing in this module imports Airflow.
 
 from __future__ import annotations
 
+import atexit
 import codecs
 import logging
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -58,10 +69,8 @@ GIT_SAFE_CONFIG: tuple[str, ...] = (
     "-c",
     "core.filemode=false",
 )
-#: Remote-side commands of local transports (run through ``sh`` by git, which starts them
-#: without the ``-c`` configuration of the calling command).
-LOCAL_UPLOAD_PACK = "git -c safe.directory='*' upload-pack"
-LOCAL_RECEIVE_PACK = "git -c safe.directory='*' receive-pack"
+#: Prefix of the private directory every git command uses as ``core.hooksPath``.
+NO_HOOKS_PREFIX = "dag-healer-no-hooks-"
 #: Extra presentation settings: never quote non-ASCII paths in status/diff output.
 _GIT_DISPLAY_CONFIG: tuple[str, ...] = ("-c", "core.quotepath=false")
 
@@ -126,6 +135,83 @@ class GitError(RuntimeError):
 
 # --------------------------------------------------------------------------- running git
 
+_no_hooks_lock = threading.Lock()
+_no_hooks_dir: Path | None = None
+_no_hooks_cleanup_registered = False
+
+
+def _is_empty_directory(path: Path) -> bool:
+    """True for a real (not linked) directory with nothing in it."""
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return False
+        with os.scandir(path) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return False
+
+
+def _discard(path: Path) -> None:
+    """Remove a hooks directory, or whatever was put in its place, without following a link."""
+    try:
+        if os.path.islink(path) or not os.path.isdir(path):
+            os.unlink(path)
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        log.debug("could not remove %s", path)
+
+
+def _remove_empty_hooks_dir() -> None:
+    global _no_hooks_dir
+    with _no_hooks_lock:
+        if _no_hooks_dir is not None:
+            _discard(_no_hooks_dir)
+            _no_hooks_dir = None
+
+
+def empty_hooks_dir() -> Path:
+    """Return the empty directory that every git command of the worker uses as ``core.hooksPath``.
+
+    A private ``tempfile.mkdtemp`` directory, created once per process and removed at exit. It
+    is checked to be an empty directory before each use and replaced (with a warning) when
+    something was planted in it or it was removed.
+    """
+    global _no_hooks_dir, _no_hooks_cleanup_registered
+    with _no_hooks_lock:
+        current = _no_hooks_dir
+        if current is not None and _is_empty_directory(current):
+            return current
+        if current is not None:
+            log.warning("the empty git hooks directory %s was changed or removed; using a new one", current)
+            _discard(current)
+        _no_hooks_dir = Path(tempfile.mkdtemp(prefix=NO_HOOKS_PREFIX))
+        if not _no_hooks_cleanup_registered:
+            atexit.register(_remove_empty_hooks_dir)
+            _no_hooks_cleanup_registered = True
+        return _no_hooks_dir
+
+
+def _hooks_settings() -> tuple[str, str]:
+    """``core.hooksPath`` (forward slashes, also on Windows) and ``core.fsmonitor`` settings."""
+    return f"core.hooksPath={empty_hooks_dir().as_posix()}", "core.fsmonitor=false"
+
+
+def _local_transport(program: str) -> str:
+    """The shell command of a local transport's remote side, with its own ``-c`` settings."""
+    settings = ("safe.directory=*", *_hooks_settings())
+    return " ".join(["git", *(f"-c {shlex.quote(item)}" for item in settings), program])
+
+
+def _local_upload_pack() -> str:
+    """``--upload-pack`` of local clones and ``ls-remote`` (see the module docstring)."""
+    return _local_transport("upload-pack")
+
+
+def _local_receive_pack() -> str:
+    """``--receive-pack`` of local pushes: no hook of the target repository runs."""
+    return _local_transport("receive-pack")
+
 
 def _decode(data: bytes | None) -> str:
     """Decode git output as UTF-8 without translating newlines."""
@@ -167,7 +253,7 @@ def run_git(
     timeout: float | None = DEFAULT_GIT_TIMEOUT,
     redact: Iterable[str] = (),
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``git <GIT_SAFE_CONFIG> <args>`` in ``cwd`` and return the completed process.
+    """Run ``git <GIT_SAFE_CONFIG> <no hooks, no fsmonitor> <args>`` in ``cwd``; return the process.
 
     Args:
         args: git arguments (the subcommand and its options); may start with extra
@@ -188,8 +274,10 @@ def run_git(
             git exited with a non-zero status.
     """
     secrets = [s for s in redact if s]
-    cmd = ["git", *GIT_SAFE_CONFIG, *(os.fspath(a) for a in args)]
-    shown = _redact(" ".join(cmd[len(GIT_SAFE_CONFIG) + 1 :]), secrets)
+    hooks_path, fsmonitor = _hooks_settings()
+    prefix = ["git", *GIT_SAFE_CONFIG, "-c", hooks_path, "-c", fsmonitor]
+    cmd = [*prefix, *(os.fspath(a) for a in args)]
+    shown = _redact(" ".join(cmd[len(prefix) :]), secrets)
     log.debug("git %s (cwd=%s)", shown, cwd)
     if not Path(os.fspath(cwd)).is_dir():
         raise GitError(f"git working directory does not exist: {cwd}", command=cmd)
@@ -393,7 +481,7 @@ class Workspace:
         args: list[str] = ["clone", "--quiet", "--single-branch"]
         if local:
             args.append("--no-hardlinks")
-        pack: list[str] = ["--upload-pack", LOCAL_UPLOAD_PACK] if _uses_local_transport(src) else []
+        pack: list[str] = ["--upload-pack", _local_upload_pack()] if _uses_local_transport(src) else []
         args += pack
         if branch:
             listed = run_git(
@@ -553,7 +641,7 @@ class Workspace:
         target = self._resolve_remote(remote)
         refspec = f"{'+' if force else ''}refs/heads/{branch}:refs/heads/{branch}"
         if not token:
-            pack = ["--receive-pack", LOCAL_RECEIVE_PACK] if _uses_local_transport(target) else []
+            pack = ["--receive-pack", _local_receive_pack()] if _uses_local_transport(target) else []
             self.git("push", "--quiet", *pack, target, refspec)
             log.info("pushed %s to %s", branch, _strip_userinfo(target))
             return
@@ -585,7 +673,7 @@ class Workspace:
         if checked_out.returncode == 0 and checked_out.stdout.strip() == branch:
             raise GitError(f"refusing to push to {branch!r}: it is checked out in {target}")
         refspec = f"{'+' if force else ''}HEAD:refs/heads/{branch}"
-        self.git("push", "--quiet", "--receive-pack", LOCAL_RECEIVE_PACK, os.fspath(target), refspec)
+        self.git("push", "--quiet", "--receive-pack", _local_receive_pack(), os.fspath(target), refspec)
         log.info("pushed %s into %s", branch, target)
 
     def remove(self) -> None:
@@ -753,6 +841,7 @@ __all__ = [
     "Workspace",
     "askpass_env",
     "detect_eol",
+    "empty_hooks_dir",
     "git_environment",
     "github_https_url",
     "is_git_repo",

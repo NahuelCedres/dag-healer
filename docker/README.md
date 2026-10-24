@@ -19,7 +19,8 @@ python scripts/tasks.py up            # first run builds the image (UI + wheel +
 python scripts/tasks.py init          # dag-healer init on the mounted repo (the worker waits for it)
 python scripts/tasks.py ps            # container status
 python scripts/tasks.py logs -f airflow-scheduler
-python scripts/tasks.py healer doctor # any dag-healer command, inside the api-server
+python scripts/tasks.py doctor        # dag-healer doctor in healer-worker, with the test sandbox
+python scripts/tasks.py healer contracts list   # any dag-healer command, inside the api-server
 python scripts/tasks.py airflow dags list
 python scripts/tasks.py down          # stop (keeps the databases)
 python scripts/tasks.py reset --yes   # stop, delete volumes and .demo/
@@ -48,7 +49,7 @@ Then open:
 | `airflow-scheduler` | `dag-healer/airflow:dev` | - | Scheduler; with the LocalExecutor it also runs the tasks (and the dag-healer listener) |
 | `airflow-dag-processor` | `dag-healer/airflow:dev` | - | Parses `/opt/airflow/repo/dags` |
 | `airflow-triggerer` | `dag-healer/airflow:dev` | - | Deferrable operators |
-| `healer-worker` | `dag-healer/airflow:dev` | - | `dag-healer worker` (reconcile, triage, report, repair); starts with the stack and waits until `healer.yaml` exists |
+| `healer-worker` | `dag-healer/airflow:dev` | - | `dag-healer worker` (reconcile, triage, report, repair); starts with the stack and waits until `healer.yaml` exists. The only service with the engine socket: it starts the test sandbox containers (see "Test sandbox") |
 | `tests` | `dag-healer/airflow:dev` | - | Profile `tests`: `pytest tests/airflow` inside the image |
 
 Only `airflow-init` has a `build:` section; the other services reuse the image it builds
@@ -82,7 +83,10 @@ Multi-stage, build context = repository root:
 3. `wheel` - `python:3.12-slim`, copies the fresh bundle into the package and runs
    `pip wheel --no-deps`.
 4. final - `apache/airflow:3.3.2` + `pip install "apache-airflow==3.3.2" <wheel> pytest
-   -r example_existing_repo/requirements.txt` (Airflow pinned so pip never moves it).
+   -r example_existing_repo/requirements.txt` (Airflow pinned so pip never moves it) + the
+   docker CLI (`COPY --from=docker:29.8.2-cli`, a static binary without an engine), which
+   `healer-worker` uses to start the test sandbox. The same image is the sandbox image, so it
+   must hold no secrets.
 
 Build arguments: `AIRFLOW_VERSION` (3.3.2), `EXTRA_REQUIREMENTS` (requirements file relative
 to the build context, installed when it exists; empty to skip), `INSTALL_TEST_TOOLS`
@@ -96,6 +100,7 @@ to the build context, installed when it exists; empty to skip), `INSTALL_TEST_TO
 | `.demo/logs` (`HEALER_LOGS_DIR`) | `/opt/airflow/logs` | Airflow task logs |
 | volume `healer-home` | `/opt/airflow/healer` | `HEALER_HOME`: worker clones, `PR.md` / `fix.patch` |
 | volume `postgres-db-volume` | `/var/lib/postgresql/data` | Both databases |
+| `/var/run/docker.sock` (`HEALER_DOCKER_SOCKET`) | `/var/run/docker.sock` | `healer-worker` only: the engine socket for the test sandbox |
 
 `PYTHONPATH=/opt/airflow/repo` makes the repository root importable for DAG code
 (`from src.etl import sales`), except in `healer-worker`, which never imports user code.
@@ -121,7 +126,9 @@ not defined.
 
 `healer-worker` additionally sets `HEALER_FAKE_LLM_DIR=/opt/airflow/repo/fixtures/fake_llm`,
 the git identity of its fix commits (`GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` `dag-healer`,
-e-mail `dag-healer@localhost`) and an empty `PYTHONPATH`.
+e-mail `dag-healer@localhost`), an empty `PYTHONPATH` and
+`HEALER_SANDBOX_IMAGE=${HEALER_IMAGE:-dag-healer/airflow:dev}` (the image of the test
+sandbox), and joins the group `HEALER_DOCKER_GID` (default 0) of the engine socket.
 
 ### LLM provider
 
@@ -130,6 +137,69 @@ deterministic policy and replays the YAML scripts in `<repo>/fixtures/fake_llm`,
 needs no API key. **To use Claude, set `HEALER_LLM_PROVIDER=anthropic` and
 `ANTHROPIC_API_KEY` in `docker/.env`**, then `python scripts/tasks.py up` (the containers are
 recreated with the new environment).
+
+## Test sandbox
+
+A CODE repair runs pytest several times: the existing suite, the generated test, then the test
+and the suite after each fix. In this stack each run is a fresh container of
+`dag-healer/airflow:dev`, started by `healer-worker` with the image's docker CLI on the host's
+engine, next to the stack's own containers (not inside `healer-worker`). The `healer.yaml` that
+`dag-healer init` writes selects it: `repo.sandbox.backend: container`, with
+`repo.sandbox.image` taken from `HEALER_SANDBOX_IMAGE`. Each run gets a copy of the clone without
+`.git` (streamed into the container: no host folder is mounted), no network, a read-only root
+file system, no capabilities, limits on memory, CPUs and processes, and the image's user
+`airflow` (uid 50000), which finds pytest and the example repository's libraries in the image.
+[docs/security.md](../docs/security.md) (section 4.3) lists what the sandbox enforces and what
+it does not.
+
+What the stack adds for it, to `healer-worker` only:
+
+- the engine socket, `${HEALER_DOCKER_SOCKET:-/var/run/docker.sock}` mounted at
+  `/var/run/docker.sock`;
+- the socket's group, `group_add: ["${HEALER_DOCKER_GID:-0}"]`;
+- `HEALER_SANDBOX_IMAGE=${HEALER_IMAGE:-dag-healer/airflow:dev}`. The sandbox never pulls the
+  image: it uses the one that `airflow-init` builds.
+
+> The engine socket is root-equivalent: whoever can use it can start a privileged container and
+> read or change every file of the engine's host (on Docker Desktop and OrbStack, their Linux
+> VM). The stack gives it to `healer-worker` only, never to the Airflow services (the scheduler
+> runs the DAGs' task code), and the sandbox containers never get it.
+
+`python scripts/tasks.py doctor` runs `dag-healer doctor` in `healer-worker`: its `sandbox` line
+must be `[ OK ]`, after a probe container has shown a non-root user, no network and an importable
+pytest. The demo runs the same check before it triggers the DAGs. In the api-server, which has no
+socket and no `HEALER_SANDBOX_IMAGE`, the check always fails.
+
+- **Docker Desktop and OrbStack** (macOS, Windows): usually nothing to set. Inside the
+  containers the socket belongs to root (OrbStack: `root:root`, mode 0660), and group 0 is the
+  primary group of every Airflow container. If `healer-worker` cannot use it, look at its owner
+  and mode in the container (`python scripts/tasks.py shell healer-worker`, then
+  `ls -ln /var/run/docker.sock`) and set `HEALER_DOCKER_GID` to its group.
+- **Linux (Docker Engine)**: the socket belongs to the `docker` group. When `scripts/tasks.py`
+  creates `docker/.env`, it writes that group's id to `HEALER_DOCKER_GID`. For a `docker/.env`
+  created earlier, add the line yourself: `HEALER_DOCKER_GID=` followed by the output of
+  `stat -c %g /var/run/docker.sock`.
+- **Rootless Docker or Podman**: point `HEALER_DOCKER_SOCKET` at the user's socket, for example
+  `/run/user/1000/docker.sock`, or `/run/user/1000/podman/podman.sock` after
+  `systemctl --user enable --now podman.socket`, and set `HEALER_DOCKER_GID` to its group. The
+  docker CLI of the image talks to Podman's Docker-compatible API, so `repo.sandbox.engine` stays
+  `docker`. A rootless engine is the safer choice: neither its socket nor its containers give
+  root on the host.
+
+`healer-worker` prints "cannot use /var/run/docker.sock" at start-up when the socket is missing
+or not writable for it; the worker itself logs why CODE repairs will fail until the sandbox works.
+After a change to `docker/.env`, run `python scripts/tasks.py up` again (the containers are
+recreated).
+
+Every sandbox container carries the label `dag-healer.sandbox=1` and is removed when its run
+ends, or killed and removed at `repo.pytest_timeout` (or once its output passes 256 MiB).
+`docker ps -a --filter label=dag-healer.sandbox=1` shows leftovers of a worker that was killed
+mid-run; a later run removes them once they have expired.
+
+To debug a repair without containers, set `repo.sandbox.backend: process` in
+`.demo/repo/healer.yaml` and restart the worker
+(`docker compose -f docker/compose.yaml restart healer-worker`). pytest then runs inside
+`healer-worker` without any isolation, and the worker and `dag-healer doctor` warn about it.
 
 ## Demo
 
@@ -147,12 +217,14 @@ day-2 story of `example_existing_repo/` end to end (standard library only, Windo
    settings in `healer.yaml` (poll every 5 s; e-mail alerts to `mailpit:1025` for
    `data-team@example.com`), the approval of the `sales_daily_etl` and `customers_sync`
    contracts (`inventory_report` stays a draft), a commit "Add dag-healer config and
-   contracts", and the worker is started;
+   contracts", and the worker is started. `dag-healer doctor` then runs in `healer-worker`,
+   and the demo stops early when its `sandbox` check fails (see "Test sandbox");
 4. copies `fixtures/day2/*.csv` over `data/incoming/` (uncommitted), triggers the three DAGs
    through the REST API (admin token) and waits for their runs to fail;
 5. waits (up to `--timeout`, 600 s) for the three incidents: `sales_daily_etl` DATA
    `reported`, `customers_sync` CODE `repaired` (new test, fix, PR.md, branch `healer/...`
-   in `.demo/repo`), `inventory_report` AMBIGUOUS `waiting_human`;
+   in `.demo/repo`; every pytest run in a sandbox container), `inventory_report` AMBIGUOUS
+   `waiting_human`;
 6. prints the incidents, the URLs (Healer page, each task-instance "Healer incident" tab,
    Mailpit) and copies each `PR.md` / `fix.patch` to `.demo/prs/<incident_id>/`.
 
@@ -163,7 +235,9 @@ tab and click "Resolve as code" or "Resolve as data".
 
 `python scripts/tasks.py e2e` (`scripts/e2e_smoke.py`) runs the demo and then checks
 everything through the APIs (incidents, diff, PR.md, branch, Mailpit e-mails with masked
-samples, 401/403 answers, resolve as code and as data); it exits 1 when a check fails.
+samples, 401/403 answers, resolve as code and as data) and the test sandbox (the doctor's
+`sandbox` check, the worker log of the CODE repair, the socket mounted into `healer-worker`
+only, no sandbox container left); it exits 1 when a check fails.
 `HEALER_E2E=1 python -m pytest tests/e2e` wraps it for pytest.
 
 Other store commands (run with `python scripts/tasks.py healer ...`): `store stats` (rows per
@@ -177,6 +251,11 @@ and `store reset --yes [--artifacts] [--keep-state]`. The worker, `dag-healer in
 Set `AIRFLOW_UID` in `docker/.env` to your uid (`id -u`); `scripts/tasks.py` does it when it
 creates the file. Otherwise files written by the containers under `.demo/` belong to uid 50000.
 
+Set `HEALER_DOCKER_GID` in `docker/.env` to the group of the engine socket
+(`stat -c %g /var/run/docker.sock`), so that `healer-worker` can start the test sandbox;
+`scripts/tasks.py` does it too when it creates the file. A rootless engine needs
+`HEALER_DOCKER_SOCKET` as well (see "Test sandbox").
+
 ## Troubleshooting
 
 - `python scripts/tasks.py logs airflow-init` - migrations, user creation, ownership fixes.
@@ -186,6 +265,11 @@ creates the file. Otherwise files written by the containers under `.demo/` belon
   demo) has not run yet.
 - "The Docker daemon did not answer within 60 s": Docker Desktop is starting or stuck; check
   its window (an error dialog may be waiting) or restart it.
+- `[FAIL] sandbox` in `python scripts/tasks.py doctor`, or CODE incidents that end
+  `repair_failed` with "The test sandbox is not usable": the reason says what to fix. The usual
+  ones: the socket is not reachable from `healer-worker` (`HEALER_DOCKER_SOCKET`,
+  `HEALER_DOCKER_GID`), or the image is missing (`python scripts/tasks.py build`). Once it is
+  fixed, "Retry repair" on the incident runs the repair again.
 - Docker Desktop needs at least 4 GB of memory and 2 CPUs for Airflow.
 - Ports 8080, 8025 or 1025 already in use: stop the other program, or edit `docker/compose.yaml`.
 - Postgres volumes created before `initdb/` existed have no `healer` database; `airflow-init`

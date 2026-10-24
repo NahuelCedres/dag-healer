@@ -28,7 +28,9 @@ phase-5 Airflow REST client passed as ``client`` is wrapped by
   skipped when a human already resolved the category), persist the masked results, then
   report, repair or wait for a human, and send the alert of the final state. Every step adds
   a timeline event (``context``, ``classification``, ``repair``, ``alert``...). It never
-  raises: an unexpected failure puts the incident in ``error`` with a masked event.
+  raises: an unexpected failure puts the incident in ``error`` with a masked event. A CODE
+  incident whose test sandbox (``repo.sandbox``) is not usable ends ``repair_failed`` before
+  any code runs, with the reason and how to fix it; ``retry repair`` works once it is.
 
 Everything persisted or logged goes through :mod:`dag_healer.masking` first: error texts are
 masked by the context gathering, samples are masked before they are stored.
@@ -101,6 +103,7 @@ if TYPE_CHECKING:
     from dag_healer.alerts import AlertOutcome
     from dag_healer.config import HealerConfig
     from dag_healer.core.ports import FailureFeed, OrchestratorAdapter
+    from dag_healer.repo.sandbox import Sandbox
     from dag_healer.worker.commands import CommandOutcome
 
 logger = logging.getLogger(__name__)
@@ -1332,6 +1335,7 @@ class _Pipeline:
 
     def _repair(self, ctx: IncidentContext) -> str:
         from dag_healer.agent.repair import RepairResult, run_repair
+        from dag_healer.repo.sandbox import sandbox_refusal
 
         self.stage = "repairing"
         with self.sf() as session:
@@ -1342,14 +1346,20 @@ class _Pipeline:
         if self.provider is None:
             result = RepairResult(status=REPAIR_FAILED, error="No LLM provider is configured.")
         else:
-            result = run_repair(
-                self.cfg,
-                snapshot,
-                ctx,
-                self.provider,
-                workspace_root=self.workspace_root,
-                extra_env=self._sandbox_env(),
-            )
+            usable = self._usable_sandbox()
+            if isinstance(usable, str):  # the reason: no code may run, not even the existing suite
+                logger.warning("incident %s: no repair: %s", _short(self.incident_id), usable)
+                result = RepairResult(status=REPAIR_FAILED, error=sandbox_refusal(usable))
+            else:
+                result = run_repair(
+                    self.cfg,
+                    snapshot,
+                    ctx,
+                    self.provider,
+                    workspace_root=self.workspace_root,
+                    extra_env=self._sandbox_env(),
+                    sandbox=usable,
+                )
         final = REPAIRED if result.status == REPAIRED else REPAIR_FAILED
         error = _clip(result.error, 2000) if result.error else None
         notes = [_clip(note, 500) for note in result.notes[:MAX_EVENT_NOTES]]
@@ -1410,6 +1420,23 @@ class _Pipeline:
             extra["error"] = error or "The repair failed."
         self._alert(final, extra)
         return final
+
+    def _usable_sandbox(self) -> Sandbox | str:
+        """The test sandbox of ``repo.sandbox`` when it can run code now, else why not (masked).
+
+        Probed for every repair, so ``retry repair`` works once the engine or the image is
+        fixed (a change to ``healer.yaml`` or to the worker's environment needs a restart).
+        """
+        from dag_healer.repo.sandbox import build_sandbox
+
+        try:
+            sandbox = build_sandbox(self.cfg.repo.sandbox)
+            reason = sandbox.unavailable_reason()
+        except ValueError as exc:  # an unknown backend
+            return mask_text(exc)
+        except Exception as exc:  # the check itself failed: no code runs either
+            return mask_text(f"the check of the test sandbox failed ({type(exc).__name__}: {exc})")
+        return sandbox if reason is None else mask_text(reason)
 
     def _sandbox_env(self) -> dict[str, str | None] | None:
         """The adapter's overrides of the pytest sandbox (``None`` offline or when they fail)."""

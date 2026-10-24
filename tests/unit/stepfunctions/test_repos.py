@@ -310,7 +310,13 @@ def test_the_example_healer_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
     from dag_healer.config import load_config_file
     from dag_healer.stepfunctions import FACTORY
 
-    for name in ("HEALER_LLM_PROVIDER", "HEALER_SFN_QUEUE_URL", "GITHUB_REPO", "GITHUB_TOKEN"):
+    for name in (
+        "HEALER_LLM_PROVIDER",
+        "HEALER_SFN_QUEUE_URL",
+        "HEALER_SANDBOX_IMAGE",
+        "GITHUB_REPO",
+        "GITHUB_TOKEN",
+    ):
         monkeypatch.delenv(name, raising=False)
     cfg = load_config_file(EXAMPLE / "healer.yaml")
     options = FACTORY.options_model.model_validate(cfg.orchestrator.options)
@@ -321,7 +327,13 @@ def test_the_example_healer_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.secret_literals() == []
     fixture = load_config_file(SFN_REPO / "healer.yaml")
     assert cfg.datasets == fixture.datasets
-    assert cfg.repo.model_dump(exclude={"path"}) == fixture.repo.model_dump(exclude={"path"})
+    assert cfg.repo.model_dump(exclude={"path", "sandbox"}) == fixture.repo.model_dump(
+        exclude={"path", "sandbox"}
+    )
+    # The example runs its tests in containers (the image comes from the environment); the
+    # offline tests have no container engine.
+    assert (cfg.repo.sandbox.backend, cfg.repo.sandbox.image) == ("container", None)
+    assert fixture.repo.sandbox.backend == "process"
     assert cfg.repo_root == EXAMPLE.resolve()
 
 

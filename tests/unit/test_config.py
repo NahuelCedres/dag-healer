@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import Any, get_args
 
 import pytest
 import yaml
@@ -11,6 +12,7 @@ import yaml
 from dag_healer.config import (
     ConfigError,
     HealerConfig,
+    SandboxConfig,
     config_candidates,
     config_from_mapping,
     default_config_yaml,
@@ -45,6 +47,7 @@ def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         "HEALER_SMTP_USERNAME",
         "HEALER_SMTP_PASSWORD",
         "HEALER_LLM_PROVIDER",
+        "HEALER_SANDBOX_IMAGE",
         "GITHUB_REPO",
         "GITHUB_TOKEN",
     ):
@@ -66,6 +69,7 @@ def test_defaults_match_contract() -> None:
     assert cfg.repo.test_command == "python -m pytest -q"
     assert cfg.repo.allowed_paths == ["src/", "dags/"]
     assert cfg.repo.pytest_timeout == 600
+    assert cfg.repo.sandbox == SandboxConfig()
     assert cfg.airflow.api_url == "http://localhost:8080"
     assert cfg.airflow.username is None and cfg.airflow.password is None
     assert cfg.monitor.dags == ["*"]
@@ -353,6 +357,87 @@ def test_github_repo_normalisation_and_hook_format() -> None:
         config_from_mapping({"masking": {"hook": "acme.masks.mask"}})
 
 
+# --------------------------------------------------------------------------- repo.sandbox
+def test_sandbox_defaults_and_dumps() -> None:
+    sandbox = HealerConfig().repo.sandbox
+    assert sandbox.model_dump() == {
+        "backend": "container",
+        "engine": "docker",
+        "image": None,
+        "python": "python",
+        "user": None,
+        "memory": "2g",
+        "cpus": 2.0,
+        "pids": 512,
+        "work_size": "1g",
+        "tmp_size": "512m",
+    }
+    # a default sandbox is left out of dumps (existing dumps stay the same), another one is shown whole
+    assert "sandbox" not in HealerConfig().model_dump(mode="json")["repo"]
+    custom = config_from_mapping({"repo": {"sandbox": {"backend": "process"}}})
+    assert custom.model_dump(mode="json")["repo"]["sandbox"] == {
+        **SandboxConfig().model_dump(mode="json"),
+        "backend": "process",
+    }
+    assert custom.repo.model_dump(exclude={"sandbox"}) == HealerConfig().repo.model_dump()
+
+
+def test_a_container_sandbox_without_an_image_loads() -> None:
+    sandbox = config_from_mapping({"repo": {"sandbox": {"backend": "container", "image": "${NO_IMAGE}"}}})
+    assert sandbox.repo.sandbox == SandboxConfig()  # it is reported when a repair needs it, not here
+
+
+def test_sandbox_settings_are_normalised() -> None:
+    raw: dict[str, Any] = {
+        "image": "  ",
+        "user": " 1000:0 ",
+        "python": " ",
+        "memory": " 512M ",
+        "work_size": 1048576,
+        "cpus": None,
+    }
+    sandbox = config_from_mapping({"repo": {"sandbox": raw}}).repo.sandbox
+    assert (sandbox.image, sandbox.user, sandbox.python) == (None, "1000:0", "python")
+    assert (sandbox.memory, sandbox.work_size, sandbox.cpus) == ("512m", "1048576", None)
+    image = "registry.example.com:5000/etl-tests@sha256:" + "a" * 64
+    assert config_from_mapping({"repo": {"sandbox": {"image": image}}}).repo.sandbox.image == image
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"user": "root"}, "user: Value error, the sandbox never runs as root"),
+        ({"user": "0"}, "user: Value error, the sandbox never runs as root"),
+        ({"user": "0:0"}, "user: Value error, the sandbox never runs as root"),
+        ({"user": "root:staff"}, "user: Value error, the sandbox never runs as root"),
+        ({"user": "-u"}, "user: Value error, expected a user name or uid"),
+        ({"image": "--privileged"}, "image: Value error, '--privileged' is not an image reference"),
+        ({"image": "my image"}, "image: Value error, 'my image' is not an image reference"),
+        ({"python": "-x"}, "python: Value error, expected the name or the path of the Python interpreter"),
+        ({"python": "python;id"}, "python: Value error, expected the name or the path of the Python"),
+        ({"memory": "2gb"}, "memory: Value error, expected a size such as 512m or 2g"),
+        ({"tmp_size": "-1m"}, "tmp_size: Value error, expected a size such as 512m or 2g"),
+        ({"cpus": 0}, "cpus: Input should be greater than 0"),
+        ({"pids": 1}, "pids: Input should be greater than or equal to 16"),
+        ({"backend": "vm"}, "backend: Input should be 'container' or 'process'"),
+        ({"engine": "lxc"}, "engine: Input should be 'docker' or 'podman'"),
+        ({"network": "host"}, "network: unknown key"),
+    ],
+)
+def test_invalid_sandbox_settings_are_rejected(settings: dict[str, Any], message: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"repo": {"sandbox": settings}})
+    assert f"  - repo.sandbox.{message}" in str(excinfo.value)
+
+
+def test_the_sandbox_values_are_the_ones_the_sandbox_module_implements() -> None:
+    from dag_healer.repo import sandbox
+
+    fields = SandboxConfig.model_fields
+    assert get_args(fields["backend"].annotation) == sandbox.SANDBOX_BACKENDS
+    assert get_args(fields["engine"].annotation) == sandbox.SANDBOX_ENGINES
+
+
 def test_datasets_are_parsed_into_locators() -> None:
     cfg = config_from_mapping(
         {"datasets": {"sales": {"load": {"type": "csv", "path": "./data/in.csv", "options": {"sep": ";"}}}}}
@@ -441,6 +526,7 @@ def test_default_template_round_trips(isolated: Path, monkeypatch: pytest.Monkey
     assert cfg.notify.email is None  # no SMTP host in the environment
     assert cfg.secret_literals() == []
     assert cfg.store.url is None and cfg.github.token is None and cfg.ingest.token is None
+    assert cfg.repo.sandbox == SandboxConfig()  # no HEALER_SANDBOX_IMAGE in the environment
     assert cfg.model_dump(exclude={"repo"}) == HealerConfig().model_dump(exclude={"repo"})
 
     monkeypatch.setenv("HEALER_SMTP_HOST", "mailpit")
@@ -457,6 +543,23 @@ def test_default_template_round_trips(isolated: Path, monkeypatch: pytest.Monkey
     assert cfg.ingest.token == "tok"
     assert cfg.llm.provider == "fake"
     assert cfg.secret_literals() == []
+
+
+@pytest.mark.parametrize("orchestrator", ["airflow", "stepfunctions"])
+def test_the_templates_document_the_sandbox(orchestrator: str) -> None:
+    text = default_config_yaml(orchestrator=orchestrator)
+    lines = text.splitlines()
+    start = lines.index("  pytest_timeout: 600            # seconds per pytest run") + 1
+    block = lines[start : lines.index("", start)]  # up to the next blank line
+    assert block[0].startswith("  # Where pytest runs the repository's tests")
+    assert block[3] == "  sandbox:" and all(line.startswith("    ") for line in block[4:])
+    assert {line.split(":")[0].strip() for line in block[4:]} == set(SandboxConfig.model_fields)
+    raw = yaml.safe_load(text)
+    assert raw["repo"]["sandbox"]["image"] == "${HEALER_SANDBOX_IMAGE}"
+    assert config_from_mapping(raw, env={}).repo.sandbox == SandboxConfig()  # exactly the defaults
+    image = {"HEALER_SANDBOX_IMAGE": "registry.example.com/etl-tests:1.4"}
+    sandbox = config_from_mapping(raw, env=image).repo.sandbox
+    assert sandbox == SandboxConfig(image="registry.example.com/etl-tests:1.4")
 
 
 def test_template_parameters_are_quoted(tmp_path: Path) -> None:

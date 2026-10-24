@@ -1,8 +1,9 @@
-"""Tests for the sandboxed pytest runner (dag_healer.repo.pytest_runner)."""
+"""Tests for the pytest runner (dag_healer.repo.pytest_runner) and its process sandbox."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import textwrap
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from dag_healer.repo import sandbox as sandbox_module
 from dag_healer.repo.pytest_runner import (
     CLOUD_SANDBOX_ENV,
     LAUNCH_FAILED_EXIT_CODE,
@@ -18,10 +20,18 @@ from dag_healer.repo.pytest_runner import (
     TIMEOUT_EXIT_CODE,
     PytestResult,
     parse_summary,
-    run_pytest,
     scrubbed_env,
     truncate_tail,
 )
+from dag_healer.repo.pytest_runner import run_pytest as _run_pytest
+from dag_healer.repo.sandbox import ProcessSandbox, Sandbox, SandboxJob, SandboxProbe, SandboxRun
+
+
+def run_pytest(*args: object, **kwargs: object) -> PytestResult:
+    """run_pytest with the process sandbox unless a test passes another one (it is required)."""
+    kwargs.setdefault("sandbox", ProcessSandbox())
+    return _run_pytest(*args, **kwargs)  # type: ignore[arg-type]
+
 
 PROJECT_FILES = {
     # A pytest.ini keeps the inner run from looking for configuration in parent folders.
@@ -346,11 +356,149 @@ def test_missing_interpreter_is_reported_not_raised(project: Path) -> None:
     assert result.exit_code == LAUNCH_FAILED_EXIT_CODE
     assert result.collection_error and not result.ok
     assert "could not start pytest" in result.output_tail
+    assert result.launch_error is not None and "no-such-python" in result.launch_error
+    assert "could not run pytest" in result.summary()
 
 
 def test_missing_workdir_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         run_pytest(tmp_path / "missing")
+
+
+VANDAL_TEST = """
+    import os
+    import pathlib
+
+
+    def test_vandal():
+        root = pathlib.Path.cwd()
+        assert not (root / ".git").exists()  # the run sees a copy without the .git folder
+        (root / "created.txt").write_text("x", encoding="utf-8")
+        (root / "pkg" / "calc.py").write_text("def double(x):\\n    return 0\\n", encoding="utf-8")
+        os.remove(root / "README.md")
+        hooks = root / ".git" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "pre-commit").write_text("#!/bin/sh\\necho planted\\n", encoding="utf-8")
+"""
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def test_a_run_never_changes_the_workdir_nor_sees_its_git_folder(tmp_path: Path) -> None:
+    root = tmp_path / "clone"
+    files = {
+        "pytest.ini": "[pytest]\n",
+        "README.md": "readme\n",
+        "pkg/__init__.py": "",
+        "pkg/calc.py": PROJECT_FILES["pkg/calc.py"],
+        "tests/test_vandal.py": VANDAL_TEST,
+        ".git/HEAD": "ref: refs/heads/main\n",
+        ".git/config": "[core]\n\tbare = false\n",
+    }
+    for rel, content in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(textwrap.dedent(content).lstrip("\n"), encoding="utf-8", newline="\n")
+    before = _tree(root)
+
+    result = run_pytest(root, ["tests/test_vandal.py"], timeout=120)
+
+    assert result.ok, result.output_tail
+    assert _tree(root) == before
+    assert not (root / "created.txt").exists() and not (root / ".git" / "hooks").exists()
+
+
+class StubSandbox:
+    """A sandbox that records its jobs and answers with a prepared run (and output)."""
+
+    name = "stub"
+    isolated = True
+
+    def __init__(self, run: SandboxRun, output: str = "") -> None:
+        self.result = run
+        self.output = output
+        self.jobs: list[SandboxJob] = []
+
+    def unavailable_reason(self) -> str | None:
+        return None
+
+    def smoke_test(self) -> SandboxProbe:
+        return SandboxProbe(True, "stub")
+
+    def run(self, job: SandboxJob) -> SandboxRun:
+        self.jobs.append(job)
+        job.output.write_text(self.output, encoding="utf-8")
+        return self.result
+
+
+def test_a_launch_failure_is_reported_never_as_a_test_result(
+    project: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = "docker cannot reach its engine (no socket at 10.0.0.12); start it"
+    stub = StubSandbox(SandboxRun(LAUNCH_FAILED_EXIT_CODE, launch_error=error), output="1 passed in 0.01s\n")
+    assert isinstance(stub, Sandbox)
+
+    with caplog.at_level(logging.WARNING, logger="dag_healer.repo.pytest_runner"):
+        result = run_pytest(project, ["tests/test_pass.py"], timeout=30, sandbox=stub)
+
+    assert (result.exit_code, result.launch_error) == (LAUNCH_FAILED_EXIT_CODE, error)
+    assert result.collection_error and not result.ok and not result.timed_out
+    assert (result.passed, result.failed, result.collected) == (0, 0, 0)  # the output is no test result
+    assert result.output_tail == f"could not start pytest: {error}"
+    assert result.summary() == f"exit 3: the sandbox could not run pytest ({error})"
+    assert result.to_dict()["launch_error"] == error
+    assert "(stub sandbox)" in caplog.text and "10.0.0.12" not in caplog.text  # the log line is masked
+
+
+def test_run_pytest_hands_the_sandbox_its_job(project: Path) -> None:
+    command = ("python", "-m", "pytest", "-q")
+    stub = StubSandbox(SandboxRun(1, command=command), output="F.\n1 failed, 1 passed in 0.10s\n")
+
+    result = run_pytest(
+        project,
+        ["tests/test_pass.py"],
+        timeout=42,
+        python="python3",
+        extra_args=["-x"],
+        extra_env={"ENV_DUMP": "dump.json", "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEOVERRIDE1"},
+        sandbox=stub,
+    )
+
+    assert (result.exit_code, result.failed, result.passed) == (1, 1, 1)
+    assert result.command == list(command)
+    (job,) = stub.jobs
+    assert job.workdir == project and job.timeout == 42 and job.python == "python3"
+    assert job.args == ("-q", "-p", "no:cacheprovider", "-o", "addopts=", "-x", "tests/test_pass.py")
+    assert job.env["ENV_DUMP"] == "dump.json" and "AWS_ACCESS_KEY_ID" not in job.env
+    assert job.env["AIRFLOW_HOME"] == str(job.scratch / "airflow_home")
+    assert job.output.parent == job.scratch and not job.scratch.exists()  # removed after the run
+
+
+def test_a_timeout_reported_by_the_sandbox(project: Path) -> None:
+    stub = StubSandbox(SandboxRun(TIMEOUT_EXIT_CODE, timed_out=True), output="..")
+    result = run_pytest(project, ["tests/test_slow.py"], timeout=7, sandbox=stub)
+    assert result.timed_out and result.exit_code == TIMEOUT_EXIT_CODE
+    assert "killed after exceeding the 7 s timeout" in result.output_tail
+
+
+def test_the_log_line_names_the_sandbox(project: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="dag_healer.repo.pytest_runner"):
+        result = run_pytest(project, ["tests/test_pass.py"], timeout=120)
+    assert result.ok
+    assert f"pytest tests/test_pass.py in {project} (process sandbox) -> exit 0: 2 passed" in caplog.text
+
+
+def test_the_runner_still_exposes_the_sandbox_constants() -> None:
+    from dag_healer.repo import pytest_runner
+
+    assert pytest_runner.TIMEOUT_EXIT_CODE == sandbox_module.TIMEOUT_EXIT_CODE == 124
+    assert pytest_runner.LAUNCH_FAILED_EXIT_CODE == sandbox_module.LAUNCH_FAILED_EXIT_CODE == 3
+    for name in ("RLIMIT_AS_BYTES", "RLIMIT_NPROC_COUNT", "RLIMIT_FSIZE_BYTES"):
+        assert getattr(pytest_runner, name) == getattr(sandbox_module, name)
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -445,3 +593,8 @@ def test_result_properties() -> None:
     assert not PytestResult(exit_code=1, failed=1, collected=1).collection_error
     data = PytestResult(exit_code=1, failed=1, collected=1, command=["python"]).to_dict()
     assert data["ok"] is False and data["collection_error"] is False and data["command"] == ["python"]
+    assert data["launch_error"] is None
+    launch = PytestResult(exit_code=LAUNCH_FAILED_EXIT_CODE, launch_error="the image x is not present")
+    assert launch.collection_error and launch.summary() == (
+        "exit 3: the sandbox could not run pytest (the image x is not present)"
+    )

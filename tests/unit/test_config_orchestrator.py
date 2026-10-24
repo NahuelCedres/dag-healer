@@ -5,8 +5,9 @@
   repository, the demo ``healer.yaml``, the files other tests write, a file with every section
   set) give the ``dag-healer check`` YAML and the secret literals recorded with the phase-5
   ``config.py`` (``effective_settings.json``; re-record with ``HEALER_UPDATE_GOLDEN=1``).
-* The Airflow template is the phase-5 one plus a commented ``orchestrator:`` block; the
-  Step Functions template (section 9.14) is valid and shares the common sections.
+* The Airflow template is the phase-5 one plus a commented ``orchestrator:`` block and the
+  ``repo.sandbox`` block; the Step Functions template (section 9.14) is valid and shares the
+  common sections.
 * ``orchestrator:``, ``serve:`` (auth backends, tokens as hashes only, RBAC rules), the
   ``monitor.dags``/``pipelines`` alias, the widened modes with ``MonitorConfig.wants`` and the
   secret options of the adapter (``SECRET_FIELDS`` extended at load time).
@@ -103,6 +104,7 @@ CLEARED = (
     "GITHUB_TOKEN",
     "GITHUB_REPO",
     "ANTHROPIC_API_KEY",
+    "HEALER_SANDBOX_IMAGE",
 )
 #: The filled environment of the recording (``"unset"`` is the empty one).
 SET_ENV = {
@@ -341,22 +343,31 @@ def _orchestrator_block(text: str) -> list[str]:
     return text[start:end].splitlines()
 
 
+def _without_sandbox_block(text: str) -> str:
+    """The template without ``repo.sandbox``: from its comment to the blank line after it."""
+    start = text.index("\n  # Where pytest runs") + 1
+    end = text.index("\n\n", start) + 1
+    return text[:start] + text[end:]
+
+
 def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> None:
     text = default_config_yaml()
     phase5 = (PHASE5 / "default_template.yaml").read_text(encoding="utf-8")
-    assert _without_orchestrator_block(text) == phase5
+    assert _without_orchestrator_block(_without_sandbox_block(text)) == phase5
     block = _orchestrator_block(text)
     assert all(line.startswith("#") for line in block)
     assert "# orchestrator:" in block
-    assert yaml.safe_load(text) == yaml.safe_load(phase5)
+    raw = yaml.safe_load(text)
+    assert raw["repo"].pop("sandbox")["backend"] == "container"  # the block phase 5 did not have
+    assert raw == yaml.safe_load(phase5)
     assert default_config_yaml(orchestrator="airflow") == text
 
 
 def test_airflow_template_with_datasets_is_the_phase5_init_file_plus_the_block() -> None:
     text = default_config_yaml(repo_path=".", dags_dir="dags", tests_dir=None, datasets=EXAMPLE_DATASETS)
-    assert _without_orchestrator_block(text) == (PHASE5 / "init_example_repo.yaml").read_text(
-        encoding="utf-8"
-    )
+    assert _without_orchestrator_block(_without_sandbox_block(text)) == (
+        PHASE5 / "init_example_repo.yaml"
+    ).read_text(encoding="utf-8")
 
 
 def test_commented_orchestrator_block_documents_the_defaults() -> None:

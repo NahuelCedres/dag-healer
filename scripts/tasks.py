@@ -6,7 +6,8 @@ Windows by default)::
 
     python scripts/tasks.py up             # build if needed, start Airflow + dag-healer
     python scripts/tasks.py demo           # the scripted end-to-end demo (scripts/demo.py)
-    python scripts/tasks.py healer doctor  # run "dag-healer doctor" in the api-server
+    python scripts/tasks.py doctor         # "dag-healer doctor" in healer-worker (test sandbox too)
+    python scripts/tasks.py healer contracts list   # any dag-healer command, in the api-server
     python scripts/tasks.py --help         # every command
 
 Standard library only (Python 3.10+). It works from any working directory and with
@@ -71,6 +72,9 @@ HEALTH_REQUIRED_COMPONENTS = ("metadatabase", "scheduler")
 DEFAULT_TIMEOUT = 600
 #: Seconds `docker info` may take before the daemon is considered unreachable.
 DOCKER_INFO_TIMEOUT = 60
+#: Host path of the engine socket that docker/compose.yaml mounts into healer-worker (the test
+#: sandbox), unless HEALER_DOCKER_SOCKET names another one.
+DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 
 DEMO_GIT_USER = "dag-healer demo"
 DEMO_GIT_EMAIL = "dag-healer-demo@example.com"
@@ -250,8 +254,27 @@ def host_uid() -> int | None:
     return uid if uid != 0 else None
 
 
+def docker_socket_gid() -> int | None:
+    """Group of the engine socket on Linux hosts (None elsewhere, or when it cannot be read).
+
+    healer-worker joins it (``HEALER_DOCKER_GID`` in docker/.env) to start the test sandbox.
+    The socket is ``HEALER_DOCKER_SOCKET`` from the shell, else :data:`DEFAULT_DOCKER_SOCKET`.
+    Elsewhere (Docker Desktop, OrbStack) the compose default, group 0, applies.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        return os.stat(os.environ.get("HEALER_DOCKER_SOCKET") or DEFAULT_DOCKER_SOCKET).st_gid
+    except OSError:
+        return None
+
+
 def ensure_env_file() -> Path:
-    """Create docker/.env from docker/.env.example when it does not exist yet."""
+    """Create docker/.env from docker/.env.example when it does not exist yet.
+
+    On Linux it fills in ``AIRFLOW_UID`` (:func:`host_uid`) and, when the example has the
+    key, ``HEALER_DOCKER_GID`` (:func:`docker_socket_gid`).
+    """
     if ENV_FILE.exists():
         return ENV_FILE
     if not ENV_EXAMPLE.is_file():
@@ -260,6 +283,9 @@ def ensure_env_file() -> Path:
     uid = host_uid()
     if uid is not None:
         text = re.sub(r"(?m)^AIRFLOW_UID=.*$", f"AIRFLOW_UID={uid}", text)
+    gid = docker_socket_gid()
+    if gid is not None:
+        text = re.sub(r"(?m)^HEALER_DOCKER_GID=.*$", f"HEALER_DOCKER_GID={gid}", text)
     ENV_FILE.write_text(text, encoding="utf-8", newline="\n")
     info(f"created {rel(ENV_FILE)} from {rel(ENV_EXAMPLE)} (development defaults, edit as needed)")
     return ENV_FILE
@@ -673,8 +699,12 @@ def cmd_init(args: argparse.Namespace, extra: list[str]) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace, extra: list[str]) -> int:
-    """Run "dag-healer doctor" inside the api-server container."""
-    return compose_exec(APISERVER, ["dag-healer", "doctor", *extra])
+    """Run "dag-healer doctor" inside healer-worker.
+
+    The worker's container is where the test sandbox runs (the api-server has no engine socket),
+    so its sandbox check is the one that counts.
+    """
+    return compose_exec(WORKER_SERVICE, ["dag-healer", "doctor", *extra])
 
 
 def cmd_ui(args: argparse.Namespace, extra: list[str]) -> int:
@@ -793,7 +823,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("airflow", cmd_airflow, "run 'airflow ...' in the api-server", add_help=False)
     add("healer", cmd_healer, "run 'dag-healer ...' in the api-server", add_help=False)
     add("init", cmd_init, f"run 'dag-healer init --repo {CONTAINER_REPO} ...' in the api-server")
-    add("doctor", cmd_doctor, "run 'dag-healer doctor ...' in the api-server")
+    add("doctor", cmd_doctor, f"run 'dag-healer doctor ...' in {WORKER_SERVICE} (it checks the test sandbox)")
 
     p = add(
         "ui",

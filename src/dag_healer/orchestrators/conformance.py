@@ -28,6 +28,9 @@ Optional harness hooks enable the checks that need them; a missing hook skips it
 * ``adapter_modules()`` -- modules whose import must stay light (default: the adapter class's
   module): check 13;
 * ``end_to_end(tmp_path)`` -- an :class:`EndToEndSetup` with the three demo categories: check 14.
+  Its configuration selects the test sandbox of the CODE repair (``repo.sandbox``): the
+  ``process`` backend for an offline run, or a container image the engine holds. Otherwise the
+  CODE case ends ``repair_failed``, by design.
 
 The checks are numbered as in the design. pytest (and the store, the masking and the worker)
 are imported inside the tests, so importing this module never needs pytest.
@@ -114,7 +117,11 @@ class EndToEndCase:
 
 @dataclass(frozen=True)
 class EndToEndSetup:
-    """A repository, a configuration (store included) and an adapter whose feed lists the cases."""
+    """A repository, a configuration (store included) and an adapter whose feed lists the cases.
+
+    ``cfg.repo.sandbox`` must name a usable test sandbox (``backend: process`` offline), or the
+    CODE case ends ``repair_failed`` without running any code.
+    """
 
     cfg: HealerConfig
     adapter: OrchestratorAdapter

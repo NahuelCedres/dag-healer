@@ -2,10 +2,15 @@
 
 ``doctor`` runs every check and exits 1 when at least one of them reports an error.
 Secrets are never printed: only whether they are set. The generic checks (configuration,
-repository, contracts, store, UI bundle, LLM) come first, then the ``orchestrator`` check
-(the configured adapter loads and can serve ``monitor.modes`` and ``monitor.trigger``) and
-the adapter's own checks (``adapter.doctor_checks()``: for Airflow the API, the poller's login
-and the plugin entry point), then SMTP, secrets, ingest and GitHub.
+repository, contracts, store, UI bundle, LLM, test sandbox) come first, then the
+``orchestrator`` check (the configured adapter loads and can serve ``monitor.modes`` and
+``monitor.trigger``) and the adapter's own checks (``adapter.doctor_checks()``: for Airflow the
+API, the poller's login and the plugin entry point), then SMTP, secrets, ingest and GitHub.
+
+For the container backend the ``sandbox`` check starts one container of the configured image
+(no repository code in it) to prove that it runs as a non-root user, without network, with
+pytest importable. ``doctor`` and ``check`` warn about the ``process`` backend, which runs the
+repairs' tests without any isolation.
 """
 
 from __future__ import annotations
@@ -165,6 +170,25 @@ def check_llm(cfg: HealerConfig | None) -> CheckResult:
         model = cfg.llm.model if cfg is not None else "?"
         return CheckResult("llm", OK, f"{API_KEY_ENV} is set (value hidden); model {model}")
     return CheckResult("llm", ERROR, f"{API_KEY_ENV} is not set; the worker cannot classify or repair")
+
+
+def check_sandbox(cfg: HealerConfig) -> CheckResult:
+    """The test sandbox of the CODE repairs (``repo.sandbox``) can run code, isolated.
+
+    ``process`` is a warning (no isolation at all). For a container backend, a reason why it
+    cannot run (no image, no engine, the image missing...) is an error that names the fix;
+    otherwise a smoke run in one container must show a non-root user, no network and pytest.
+    """
+    from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING, build_sandbox
+
+    sandbox = build_sandbox(cfg.repo.sandbox)
+    if not sandbox.isolated:
+        return CheckResult("sandbox", WARN, PROCESS_BACKEND_WARNING)
+    reason = sandbox.unavailable_reason()
+    if reason is not None:
+        return CheckResult("sandbox", ERROR, reason)
+    probe = sandbox.smoke_test()
+    return CheckResult("sandbox", OK if probe.ok else ERROR, probe.detail)
 
 
 def check_orchestrator(cfg: HealerConfig) -> tuple[CheckResult, OrchestratorAdapter | None]:
@@ -330,6 +354,7 @@ def run_checks(config_path: str | None = None) -> list[CheckResult]:
         _guarded("store", lambda: check_store(cfg)),
         _guarded("ui bundle", check_bundle),
         _guarded("llm", lambda: check_llm(cfg)),
+        _guarded("sandbox", lambda: check_sandbox(cfg)),
     ]
     adapter: OrchestratorAdapter | None = None
     try:
@@ -410,6 +435,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
     literals = cfg.secret_literals()
     if literals:
         warn(f"literal secret values in healer.yaml: {', '.join(literals)} (use ${{ENV}} references)")
+    if cfg.repo.sandbox.backend == "process":
+        from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING
+
+        warn(PROCESS_BACKEND_WARNING)
     print("\nConfiguration is valid.")
     return 0
 
@@ -420,7 +449,7 @@ def _configure(parser: argparse.ArgumentParser) -> None:
 
 register_command(
     "doctor",
-    help="Check configuration, store, UI bundle, Airflow API, SMTP and secrets.",
+    help="Check configuration, store, UI bundle, test sandbox, Airflow API, SMTP and secrets.",
     handler=_cmd_doctor,
     configure=_configure,
 )
@@ -445,6 +474,7 @@ __all__ = [
     "check_orchestrator",
     "check_plugin_entry_point",
     "check_repo",
+    "check_sandbox",
     "check_secret_literals",
     "check_smtp",
     "check_store",

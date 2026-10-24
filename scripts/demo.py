@@ -15,7 +15,10 @@
    generated ``healer.yaml`` (poll every 5 s, alerts to Mailpit ``mailpit:1025`` for
    ``data-team@example.com``), approval of the ``sales_daily_etl`` and ``customers_sync``
    contracts (``inventory_report`` stays a draft) and a commit "Add dag-healer config and
-   contracts" in ``.demo/repo``; then the worker is started;
+   contracts" in ``.demo/repo``; then the worker is started and ``dag-healer doctor`` runs in
+   it: the demo stops early when its sandbox check fails, because the CODE repair runs every
+   pytest run in the test sandbox, a fresh container of the stack image (no network, a
+   throw-away copy of the clone) that the worker starts through the engine socket;
 4. **day 2** - copies ``fixtures/day2/*.csv`` over ``data/incoming/`` (left uncommitted, like
    files dropped by an upstream team), triggers the three DAGs through the REST API and waits
    for their runs to fail;
@@ -90,6 +93,13 @@ ALERT_PORT = 1025
 ALERT_FROM = "dag-healer@example.com"
 ALERT_TO = "data-team@example.com"
 CSRF_HEADERS = {"X-Requested-With": "dag-healer"}
+#: Name of the test-sandbox check in the ``dag-healer doctor`` output.
+SANDBOX_CHECK = "sandbox"
+#: Where to look when the sandbox check fails (the stack's socket mount and group).
+SANDBOX_HELP = (
+    "see 'Test sandbox' in docker/README.md (on Linux, HEALER_DOCKER_GID in docker/.env must be "
+    "the group of the engine socket)"
+)
 
 #: Statuses in which an incident waits for nothing but a human (or nothing at all).
 RESTING_STATUSES = frozenset({"reported", "repaired", "repair_failed", "waiting_human", "ignored", "error"})
@@ -327,6 +337,48 @@ def image_exists(docker: str, name: str) -> bool:
     """True when the image exists locally."""
     code, _ = tasks.capture([docker, "image", "inspect", "--format", "{{.Id}}", name], timeout=60)
     return code == 0
+
+
+# --------------------------------------------------------------------------- test sandbox
+
+_DOCTOR_LINE = re.compile(r"^\[\s*(?P<label>[A-Z]+)\s*\] (?P<rest>.*)$")
+
+
+def doctor_check(output: str, name: str = SANDBOX_CHECK) -> tuple[str, str] | None:
+    """``(label, detail)`` of one check in the output of ``dag-healer doctor`` (None: absent).
+
+    A doctor line reads ``[ OK ] <name, padded>  <detail>``; the label is ``OK``, ``WARN``,
+    ``FAIL`` or ``SKIP``.
+    """
+    for line in output.splitlines():
+        match = _DOCTOR_LINE.match(line.strip())
+        if match is None:
+            continue
+        rest = match.group("rest")
+        if rest == name or rest.startswith(f"{name} "):
+            return match.group("label"), rest[len(name) :].strip()
+    return None
+
+
+def check_sandbox(service: str = WORKER) -> tuple[str, str]:
+    """Run ``dag-healer doctor`` in ``service``; returns its sandbox check as ``(label, detail)``.
+
+    The CODE repair runs every pytest run in the test sandbox, which the worker starts through
+    the engine socket. With a failing sandbox check that repair would end ``repair_failed``
+    without running any code, so this raises DemoError with the doctor's reason instead. The
+    other checks do not stop the demo: what they report shows up in its later steps.
+    """
+    code, out = compose_exec(service, ["dag-healer", "doctor"], check=False)
+    found = doctor_check(out)
+    if found is None:
+        raise DemoError(
+            f"'dag-healer doctor' in {service} printed no {SANDBOX_CHECK} check (exit code {code}): "
+            "is the image older than the test sandbox? Rerun with --build"
+        )
+    label, detail = found
+    if label == "FAIL":
+        raise DemoError(f"the test sandbox does not work in {service}: {detail}; {SANDBOX_HELP}")
+    return label, detail
 
 
 # --------------------------------------------------------------------------- demo repository
@@ -743,6 +795,8 @@ def run_demo(options: DemoOptions) -> DemoResult:
     prepare_store(options.reset)
     adopt(options)
     compose("up", "--detach", "--wait", "--wait-timeout", "300", WORKER)
+    label, detail = check_sandbox()
+    say(f"test sandbox [{label}]: {detail}")
 
     say("4/6 day 2: new files in data/incoming/, triggering the DAGs")
     copied = copy_day2()

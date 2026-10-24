@@ -34,6 +34,7 @@ and works without `make` (every `make <target>` delegates to it):
 | `python scripts/tasks.py test` | unit tests, no Airflow needed |
 | `python scripts/tasks.py test-airflow` | tests that need Airflow, in the `tests` compose profile |
 | `python scripts/tasks.py e2e` | smoke test against the running stack |
+| `python scripts/tasks.py doctor` | `dag-healer doctor` in the worker's container, including the test sandbox check |
 | `python scripts/tasks.py down` | stop the stack |
 | `python scripts/tasks.py --help` | every command |
 
@@ -47,11 +48,32 @@ and works without `make` (every `make <target>` delegates to it):
 
 - UI changes: `pnpm lint`, `pnpm format:check` and `pnpm test` in `ui/`.
 - Plugin, API or worker changes: `python scripts/tasks.py test-airflow` as well.
+- Test sandbox changes (`repo.sandbox`, `src/dag_healer/repo/sandbox.py`): the opt-in tests
+  against a real container engine as well. They need Docker, or Podman with
+  `HEALER_SANDBOX_TEST_ENGINE=podman`, and the small image of `tests/sandbox/`:
+
+  ```bash
+  docker build -t dag-healer/sandbox-test:dev tests/sandbox
+  HEALER_SANDBOX_TEST_IMAGE=dag-healer/sandbox-test:dev \
+    .venv/bin/python -m pytest tests/unit/test_sandbox_engine.py
+  ```
+
+  Without `HEALER_SANDBOX_TEST_IMAGE` these tests are skipped. Run them with
+  `HEALER_SANDBOX_TEST_IMAGE=dag-healer/airflow:dev` too when the change touches how the sandbox
+  finds Python packages: the test image installs pytest with `pip install --user`, the
+  development image keeps its packages in a virtualenv under the `airflow` user's `~/.local`.
+
+The unit tests never need a container engine. The container backend is tested with a fake
+engine, and every test that runs a repair selects the `process` backend in its own
+configuration (`repo: {sandbox: {backend: process}}`). Keep it that way: never make a test
+depend on the default backend (`container`) or on an engine on the developer's machine.
 
 CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`: the
 ruff checks above, the unit tests on Linux, macOS and Windows (Python 3.10 and 3.13; Linux
-also 3.11 and 3.12), a build of both UI bundles and the wheel, and the `ui/` checks. It does
-not run `test-airflow`, so run it yourself when it applies.
+also 3.11 and 3.12), the container sandbox tests against Docker on Linux (job "Container
+sandbox (Docker)", with the image of `tests/sandbox/`), a build of both UI bundles and the
+wheel, and the `ui/` checks. It does not run `test-airflow`, so run it yourself when it
+applies.
 
 ## Commit messages
 

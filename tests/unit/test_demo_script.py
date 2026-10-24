@@ -2,7 +2,7 @@
 
 The Docker run itself is exercised by ``python scripts/tasks.py e2e`` (tests/e2e); here the
 pure helpers are checked: healer.yaml settings, the demo repository refresh, the HTTP session,
-the incident polling and the e2e evidence parsers.
+the incident polling, the test-sandbox pre-flight and the e2e evidence parsers.
 """
 
 from __future__ import annotations
@@ -430,3 +430,113 @@ def test_incidents_of_runs_accepts_a_failure_folded_into_an_open_incident(demo: 
     assert set(found) == {"inventory_report"}  # the folded repeat counts, the stale one does not
     exact = _incident("inventory_report", "new", "new", None, id="exact")
     assert demo.incidents_of_runs([open_one, exact], runs, since=since)["inventory_report"]["id"] == "exact"
+
+
+# --------------------------------------------------------------------------- test sandbox
+
+DOCTOR_OUTPUT = """\
+dag-healer doctor (0.1.0)
+[ OK ] config        /opt/airflow/repo/healer.yaml
+[WARN] ui bundle     an older bundle
+[FAIL] sandbox       repo.sandbox.image is not set; set it (or HEALER_SANDBOX_IMAGE) to an image
+[SKIP] github        no token
+
+1 ok, 1 warning(s), 1 error(s), 1 skipped
+"""
+
+
+def test_doctor_check_reads_one_check(demo: ModuleType) -> None:
+    assert demo.doctor_check(DOCTOR_OUTPUT) == (
+        "FAIL",
+        "repo.sandbox.image is not set; set it (or HEALER_SANDBOX_IMAGE) to an image",
+    )
+    assert demo.doctor_check(DOCTOR_OUTPUT, "ui bundle") == ("WARN", "an older bundle")
+    assert demo.doctor_check(DOCTOR_OUTPUT, "config") == ("OK", "/opt/airflow/repo/healer.yaml")
+    assert demo.doctor_check(DOCTOR_OUTPUT, "smtp") is None
+    assert demo.doctor_check("Error: service healer-worker is not running") is None
+
+
+@pytest.mark.parametrize("label", ["OK", "WARN", "FAIL"])
+def test_check_sandbox_runs_the_doctor_in_the_worker(
+    demo: ModuleType, monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    calls: list[tuple[str, list[str], bool]] = []
+
+    def compose_exec(service: str, command: list[str], *, check: bool = True) -> tuple[int, str]:
+        calls.append((service, list(command), check))
+        return (1 if label == "FAIL" else 0), f"[{label:^4}] sandbox  docker 29.8.2, image x\n"
+
+    monkeypatch.setattr(demo, "compose_exec", compose_exec)
+    if label == "FAIL":
+        with pytest.raises(demo.DemoError, match="sandbox does not work in healer-worker: docker 29.8.2"):
+            demo.check_sandbox()
+    else:
+        assert demo.check_sandbox() == (label, "docker 29.8.2, image x")
+    assert calls == [(demo.WORKER, ["dag-healer", "doctor"], False)]
+
+
+def test_check_sandbox_without_a_sandbox_check(demo: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(demo, "compose_exec", lambda service, command, *, check=True: (1, "no such service"))
+    with pytest.raises(demo.DemoError, match="printed no sandbox check"):
+        demo.check_sandbox()
+
+
+def test_e2e_sandbox_runs_of_one_incident(e2e: ModuleType) -> None:
+    prefix = "healer-worker-1  | 10:00:01 INFO dag_healer.repo.pytest_runner: pytest"
+    work = "/opt/airflow/healer/work"
+    log = "\n".join(
+        [
+            f"{prefix} (default discovery) in {work}/abc123 (container sandbox) -> exit 0: 3 passed",
+            f"{prefix} tests/test_x.py in {work}/abc123 (container sandbox) -> exit 1: 1 failed",
+            f"{prefix} tests/test_y.py in {work}/other (process sandbox) -> exit 0: 1 passed",
+            "healer-worker-1  | 10:00:09 INFO dag_healer.worker: incident abc123: repaired",
+        ]
+    )
+    assert e2e.sandbox_runs(log, "abc123") == ["container", "container"]
+    assert e2e.sandbox_runs(log, "other") == ["process"]
+    assert e2e.sandbox_runs(log, "") == []
+
+
+def test_e2e_socket_mounts(e2e: ModuleType) -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker" / "compose.yaml").read_text(encoding="utf-8"))
+    assert e2e.socket_mounts(compose) == {"healer-worker": ["/var/run/docker.sock"]}
+    podman = {"type": "bind", "source": "/run/user/1000/podman/podman.sock", "target": "/var/run/docker.sock"}
+    home = {"type": "volume", "source": "healer-home", "target": "/opt/airflow/healer"}
+    repo = {"type": "bind", "source": "/srv/repo", "target": "/opt/airflow/repo"}
+    rendered = {  # docker compose config --format json writes the long syntax
+        "services": {"worker": {"volumes": [podman, home]}, "scheduler": {"volumes": [repo]}, "mailpit": {}}
+    }
+    assert e2e.socket_mounts(rendered) == {"worker": ["/var/run/docker.sock"]}
+
+
+def test_e2e_sandbox_label_is_the_one_of_the_sandbox(e2e: ModuleType) -> None:
+    from dag_healer.repo.sandbox import CONTAINER_LABEL
+
+    assert e2e.SANDBOX_LABEL == f"{CONTAINER_LABEL}=1"
+
+
+def test_e2e_reads_the_log_line_of_run_pytest(
+    e2e: ModuleType, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from dag_healer.repo.pytest_runner import run_pytest
+    from dag_healer.repo.sandbox import SandboxJob, SandboxProbe, SandboxRun
+
+    class OneRun:  # a container sandbox whose run writes a pytest summary
+        name = "container"
+        isolated = True
+
+        def unavailable_reason(self) -> str | None:
+            return None
+
+        def smoke_test(self) -> SandboxProbe:
+            return SandboxProbe(True, "ok")
+
+        def run(self, job: SandboxJob) -> SandboxRun:
+            job.output.write_text("==== 1 passed in 0.01s ====\n", encoding="utf-8")
+            return SandboxRun(0)
+
+    clone = tmp_path / "work" / "abc123"
+    clone.mkdir(parents=True)
+    with caplog.at_level("INFO", logger="dag_healer.repo.pytest_runner"):
+        run_pytest(clone, ["tests/test_x.py"], sandbox=OneRun())
+    assert e2e.sandbox_runs(caplog.text, "abc123") == ["container"]

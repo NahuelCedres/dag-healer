@@ -289,6 +289,47 @@ def test_ensure_env_file_keeps_default_uid(
     assert (tmp_path / ".env").read_text(encoding="utf-8") == "AIRFLOW_UID=50000\n"
 
 
+def test_ensure_env_file_fills_the_socket_group(
+    tasks: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    example = tmp_path / ".env.example"
+    example.write_text("AIRFLOW_UID=50000\n# its group\nHEALER_DOCKER_GID=0\n", encoding="utf-8")
+    monkeypatch.setattr(tasks, "ENV_EXAMPLE", example)
+    monkeypatch.setattr(tasks, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(tasks, "host_uid", lambda: 1000)
+    monkeypatch.setattr(tasks, "docker_socket_gid", lambda: 998)
+    tasks.ensure_env_file()
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == (
+        "AIRFLOW_UID=1000\n# its group\nHEALER_DOCKER_GID=998\n"
+    )
+
+
+def test_ensure_env_file_without_the_group_key(
+    tasks: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    example = tmp_path / ".env.example"
+    example.write_text("AIRFLOW_UID=50000\n", encoding="utf-8")
+    monkeypatch.setattr(tasks, "ENV_EXAMPLE", example)
+    monkeypatch.setattr(tasks, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(tasks, "host_uid", lambda: None)
+    monkeypatch.setattr(tasks, "docker_socket_gid", lambda: 998)
+    tasks.ensure_env_file()
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == "AIRFLOW_UID=50000\n"
+
+
+def test_docker_socket_gid(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    socket = tmp_path / "engine.sock"  # any file stands in for the socket
+    socket.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HEALER_DOCKER_SOCKET", str(socket))
+    monkeypatch.setattr(tasks, "sys", SimpleNamespace(platform="linux"))  # the module's view only
+    assert tasks.docker_socket_gid() == os.stat(socket).st_gid
+    monkeypatch.setenv("HEALER_DOCKER_SOCKET", str(tmp_path / "missing.sock"))
+    assert tasks.docker_socket_gid() is None
+    monkeypatch.setenv("HEALER_DOCKER_SOCKET", str(socket))
+    monkeypatch.setattr(tasks, "sys", SimpleNamespace(platform="darwin"))  # Docker Desktop, OrbStack: group 0
+    assert tasks.docker_socket_gid() is None
+
+
 def test_compose_base_arguments(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tasks, "ensure_docker_running", lambda: "docker")
     monkeypatch.setattr(tasks, "ensure_env_file", lambda: tasks.ENV_FILE)
@@ -308,6 +349,18 @@ def test_healer_command_execs_in_apiserver(tasks: ModuleType, monkeypatch: pytes
     assert recorded == [
         ["docker", "compose", "exec", "-T", "airflow-apiserver", "dag-healer", "contracts", "list"]
     ]
+
+
+def test_doctor_runs_in_the_worker(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test sandbox runs from healer-worker (the api-server has no engine socket)."""
+    monkeypatch.setattr(tasks, "compose_base", lambda profiles=(): ["docker", "compose"])
+    monkeypatch.setattr(tasks, "is_interactive", lambda: False)
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(tasks, "run", lambda cmd, **_kw: recorded.append(list(cmd)) or 0)
+    assert tasks.main(["doctor"]) == 0
+    assert tasks.main(["doctor", "-c", "/opt/airflow/repo/healer.yaml"]) == 0
+    exec_doctor = ["docker", "compose", "exec", "-T", "healer-worker", "dag-healer", "doctor"]
+    assert recorded == [exec_doctor, [*exec_doctor, "-c", "/opt/airflow/repo/healer.yaml"]]
 
 
 def test_up_runs_compose_with_wait(tasks: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:

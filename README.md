@@ -11,6 +11,8 @@ Every failure is classified as one of:
 - **CODE** - the data is fine and the traceback points at your code: dag-healer writes a
   pytest test that reproduces the bug, proposes a minimal fix, runs your test-suite and
   opens a GitHub pull request (or writes a `PR.md` + patch when no token is configured).
+  Your test-suite, the new test and the fix run in a throw-away container without network
+  or credentials (see [docs/security.md](docs/security.md)).
 - **AMBIGUOUS** - a human decides from the dag-healer views inside the Airflow UI, and
   the agent resumes from there.
 
@@ -45,6 +47,12 @@ python -m venv .venv
 Building a wheel requires the UI bundle (`src/dag_healer/api/static/main.umd.cjs`);
 build it with `python scripts/tasks.py ui`, or set `DAG_HEALER_ALLOW_NO_UI=1` to build
 a wheel without the Airflow UI views.
+
+Running a CODE repair needs Docker or Podman and an image with your repository's test
+requirements (`repo.sandbox` in `healer.yaml`; `dag-healer doctor` checks it). Without
+them the repair fails before any code runs. For development only,
+`repo.sandbox.backend: process` runs the tests without any isolation. The Docker stack
+under `docker/` sets the sandbox up for the demo.
 
 ## Roadmap
 

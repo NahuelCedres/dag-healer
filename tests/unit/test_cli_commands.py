@@ -11,14 +11,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from dag_healer.cli import doctor_cmd
 from dag_healer.cli._output import mask_url, render_table
 from dag_healer.cli.main import main
 from dag_healer.contracts.io import contract_path, load_contract, save_contract
+from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING, ContainerSandbox, SandboxProbe
 
 EXAMPLE_REPO = Path(__file__).resolve().parents[2] / "example_existing_repo"
 SECRET = "sk-ant-do-not-print-me-123"
+#: A sandbox image of the doctor tests (no engine is ever asked about it).
+SANDBOX_IMAGE = "registry.example.com/etl-tests:1.4"
 
 
 @pytest.fixture
@@ -32,6 +36,7 @@ def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "HEALER_SMTP_HOST",
         "HEALER_AIRFLOW_USERNAME",
         "HEALER_AIRFLOW_PASSWORD",
+        "HEALER_SANDBOX_IMAGE",
         "GITHUB_TOKEN",
         "GITHUB_REPO",
     ):
@@ -114,6 +119,30 @@ def test_check_prints_settings_with_secrets_masked(
     assert "Configuration is valid." in captured.out
     assert "github.token" in captured.err and "store.url" in captured.err
     assert "airflow.password" not in captured.err  # it is an ${ENV} reference
+    assert "sandbox" not in captured.out + captured.err  # the default sandbox is not shown
+
+
+def test_check_shows_a_custom_sandbox_and_warns_about_the_process_one(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_file = tmp_path / "healer.yaml"
+    config_file.write_text("version: 1\nrepo: {sandbox: {backend: process, memory: 1G}}\n", encoding="utf-8")
+    assert main(["check", "--config", str(config_file)]) == 0
+    captured = capsys.readouterr()
+    shown = yaml.safe_load(captured.out.split("\nConfiguration is valid.")[0])
+    assert shown["repo"]["sandbox"] == {
+        "backend": "process",
+        "engine": "docker",
+        "image": None,
+        "python": "python",
+        "user": None,
+        "memory": "1g",
+        "cpus": 2.0,
+        "pids": 512,
+        "work_size": "1g",
+        "tmp_size": "512m",
+    }
+    assert captured.err == f"warning: {PROCESS_BACKEND_WARNING}\n"
 
 
 def test_check_reports_invalid_configuration(
@@ -179,9 +208,23 @@ def _doctor_lines(out: str) -> dict[str, str]:
     return lines
 
 
+@pytest.fixture
+def working_sandbox(monkeypatch: pytest.MonkeyPatch) -> SandboxProbe:
+    """A container sandbox whose engine, image and smoke run are fine (no engine is asked)."""
+    probe = SandboxProbe(
+        True,
+        f"docker 29.8.2, image {SANDBOX_IMAGE}: uid 10001 (sandbox), no network (interfaces: lo), "
+        "pytest 8.4.2 on Python 3.12.12",
+    )
+    monkeypatch.setattr(ContainerSandbox, "unavailable_reason", lambda self: None)
+    monkeypatch.setattr(ContainerSandbox, "smoke_test", lambda self: probe)
+    return probe
+
+
 def test_doctor_all_good(
     repo: Path,
     healthy_network: list[tuple[str, int]],
+    working_sandbox: SandboxProbe,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -191,6 +234,7 @@ def test_doctor_all_good(
     monkeypatch.setenv("HEALER_SMTP_HOST", "mailpit")
     monkeypatch.setenv("HEALER_SMTP_PORT", "1025")
     monkeypatch.setenv("HEALER_INGEST_TOKEN", "ingest-token-value")
+    monkeypatch.setenv("HEALER_SANDBOX_IMAGE", SANDBOX_IMAGE)  # the template's repo.sandbox.image
     assert main([*_cfg_args(repo), "doctor"]) == 0
     out = capsys.readouterr().out
     assert SECRET not in out and "admin-password" not in out and "ingest-token-value" not in out
@@ -201,12 +245,14 @@ def test_doctor_all_good(
         "store",
         "ui bundle",
         "llm",
+        "sandbox",
         "orchestrator",
         "airflow api",
         "airflow auth",
         "smtp",
     ):
         assert status[name] == "[ OK ]", (name, out)
+    assert _line(out, "sandbox").endswith(f"  {working_sandbox.detail}")
     assert status["contracts"] == "[WARN]"  # drafts only: nothing enforced yet
     assert healthy_network == [("mailpit", 1025)]
     assert "0 error(s)" in out
@@ -341,10 +387,16 @@ def custom_adapters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     registry.reset_adapters()
 
 
-def _doctor(tmp_path: Path, config: str, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+def _doctor(
+    tmp_path: Path, config: str, capsys: pytest.CaptureFixture[str], *, sandbox: str = "{backend: process}"
+) -> tuple[int, str]:
+    """``dag-healer doctor`` on a fake-LLM configuration (by default with the process sandbox:
+    the unit tests have no container engine)."""
     (tmp_path / "dags").mkdir(exist_ok=True)
     config_file = tmp_path / "healer.yaml"
-    config_file.write_text("llm: {provider: fake}\n" + config, encoding="utf-8")
+    config_file.write_text(
+        f"llm: {{provider: fake}}\nrepo: {{sandbox: {sandbox}}}\n" + config, encoding="utf-8"
+    )
     code = main(["doctor", "-c", str(config_file)])
     return code, capsys.readouterr().out
 
@@ -365,7 +417,7 @@ def test_doctor_composes_the_generic_and_the_adapter_checks(
     adapter_checks = [check.name for check in adapter.doctor_checks()]
     assert set(adapter_checks) == AIRFLOW_CHECKS
     assert list(_doctor_lines(out)) == [
-        *("config", "repository", "contracts", "store", "ui bundle", "llm", "orchestrator"),
+        *("config", "repository", "contracts", "store", "ui bundle", "llm", "sandbox", "orchestrator"),
         *adapter_checks,
         *("smtp", "secrets", "ingest", "github"),
     ]
@@ -431,6 +483,60 @@ def test_doctor_survives_broken_adapter_checks(
     assert status["boom"] == status["odd"] == "[FAIL]"
     assert status["github"] == "[ OK ]"
     assert custom_adapters.CLOSED == ["broken"]
+
+
+FAKEFLOW = "orchestrator: {type: fake}\n"
+
+
+def test_doctor_warns_that_the_process_sandbox_isolates_nothing(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = _doctor(tmp_path, FAKEFLOW, capsys)
+    assert code == 0, out
+    line = _line(out, "sandbox")
+    assert line.startswith("[WARN]") and line.endswith(f"  {PROCESS_BACKEND_WARNING}")
+
+
+def test_doctor_fails_a_container_sandbox_without_an_image(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = _doctor(tmp_path, FAKEFLOW, capsys, sandbox="{backend: container}")
+    assert code == 1
+    line = _line(out, "sandbox")
+    assert line.startswith("[FAIL]") and "repo.sandbox.image is not set" in line
+    assert "HEALER_SANDBOX_IMAGE" in line  # the fix
+    assert _doctor_lines(out)["github"] == "[ OK ]"  # the checks after it still ran
+
+
+def test_doctor_fails_a_container_sandbox_whose_engine_is_missing(
+    tmp_path: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dag_healer.repo import sandbox
+
+    monkeypatch.setattr(sandbox, "engine_command", lambda engine: [str(tmp_path / "no-such-engine")])
+    code, out = _doctor(tmp_path, FAKEFLOW, capsys, sandbox=f"{{image: '{SANDBOX_IMAGE}'}}")
+    assert code == 1
+    line = _line(out, "sandbox")
+    assert line.startswith("[FAIL]") and "was not found" in line
+
+
+def test_doctor_runs_the_smoke_test_of_a_usable_container_sandbox(
+    tmp_path: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    detail = f"the sandbox of image {SANDBOX_IMAGE} has a network (interfaces: lo, eth0)"
+    smoke_runs: list[ContainerSandbox] = []
+
+    def leaky(self: ContainerSandbox) -> SandboxProbe:
+        smoke_runs.append(self)
+        return SandboxProbe(False, detail)
+
+    monkeypatch.setattr(ContainerSandbox, "unavailable_reason", lambda self: None)
+    monkeypatch.setattr(ContainerSandbox, "smoke_test", leaky)
+    code, out = _doctor(tmp_path, FAKEFLOW, capsys, sandbox=f"{{image: '{SANDBOX_IMAGE}', engine: podman}}")
+    assert code == 1
+    line = _line(out, "sandbox")
+    assert line.startswith("[FAIL]") and line.endswith(f"  {detail}")
+    assert [(run.engine, run.image) for run in smoke_runs] == [("podman", SANDBOX_IMAGE)]
 
 
 @pytest.mark.parametrize(

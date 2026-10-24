@@ -1,6 +1,7 @@
 """Static checks of the Docker stack files (docker/compose.yaml, Dockerfile, .env.example).
 
-They guard the shared contracts (image tag, paths, env vars, profiles) without Docker.
+They guard the shared contracts (image tag, paths, env vars, profiles, the engine socket of the
+test sandbox) without Docker.
 """
 
 from __future__ import annotations
@@ -174,8 +175,10 @@ def test_env_example_and_initdb() -> None:
         "ANTHROPIC_API_KEY",
         "GITHUB_TOKEN",
         "GITHUB_REPO",
+        "HEALER_DOCKER_GID",
     } <= keys
     assert re.search(r"^AIRFLOW_UID=50000$", env_text, flags=re.MULTILINE)
+    assert re.search(r"^HEALER_DOCKER_GID=0$", env_text, flags=re.MULTILINE)
     sql = (DOCKER_DIR / "initdb" / "01-healer.sql").read_text(encoding="utf-8")
     assert "CREATE DATABASE healer" in sql
 
@@ -209,3 +212,33 @@ def test_scheduler_can_post_listener_events(services: dict[str, Any]) -> None:
     assert env["HEALER_API_URL"] == "http://airflow-apiserver:8080"
     assert env["HEALER_INGEST_TOKEN"].startswith("${HEALER_INGEST_TOKEN:-")
     assert "HEALER_LLM_PROVIDER" not in env and "ANTHROPIC_API_KEY" not in env
+
+
+def test_only_the_worker_gets_the_engine_socket(services: dict[str, Any]) -> None:
+    """The test sandbox: healer-worker alone gets the engine socket, its group and the image name."""
+    worker = services["healer-worker"]
+    assert "${HEALER_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock" in worker["volumes"]
+    assert worker["group_add"] == ["${HEALER_DOCKER_GID:-0}"]
+    assert worker["environment"]["HEALER_SANDBOX_IMAGE"] == "${HEALER_IMAGE:-dag-healer/airflow:dev}"
+    for name, svc in services.items():
+        if name == "healer-worker":
+            continue
+        assert not any(".sock" in str(volume) for volume in svc.get("volumes") or []), name
+        assert "group_add" not in svc, name
+        assert "HEALER_SANDBOX_IMAGE" not in (svc.get("environment") or {}), name
+    # the start-up hint about an unusable socket keeps every "$" escaped for compose
+    script = worker["entrypoint"][5]
+    assert "/var/run/docker.sock" in script
+    assert re.findall(r"(?<!\$)\$(?![${])", script.replace("$$", "")) == []
+
+
+def test_dockerfile_copies_a_pinned_docker_cli() -> None:
+    text = (DOCKER_DIR / "Dockerfile").read_text(encoding="utf-8")
+    copy = re.search(
+        r"^COPY --from=docker:\d+\.\d+\.\d+-cli /usr/local/bin/docker /usr/local/bin/docker$",
+        text,
+        flags=re.MULTILINE,
+    )
+    assert copy is not None, "the docker CLI comes from a pinned docker:<x.y.z>-cli image"
+    assert copy.start() > text.index("FROM apache/airflow:")  # in the final stage
+    assert "RUN docker --version" in text

@@ -9,7 +9,8 @@ at the copy's files. The LLM is the real ``FakeProvider`` replaying the reposito
 ``fixtures/fake_llm`` scripts, and the store is SQLite under a temporary ``HEALER_HOME``.
 The demo outcomes are also played through the fake orchestrator ("Fakeflow"), which reports
 the same real exceptions, to check that the worker only speaks to the adapter's ports and in
-the adapter's words.
+the adapter's words. The repairs run pytest in the ``process`` test sandbox (the unit tests
+have no container engine).
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ import pytest
 from dag_healer.agent.fake import FakeProvider
 from dag_healer.airflow.client import AirflowAPIError, TaskInstanceInfo, render_log_content
 from dag_healer.cli.main import main
-from dag_healer.config import HealerConfig, config_from_mapping, load_config
+from dag_healer.config import HealerConfig, SandboxConfig, config_from_mapping, load_config
 from dag_healer.contracts.io import contract_path, load_contract
 from dag_healer.core.specs import TaskInfo
 from dag_healer.masking import mask_text
@@ -413,6 +414,8 @@ def bench(tmp_path: Path, healer_env: Path, capsys: pytest.CaptureFixture[str]) 
     cfg = load_config(repo / "healer.yaml")
     assert cfg.repo_root == repo.resolve()
     assert cfg.llm.provider == "anthropic"  # the demo overrides it with the fake provider below
+    assert cfg.repo.sandbox.backend == "container"  # the template's choice
+    cfg.repo.sandbox.backend = "process"  # the unit tests have no container engine
     return Bench(repo=repo, cfg=cfg, client=FakeAirflowClient(), home=healer_env)
 
 
@@ -755,6 +758,32 @@ def test_the_demo_outcomes_through_each_orchestrator(bench: Bench, orchestrator:
             assert url.startswith("http://fakeflow.localhost/flows/") and "Open in Fakeflow" in text
 
 
+def test_retry_repair_works_once_the_test_sandbox_does(bench: Bench) -> None:
+    """Without a usable sandbox a CODE incident runs no code and fails; a retry later repairs it."""
+    bench.cfg.repo.sandbox = SandboxConfig()  # the default container backend, without an image
+    bench.fail("customers_sync")
+    provider = RecordingProvider(bench.cfg)
+
+    stats = bench.run_once(provider)
+
+    assert stats.errors == [] and stats.processed == {"repair_failed": 1}
+    customers = bench.incident("customers_sync")
+    assert (customers["status"], customers["category"]) == ("repair_failed", "code")
+    assert (customers["attempts"], customers["test_path"], customers["diff"]) == (0, None, None)
+    failed = [event for event in bench.events(customers["id"]) if event["kind"] == "repair"][-1]["data"]
+    assert "repo.sandbox.image is not set" in failed["error"] and "retry the repair" in failed["error"]
+    assert [kind for kind, _system, _prompt in provider.prompts] == ["classify"]  # no repair session
+
+    bench.cfg.repo.sandbox.backend = "process"  # the sandbox works now
+    bench.command("retry_repair", "customers_sync", incident_id=customers["id"], actor="bob")
+    stats = bench.run_once(provider)
+
+    assert stats.errors == [] and stats.processed == {"repaired": 1}
+    customers = bench.incident("customers_sync")
+    assert (customers["status"], customers["category"]) == ("repaired", "code")
+    assert _diff_files(customers["diff"]) == {"src/etl/customers.py", customers["test_path"]}
+
+
 # =========================================================================== reconcile (no repo needed)
 
 
@@ -762,7 +791,8 @@ def make_cfg(tmp_path: Path, **sections: Any) -> HealerConfig:
     repo = tmp_path / "repo"
     (repo / "dags").mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
-        "repo": {"path": str(repo)},
+        # the unit tests have no container engine: pytest runs in the unisolated process sandbox
+        "repo": {"path": str(repo), "sandbox": {"backend": "process"}},
         "store": {"url": f"sqlite:///{(tmp_path / 'h.db').as_posix()}"},
     }
     data.update(sections)
@@ -1199,6 +1229,100 @@ def test_missing_provider_makes_code_repairs_fail_clearly(cfg: HealerConfig) -> 
     with session_scope(cfg.database_url) as session:
         repair = [e for e in store_repo.list_events(session, incident_id) if e.kind == "repair"][-1]
         assert repair.data["error"] == "No LLM provider is configured."
+
+
+def _resumed_code_incident(cfg: HealerConfig) -> str:
+    """An incident a human resolved as CODE (``resumed``): processing it goes straight to the repair."""
+    incident_id = _new_incident(cfg, error_summary=SIMPLE_LOG, resolution="code", resolved_by="alice")
+    with session_scope(cfg.database_url) as session:
+        incident = store_repo.get_incident(session, incident_id)
+        assert incident is not None
+        store_repo.set_status(session, incident, "resumed", "resumed by a test")
+    return incident_id
+
+
+def test_a_sandbox_check_that_fails_runs_no_code(cfg: HealerConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.repo.sandbox import ContainerSandbox, sandbox_refusal
+
+    def crashing(_self: ContainerSandbox) -> str | None:
+        raise RuntimeError("the probe crashed")
+
+    def no_repair(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("no clone, no session and no pytest run when the sandbox check fails")
+
+    cfg.repo.sandbox = SandboxConfig(image="dag-healer/sandbox-test:dev")
+    monkeypatch.setattr(ContainerSandbox, "unavailable_reason", crashing)
+    monkeypatch.setattr("dag_healer.agent.repair.run_repair", no_repair)
+    incident_id = _resumed_code_incident(cfg)
+    provider = RecordingProvider(cfg)
+    status = process_incident(
+        cfg, None, incident_id, provider=provider, client=None, notifier=lambda *_a, **_k: []
+    )
+    assert status == "repair_failed" and provider.prompts == []
+    with session_scope(cfg.database_url) as session:
+        repair = [e for e in store_repo.list_events(session, incident_id) if e.kind == "repair"][-1]
+        error = dict(repair.data)["error"]
+    assert error == sandbox_refusal("the check of the test sandbox failed (RuntimeError: the probe crashed)")
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "reason"),
+    [
+        ({}, "repo.sandbox.image is not set"),  # the default container backend, without an image
+        ({"backend": "vm"}, "'vm'"),  # a backend the sandbox module does not know
+    ],
+)
+def test_an_unusable_sandbox_fails_code_repairs_before_any_code_runs(
+    cfg: HealerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    sandbox: dict[str, str],
+    reason: str,
+) -> None:
+    cfg.repo.sandbox = SandboxConfig()
+    for name, value in sandbox.items():  # set without validation, like a duck-typed configuration
+        setattr(cfg.repo.sandbox, name, value)
+    incident_id = _resumed_code_incident(cfg)
+
+    def no_repair(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("no clone, no session and no pytest run without a usable sandbox")
+
+    monkeypatch.setattr("dag_healer.agent.repair.run_repair", no_repair)
+    alerts: list[tuple[str, dict[str, Any]]] = []
+
+    def notifier(_cfg: Any, _incident: dict[str, Any], event: str, *, extra: dict[str, Any]) -> list[Any]:
+        alerts.append((event, extra))
+        return []
+
+    provider = RecordingProvider(cfg)
+    with caplog.at_level(logging.WARNING, logger="dag_healer.worker.pipeline"):
+        status = process_incident(cfg, None, incident_id, provider=provider, client=None, notifier=notifier)
+
+    assert status == "repair_failed" and provider.prompts == []
+    with session_scope(cfg.database_url) as session:
+        incident = store_repo.get_incident(session, incident_id)
+        assert incident is not None and incident.category == "code"
+        repair = [e for e in store_repo.list_events(session, incident_id) if e.kind == "repair"][-1]
+        message, data = repair.message, dict(repair.data)
+    error = data["error"]
+    assert error.startswith("The test sandbox is not usable: ") and reason in error
+    assert "No code was run" in error and "dag-healer doctor" in error and "retry the repair" in error
+    assert message == f"Repair failed: {error}"
+    assert data == {
+        "status": "repair_failed",
+        "branch": None,
+        "test_path": None,
+        "created_tests_dir": False,
+        "pr_url": None,
+        "pr_md_path": None,
+        "patch_path": None,
+        "attempts": 0,
+        "tokens_used": 0,
+        "error": error,
+        "notes": [],
+    }
+    assert [(event, extra["error"]) for event, extra in alerts] == [("repair_failed", error)]
+    assert f"incident {incident_id[:8]}: no repair: " in caplog.text
 
 
 # =========================================================================== helpers

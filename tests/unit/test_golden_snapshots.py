@@ -107,6 +107,7 @@ ISOLATED_ENV = (
     "GITHUB_TOKEN",
     "GITHUB_REPO",
     "ANTHROPIC_API_KEY",
+    "HEALER_SANDBOX_IMAGE",
 )
 #: JSON keys whose values are wall-clock times (``created_at``/``approved_at`` are fixed).
 VOLATILE_TIME_KEYS = frozenset({"at", "updated_at", "claimed_at", "sent_at", "applied_at", "received_at"})
@@ -335,6 +336,7 @@ def build_snapshots(work: Path) -> dict[str, str]:
 
         _prepare_repo(repo)
         cfg = load_config(repo / "healer.yaml")
+        cfg.repo.sandbox.backend = "process"  # the unit tests have no container engine
         mp.setenv("HEALER_CONFIG", str(repo / "healer.yaml"))
         mp.setenv("HEALER_DATABASE_URL", cfg.database_url)
 

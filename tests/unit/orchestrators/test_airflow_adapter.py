@@ -571,6 +571,7 @@ class AirflowHarness:
         repo = tmp_path / "e2e_repo"
         prepare_demo_repo(repo)
         cfg = load_config(repo / "healer.yaml")
+        cfg.repo.sandbox.backend = "process"  # the unit tests have no container engine
         server = AirflowServer(auth=False)
         rows = []
         for dag_id, (task_id, log_name, _category, _status) in E2E_CASES.items():
