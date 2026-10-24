@@ -1,4 +1,5 @@
-{#- HTML building blocks of the alert emails. Inline styles only: no external assets. -#}
+{#- HTML building blocks of the alert emails. Inline styles only: no external assets.
+    ``words`` holds the orchestrator's words and labels ("DAG", "Task", "Try" for Airflow). -#}
 {% set mono = "font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;" %}
 
 {% macro badge(label, fg, bg) %}
@@ -27,12 +28,12 @@
 </tr>
 {% endmacro %}
 
-{% macro summary(incident) %}
+{% macro summary(incident, words) %}
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px 0;">
-  {{ row("DAG", incident.dag_id, True) }}
-  {{ row("Task", incident.task_id ~ (" (map index %d)" % incident.map_index if incident.map_index >= 0 else ""), True) }}
+  {{ row(words.pipeline_label, incident.dag_id, True) }}
+  {{ row(words.step_label, incident.task_id ~ (" (%s %d)" % (words.map_index, incident.map_index) if incident.map_index >= 0 else ""), True) }}
   {{ row("Run", incident.run_id, True) }}
-  {{ row("Try", incident.try_number) }}
+  {{ row(words.attempt_label, incident.try_number) }}
   <tr>
     <td style="padding:4px 12px 4px 0;font-size:13px;color:#6b7280;white-space:nowrap;">Classification</td>
     <td style="padding:4px 0;font-size:13px;color:#111827;">{{ badge(incident.category_label, incident.category_fg, incident.category_bg) }}{% if incident.confidence_pct %} <span style="color:#6b7280;">confidence {{ incident.confidence_pct }}</span>{% endif %}</td>
@@ -117,9 +118,12 @@
 <a href="{{ url }}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 16px;border-radius:6px;background:{{ color }};color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;">{{ label }}</a>
 {% endmacro %}
 
-{% macro secondary_links(links) %}
+{% macro secondary_links(links, words) %}
 <p style="margin:4px 0 0 0;font-size:13px;color:#6b7280;">
-  <a href="{{ links.dag }}" style="color:#2563eb;text-decoration:underline;">DAG incidents</a> &middot;
+  <a href="{{ links.dag }}" style="color:#2563eb;text-decoration:underline;">{{ words.pipeline_label }} incidents</a> &middot;
   <a href="{{ links.healer }}" style="color:#2563eb;text-decoration:underline;">Healer page</a>
+  {% for label, url in links.native.items() %}
+  &middot; <a href="{{ url }}" style="color:#2563eb;text-decoration:underline;">Open in {{ label }}</a>
+  {% endfor %}
 </p>
 {% endmacro %}

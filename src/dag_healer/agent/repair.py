@@ -20,6 +20,11 @@
 sessions. The workspace is deleted afterwards unless ``debug`` is on. :func:`run_repair`
 never raises: every failure becomes a ``repair_failed`` result with a clear ``error``.
 
+Every pytest run (the agent's ``run_tests`` tool and the repair's own checks) gets the
+orchestrator's sandbox overrides (``extra_env``, the adapter's ``sandbox_env()``) on top of
+:func:`dag_healer.repo.pytest_runner.scrubbed_env`. The prompts, the commit message and PR.md
+use the orchestrator's words (the context's vocabulary; the Airflow words by default).
+
 Masking: pytest output and error text pass through :func:`dag_healer.masking.mask_text`
 before they reach the LLM, the result or the logs, and the tools refuse to read data files.
 """
@@ -39,14 +44,16 @@ from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal
 
 from dag_healer.agent.budget import TokenBudget
+from dag_healer.agent.context import prompt_words
 from dag_healer.agent.llm import LLMRefusal, LLMUnavailable
 from dag_healer.agent.tests_gen import (
-    SYSTEM_PROMPT,
     build_fix_prompt,
     build_test_prompt,
     choose_test_location,
     repro_target,
+    system_prompt,
 )
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 from dag_healer.masking import mask_text
 from dag_healer.pr.github import GitHubError, create_pull_request
 from dag_healer.pr.prmd import render_pr_markdown, write_pr_artifacts
@@ -288,6 +295,7 @@ class RepairTools:
     ``.github/**``, ``.git/**``, lockfiles, dependency manifests, ``.env*``, ``fixtures/**``,
     ``data/**`` and data files; data files, ``.env*`` and ``healer.yaml`` cannot be read
     either. Every write is recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
+    ``extra_env`` (the orchestrator's sandbox overrides) reaches every pytest run.
     """
 
     def __init__(
@@ -301,6 +309,7 @@ class RepairTools:
         timeout: int | None = None,
         max_writes: int = MAX_WRITES_PER_SESSION,
         max_test_runs: int = MAX_TEST_RUNS_PER_SESSION,
+        extra_env: Mapping[str, str | None] | None = None,
     ) -> None:
         if phase not in ("test", "fix"):
             raise ValueError(f"unknown repair phase: {phase!r}")
@@ -309,6 +318,7 @@ class RepairTools:
         self.phase: Phase = phase
         self.tests_dir = _norm_prefix(tests_dir or ".")
         self.python = python
+        self.extra_env = extra_env
         self.timeout = int(timeout or cfg.repo.pytest_timeout)
         self.max_writes = max_writes
         self.max_test_runs = max_test_runs
@@ -692,7 +702,9 @@ class RepairTools:
                 targets.append(rel + (sep + node if sep else ""))
         else:
             targets = self.default_test_targets()
-        result = run_pytest(self.root, targets, timeout=self.timeout, python=self.python)
+        result = run_pytest(
+            self.root, targets, timeout=self.timeout, python=self.python, extra_env=self.extra_env
+        )
         self.test_runs.append(result)
         return _format_run(result, targets, limit=MAX_TOOL_PYTEST_CHARS)
 
@@ -858,8 +870,13 @@ def _safe_dirname(incident_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", incident_id).strip("._") or "incident"
 
 
-def _reproduction_problem(result: PytestResult, test_rel: str, max_lines: int, test_code: str) -> str | None:
-    """Why a reproducing test is not acceptable (None when it fails as required)."""
+def _reproduction_problem(
+    result: PytestResult, test_rel: str, max_lines: int, test_code: str, *, step: str = "task"
+) -> str | None:
+    """Why a reproducing test is not acceptable (None when it fails as required).
+
+    ``step`` is the orchestrator's word for the failed unit of work (``task`` for Airflow).
+    """
     if result.timed_out:
         return f"running {test_rel} timed out; the test must be fast and self-contained."
     if result.collection_error:
@@ -874,7 +891,7 @@ def _reproduction_problem(result: PytestResult, test_rel: str, max_lines: int, t
     if result.failed == 0:
         return (
             f"{test_rel} PASSES before any fix, so it does not reproduce the failure. Assert the correct "
-            "behaviour for the input that broke the task."
+            f"behaviour for the input that broke the {step}."
         )
     if test_code.count("\n") + 1 > max_lines:
         return f"{test_rel} is too long; the whole change may not exceed {max_lines} lines."
@@ -893,13 +910,20 @@ class _Repair:
         *,
         workspace_root: Path | None,
         github_token: str | None,
+        extra_env: Mapping[str, str | None] | None = None,
     ) -> None:
         self.cfg = cfg
         self.incident = dict(incident)
         self.ctx = ctx
         self.provider = provider
         self.github_token = github_token
+        self.extra_env = extra_env
+        self.vocabulary: dict[str, str] = dict(getattr(ctx, "vocabulary", None) or {})
+        self.words = prompt_words(ctx)
         self.incident_id = str(self.incident.get("id") or getattr(ctx, "incident_id", "") or "")
+        self.orchestrator = str(
+            self.incident.get("orchestrator") or getattr(ctx, "orchestrator", "") or DEFAULT_ORCHESTRATOR
+        )
         self.dag_id = str(self.incident.get("dag_id") or getattr(ctx, "dag_id", "") or "dag")
         self.task_id = str(self.incident.get("task_id") or getattr(ctx, "task_id", "") or "task")
         self.exception_type = getattr(ctx, "exception_type", None)
@@ -926,7 +950,15 @@ class _Repair:
 
     def _pytest(self, targets: list[str] | None) -> PytestResult:
         assert self.ws is not None
-        return run_pytest(self.ws.path, targets, timeout=self.cfg.repo.pytest_timeout)
+        return run_pytest(
+            self.ws.path, targets, timeout=self.cfg.repo.pytest_timeout, extra_env=self.extra_env
+        )
+
+    def _tools(self, phase: Phase) -> RepairTools:
+        assert self.ws is not None
+        return RepairTools(
+            self.ws.path, self.cfg, phase=phase, tests_dir=self.tests_dir, extra_env=self.extra_env
+        )
 
     def _scenario(self, phase: Phase) -> dict[str, Any]:
         return {
@@ -935,6 +967,9 @@ class _Repair:
             "task_id": self.task_id,
             "exception_type": self.exception_type,
             "incident_id": self.incident_id,
+            "orchestrator": self.orchestrator,
+            "pipeline_id": self.dag_id,
+            "step_id": self.task_id,
         }
 
     def _session(self, phase: Phase, tools: RepairTools, prompt: str) -> RepairSessionResult:
@@ -951,7 +986,7 @@ class _Repair:
         )
         try:
             session = self.provider.repair_session(
-                system=SYSTEM_PROMPT,
+                system=system_prompt(self.ctx),
                 prompt=prompt,
                 tools=tools.as_functions(),
                 max_tokens_budget=self.budget.remaining,
@@ -1130,7 +1165,7 @@ class _Repair:
         feedback: list[str] = []
         last_problem = "no test was written"
         for _attempt in range(1, MAX_TEST_ATTEMPTS + 1):
-            tools = RepairTools(self.ws.path, self.cfg, phase="test", tests_dir=self.tests_dir)
+            tools = self._tools("test")
             prompt = build_test_prompt(
                 self.ctx,
                 self.layout,
@@ -1152,7 +1187,9 @@ class _Repair:
                 continue
             code = read_text(self.ws.path / written)
             before = self._pytest([written])
-            problem = _reproduction_problem(before, written, self.cfg.limits.max_diff_lines, code)
+            problem = _reproduction_problem(
+                before, written, self.cfg.limits.max_diff_lines, code, step=self.words["step"]
+            )
             if problem is None:
                 self.test_rel = written
                 self.test_code = code
@@ -1164,7 +1201,7 @@ class _Repair:
                 if short_type and short_type not in (before.output_tail or ""):
                     self.notes.append(
                         f"The reproducing test fails, but its output does not mention {self.exception_type}; "
-                        "check that it fails for the same reason as the task."
+                        f"check that it fails for the same reason as the {self.words['step']}."
                     )
                 logger.info("incident %s: reproducing test %s fails as expected", self.incident_id, written)
                 return
@@ -1186,7 +1223,7 @@ class _Repair:
         feedback: list[str] = []
         last_problem = "no attempt was made"
         for _attempt in range(1, limits.max_fix_attempts + 1):
-            tools = RepairTools(self.ws.path, self.cfg, phase="fix", tests_dir=self.tests_dir)
+            tools = self._tools("fix")
             prompt = build_fix_prompt(
                 self.ctx,
                 self.test_rel,
@@ -1265,7 +1302,7 @@ class _Repair:
         diagnosis = self.incident.get("diagnosis")
         if diagnosis:
             return mask_text(diagnosis)
-        exc_type = getattr(self.ctx, "exception_type", None) or "The task"
+        exc_type = getattr(self.ctx, "exception_type", None) or f"The {self.words['step']}"
         message = getattr(self.ctx, "exception_message", None) or getattr(self.ctx, "error_text", "") or ""
         return mask_text(f"{exc_type}: {message}".strip(": "))
 
@@ -1277,12 +1314,13 @@ class _Repair:
         return title if len(title) <= 100 else title[:97] + "..."
 
     def _commit_message(self) -> str:
+        words = self.words
         lines = [
             self._title(),
             "",
             f"Reproducing test: {self.test_rel}",
-            f"Incident: {self.incident_id} (DAG {self.dag_id}, task {self.task_id}, "
-            f"run {self.incident.get('run_id', '?')})",
+            f"Incident: {self.incident_id} ({words['pipeline']} {self.dag_id}, "
+            f"{words['step']} {self.task_id}, run {self.incident.get('run_id', '?')})",
             "",
             "Generated by dag-healer",
         ]
@@ -1303,6 +1341,7 @@ class _Repair:
             created_tests_dir=self.result.created_tests_dir,
             notes=notes,
             branch=self.result.branch,
+            vocabulary=self.vocabulary,
         )
 
     def publish(self) -> None:
@@ -1427,6 +1466,7 @@ def run_repair(
     *,
     workspace_root: Path | None = None,
     github_token: str | None = None,
+    extra_env: Mapping[str, str | None] | None = None,
 ) -> RepairResult:
     """Reproduce a CODE incident with a failing test, fix it minimally and publish the fix.
 
@@ -1438,13 +1478,21 @@ def run_repair(
         provider: The LLM provider that runs the tool sessions.
         workspace_root: Parent folder of the clone (default ``<healer_home>/work``).
         github_token: Token for the push and the pull request (default ``cfg.github.token``).
+        extra_env: The orchestrator's pytest sandbox overrides (the adapter's
+            ``sandbox_env()``; ``None`` removes a variable), applied to every pytest run.
 
     Returns:
         A :class:`RepairResult`; ``status`` is ``"repaired"`` or ``"repair_failed"`` (with
         ``error``). Never raises.
     """
     return _Repair(
-        cfg, incident, ctx, provider, workspace_root=workspace_root, github_token=github_token
+        cfg,
+        incident,
+        ctx,
+        provider,
+        workspace_root=workspace_root,
+        github_token=github_token,
+        extra_env=extra_env,
     ).run()
 
 

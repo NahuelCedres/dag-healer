@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from dag_healer.repo.pytest_runner import (
+    CLOUD_SANDBOX_ENV,
     LAUNCH_FAILED_EXIT_CODE,
     MAX_OUTPUT_CHARS,
     TIMEOUT_EXIT_CODE,
@@ -234,6 +235,61 @@ def test_environment_is_scrubbed(project: Path, tmp_path: Path, monkeypatch: pyt
     assert not home.exists()  # the throw-away AIRFLOW_HOME is removed after the run
 
 
+#: Cloud credentials a worker may run with (an AWS task role, a GCP key file, an Azure secret).
+CLOUD_CREDENTIALS = {
+    "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEKEYID0001",
+    "AWS_SECRET_ACCESS_KEY": "example-secret-access-key",
+    "AWS_SESSION_TOKEN": "example-session-token",
+    "AWS_SECURITY_TOKEN": "example-security-token",
+    "AWS_PROFILE": "example-admin-profile",
+    "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/example-healer",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/secrets/example/web-identity-token",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/example-id",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://169.254.170.23/v1/example-credentials",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN": "example-container-token",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/example/container-token",
+    "GOOGLE_APPLICATION_CREDENTIALS": "/secrets/example-gcp-key.json",
+    "AZURE_CLIENT_SECRET": "example-azure-client-secret",
+}
+
+
+def test_cloud_credentials_never_reach_the_sandbox(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in CLOUD_CREDENTIALS.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "false")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/home/airflow/.aws/credentials")
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/home/airflow/.aws/config")
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    dump = tmp_path / "env.json"
+    # an orchestrator override can neither bring a credential back nor re-enable the metadata service
+    overrides: dict[str, str | None] = {
+        "ENV_DUMP": str(dump),
+        "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEOVERRIDE1",
+        "aws_secret_access_key": "example-lower-case-override",
+        "AWS_EC2_METADATA_DISABLED": "false",
+        "AWS_CONFIG_FILE": "/home/airflow/.aws/override",
+        "FAKEFLOW_TOKEN": None,
+    }
+
+    result = run_pytest(project, ["tests/test_env.py"], timeout=120, extra_env=overrides)
+    assert result.ok, result.output_tail
+    env = json.loads(dump.read_text(encoding="utf-8"))
+    upper = {key.upper() for key in env}
+    assert not upper & set(CLOUD_CREDENTIALS)
+    assert not [key for key in upper if key.startswith(("AWS_CONTAINER_CREDENTIALS_", "AWS_CONTAINER_AUTH"))]
+    secrets = [*CLOUD_CREDENTIALS.values(), "AKIAEXAMPLEOVERRIDE1", "example-lower-case-override"]
+    assert [value for value in env.values() for secret in secrets if secret in value] == []
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert (env["AWS_SHARED_CREDENTIALS_FILE"], env["AWS_CONFIG_FILE"]) == ("", "")
+    assert env["AWS_REGION"] == "eu-west-1"  # not a credential
+    # the Airflow keys of the sandbox are unchanged
+    assert (env["AIRFLOW__CORE__UNIT_TEST_MODE"], env["AIRFLOW__CORE__LOAD_EXAMPLES"]) == ("True", "False")
+    assert env["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"].startswith("sqlite:///")
+    assert Path(env["AIRFLOW_HOME"]).name == "airflow_home"
+
+
 def test_output_tail_is_truncated(project: Path) -> None:
     result = run_pytest(project, ["tests/test_noisy.py"], timeout=120, extra_args=["-s"])
     assert result.failed == 1
@@ -318,6 +374,30 @@ def test_scrubbed_env_from_explicit_base(tmp_path: Path) -> None:
     assert env["AIRFLOW_HOME"] == str(tmp_path / "home")
     assert (tmp_path / "home").is_dir()
     assert env["AIRFLOW__CORE__LOAD_EXAMPLES"] == "False"
+
+
+def test_scrubbed_env_removes_cloud_credentials(tmp_path: Path) -> None:
+    base = {
+        "PATH": "/usr/bin",
+        "AWS_REGION": "eu-west-1",
+        "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEKEYID0001",
+        "AWS_PROFILE": "example-admin-profile",
+        "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/example-healer",
+        "aws_container_credentials_full_uri": "http://169.254.170.23/v1/example-credentials",
+        "Aws_Config_File": "/home/airflow/.aws/config",
+        "AWS_EC2_METADATA_DISABLED": "false",
+    }
+    env = scrubbed_env(base, airflow_home=tmp_path / "home")
+    removed = {"AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_FULL_URI"}
+    assert not {key.upper() for key in env} & removed
+    assert "Aws_Config_File" not in env  # a differently cased copy is replaced, not kept beside it
+    assert {name: env[name] for name in CLOUD_SANDBOX_ENV} == {
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "AWS_SHARED_CREDENTIALS_FILE": "",
+        "AWS_CONFIG_FILE": "",
+    }
+    assert (env["PATH"], env["AWS_REGION"]) == ("/usr/bin", "eu-west-1")
+    assert env["AIRFLOW__CORE__UNIT_TEST_MODE"] == "True"
 
 
 @pytest.mark.parametrize(

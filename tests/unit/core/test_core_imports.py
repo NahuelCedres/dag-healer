@@ -1,9 +1,14 @@
-"""Import hygiene of dag_healer.core: stdlib only, every module light (section 4 of the design)."""
+"""Import hygiene of dag_healer.core: stdlib only, every module light and quick to import.
+
+Sections 4 and 11.6 of the design; the import rules of the rest of the package are checked
+by ``tests/unit/test_architecture.py``.
+"""
 
 from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +21,22 @@ CORE_DIR = Path(dag_healer.core.__file__).resolve().parent
 CORE_MODULES = sorted(CORE_DIR.glob("*.py"))
 EXPECTED = {"__init__", "ids", "failures", "evidence", "specs", "vocab", "errors", "tracebacks", "ports"}
 FORBIDDEN = ("airflow", "boto3", "botocore", "pydantic", "httpx", "pandas", "sqlalchemy", "fastapi", "yaml")
+#: What ``dag_healer.core`` and ``dag_healer.orchestrators`` may add to a process's start-up on
+#: top of the standard library modules they use (section 11.6). The standard library part is
+#: left out of the measure: it alone takes about 30 ms on a development machine.
+IMPORT_BUDGET_SECONDS = 0.05
+#: Imports the standard library modules given as JSON, then times the two packages.
+TIMED_IMPORT = """
+import importlib, json, sys, time
+for name in json.loads(sys.argv[1]):
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        pass
+start = time.perf_counter()
+import dag_healer.core, dag_healer.orchestrators
+print(time.perf_counter() - start)
+"""
 
 
 def test_core_has_exactly_the_designed_modules() -> None:
@@ -76,3 +97,29 @@ def test_importing_core_loads_no_third_party_module() -> None:
         *(f"dag_healer.core{'' if stem == '__init__' else '.' + stem}" for stem in EXPECTED),
     }
     assert not [name for name in loaded if name.split(".")[0] in FORBIDDEN]
+
+
+def test_core_and_the_orchestrators_package_import_quickly() -> None:
+    # bytecode may be written: compiling the sources is not what the bound is about
+    env = {name: value for name, value in os.environ.items() if name != "PYTHONDONTWRITEBYTECODE"}
+    code = (
+        "import json, sys; before = set(sys.modules); import dag_healer.core, dag_healer.orchestrators; "
+        "print(json.dumps(sorted(set(sys.modules) - before)))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env)
+    stdlib = [name for name in json.loads(result.stdout) if name.split(".")[0] in sys.stdlib_module_names]
+    assert "dataclasses" in stdlib  # the baseline really holds what the packages pull in
+
+    timings = [
+        float(
+            subprocess.run(
+                [sys.executable, "-c", TIMED_IMPORT, json.dumps(stdlib)],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            ).stdout
+        )
+        for _ in range(3)
+    ]
+    assert min(timings) < IMPORT_BUDGET_SECONDS, timings

@@ -1,4 +1,8 @@
-"""Incident routes: lists, details, PR.md and the human actions (resolve / retry)."""
+"""Incident routes: lists, details, PR.md and the human actions (resolve / retry).
+
+Only the incidents of the orchestrator instance this process serves (``deps.get_instance``)
+are listed, shown and acted on; an incident of another instance answers 404.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +14,16 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from dag_healer.api import auth, schemas, views
-from dag_healer.api.deps import API_PREFIX, get_config, get_session, readable_dag_ids
+from dag_healer.api.deps import (
+    API_PREFIX,
+    get_adapter,
+    get_config,
+    get_instance,
+    get_session,
+    readable_dag_ids,
+)
 from dag_healer.config import HealerConfig
+from dag_healer.core.ports import OrchestratorAdapter
 from dag_healer.masking import mask_text
 from dag_healer.store import repo as store_repo
 from dag_healer.store.models import ALL_STATUSES, Incident
@@ -38,10 +50,17 @@ def parse_statuses(value: str | None) -> list[str] | None:
     return statuses
 
 
-def get_dag_incident(session: Session, dag_id: str, incident_id: str) -> Incident:
-    """The incident ``incident_id`` of ``dag_id``; 404 when missing or of another DAG."""
+def get_dag_incident(
+    session: Session, dag_id: str, incident_id: str, *, orchestrator: str | None = None
+) -> Incident:
+    """The incident ``incident_id`` of ``dag_id``; 404 when missing, of another DAG or of
+    another orchestrator instance than ``orchestrator`` (when given)."""
     incident = store_repo.get_incident(session, incident_id)
-    if incident is None or incident.dag_id != dag_id:
+    if (
+        incident is None
+        or incident.dag_id != dag_id
+        or (orchestrator is not None and incident.orchestrator != orchestrator)
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
     return incident
 
@@ -57,17 +76,21 @@ def list_incidents(
     user: Any = Depends(auth.require_authenticated),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.IncidentList:
     """Incidents of the DAGs the user can read, newest first."""
     statuses = parse_statuses(status_filter)
-    readable = readable_dag_ids(authorizer, user, views.incident_dag_ids(session))
+    readable = readable_dag_ids(authorizer, user, views.incident_dag_ids(session, orchestrator=instance))
     if dag_id is not None:
         readable &= {dag_id}
-    incidents = store_repo.list_incidents(session, dag_ids=readable, statuses=statuses, limit=limit)
+    incidents = store_repo.list_incidents(
+        session, dag_ids=readable, statuses=statuses, limit=limit, orchestrator=instance
+    )
     return schemas.IncidentList(
-        incidents=[views.incident_summary(cfg, incident) for incident in incidents],
-        total=views.count_incidents(session, dag_ids=readable, statuses=statuses),
+        incidents=[views.incident_summary(cfg, incident, adapter=adapter) for incident in incidents],
+        total=views.count_incidents(session, dag_ids=readable, statuses=statuses, orchestrator=instance),
     )
 
 
@@ -79,21 +102,25 @@ def list_dag_incidents(
     user: Any = Depends(read_ti),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.DagIncidents:
     """Incidents of one DAG with its contract and the caller's edit permission."""
     statuses = parse_statuses(status_filter)
-    incidents = store_repo.list_incidents(session, dag_ids={dag_id}, statuses=statuses, limit=limit)
+    incidents = store_repo.list_incidents(
+        session, dag_ids={dag_id}, statuses=statuses, limit=limit, orchestrator=instance
+    )
     record = views.load_contracts(cfg).get(dag_id)
     contract = None
     if record is not None:
         contract = views.contract_view(
             record,
             can_approve=authorizer.can_edit_dag(user, dag_id, None),
-            pending_approval=dag_id in views.pending_approval_dags(session),
+            pending_approval=dag_id in views.pending_approval_dags(session, orchestrator=instance),
         )
     return schemas.DagIncidents(
-        incidents=[views.incident_summary(cfg, incident) for incident in incidents],
+        incidents=[views.incident_summary(cfg, incident, adapter=adapter) for incident in incidents],
         contract=contract,
         monitored=cfg.is_monitored(dag_id),
         can_edit=authorizer.can_edit_dag(user, dag_id),
@@ -107,10 +134,12 @@ def get_incident(
     user: Any = Depends(read_ti),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.IncidentDetail:
     """One incident with timeline, alerts, sample and the actions the caller may take."""
-    incident = get_dag_incident(session, dag_id, incident_id)
+    incident = get_dag_incident(session, dag_id, incident_id, orchestrator=instance)
     record = views.load_contracts(cfg).get(dag_id)
     return views.incident_detail(
         session,
@@ -118,6 +147,7 @@ def get_incident(
         incident,
         can_edit=authorizer.can_edit_dag(user, dag_id),
         contract=record.contract if record else None,
+        adapter=adapter,
     )
 
 
@@ -131,10 +161,11 @@ def get_pr_md(
     incident_id: str,
     user: Any = Depends(read_ti),
     cfg: HealerConfig = Depends(get_config),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> Response:
     """The PR.md written for an incident whose fix could not be opened as a pull request."""
-    incident = get_dag_incident(session, dag_id, incident_id)
+    incident = get_dag_incident(session, dag_id, incident_id, orchestrator=instance)
     path = views.pr_md_file(cfg, incident)
     if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PR.md not found")
@@ -162,11 +193,13 @@ def get_task_instance_incident(
     user: Any = Depends(read_ti),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.TaskInstanceIncident:
     """Latest incident of a task instance (any try), or ``null``."""
     incident = views.task_instance_incident(
-        session, dag_id=dag_id, run_id=run_id, task_id=task_id, map_index=map_index
+        session, dag_id=dag_id, run_id=run_id, task_id=task_id, map_index=map_index, orchestrator=instance
     )
     if incident is None:
         return schemas.TaskInstanceIncident(incident=None)
@@ -177,6 +210,7 @@ def get_task_instance_incident(
         incident,
         can_edit=authorizer.can_edit_dag(user, dag_id),
         contract=record.contract if record else None,
+        adapter=adapter,
     )
     return schemas.TaskInstanceIncident(incident=detail)
 
@@ -192,16 +226,22 @@ def enqueue_incident_action(
     kind: str,
     payload: dict[str, Any],
     actor: str,
+    available: bool = True,
 ) -> schemas.CommandAccepted:
-    """Queue a command for the worker after checking the incident status.
+    """Queue a command for the worker of the incident's instance after checking its status.
 
-    409 when ``action`` is not allowed in the current status or another command is
-    pending for the incident; the same command requested twice returns the pending one.
+    409 when ``action`` is not allowed in the current status, when the orchestrator cannot
+    serve it (``available=False``) or when another command is pending for the incident;
+    the same command requested twice returns the pending one.
     """
     if action not in views.actions_for_status(incident.status):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Action {action!r} is not allowed while the incident is {incident.status!r}",
+        )
+    if not available:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"Action {action} is not available for this incident"
         )
     pending = views.pending_commands_for(session, incident.id)
     for command in pending:
@@ -214,7 +254,13 @@ def enqueue_incident_action(
             detail="Another action is already pending for this incident",
         )
     command = store_repo.enqueue_command(
-        session, kind=kind, dag_id=incident.dag_id, incident_id=incident.id, payload=payload, actor=actor
+        session,
+        kind=kind,
+        dag_id=incident.dag_id,
+        incident_id=incident.id,
+        payload=payload,
+        actor=actor,
+        orchestrator=incident.orchestrator,
     )
     store_repo.add_event(
         session,
@@ -244,10 +290,11 @@ def resolve_incident(
     incident_id: str,
     body: schemas.ResolveBody,
     user: Any = Depends(edit_ti),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.CommandAccepted:
     """Resolve an incident as a data problem, a code problem, or ignore it."""
-    incident = get_dag_incident(session, dag_id, incident_id)
+    incident = get_dag_incident(session, dag_id, incident_id, orchestrator=instance)
     return enqueue_incident_action(
         session,
         incident,
@@ -268,10 +315,11 @@ def retry_repair(
     incident_id: str,
     body: schemas.NoteBody | None = None,
     user: Any = Depends(edit_ti),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.CommandAccepted:
     """Ask the agent for a new repair attempt."""
-    incident = get_dag_incident(session, dag_id, incident_id)
+    incident = get_dag_incident(session, dag_id, incident_id, orchestrator=instance)
     return enqueue_incident_action(
         session,
         incident,
@@ -292,10 +340,15 @@ def retry_task(
     incident_id: str,
     body: schemas.NoteBody | None = None,
     user: Any = Depends(edit_ti),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.CommandAccepted:
-    """Clear the failed task instance in Airflow so that it runs again."""
-    incident = get_dag_incident(session, dag_id, incident_id)
+    """Ask the orchestrator to run the failed step again (Airflow: clear the task instance).
+
+    409 when the orchestrator cannot serve it for this incident (``views.retry_available``).
+    """
+    incident = get_dag_incident(session, dag_id, incident_id, orchestrator=instance)
     return enqueue_incident_action(
         session,
         incident,
@@ -308,4 +361,5 @@ def retry_task(
             "map_index": incident.map_index,
         },
         actor=auth.user_name(user),
+        available=views.retry_available(adapter, incident),
     )

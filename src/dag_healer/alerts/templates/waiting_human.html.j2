@@ -3,7 +3,7 @@
 {% block headline %}Human decision needed{% endblock %}
 {% block lead %}dag-healer could not safely decide whether this failure is caused by the input data or by the code, so it is waiting for a human decision. Nothing has been changed.{% endblock %}
 {% block content %}
-{{ m.summary(incident) }}
+{{ m.summary(incident, words) }}
 {{ m.text_section("Why a human is needed", reason or "The automatic classification did not reach the required confidence.") }}
 {{ m.text_section("Diagnosis", incident.diagnosis) }}
 {{ m.pre_section("Error", incident.error_summary) }}
@@ -17,6 +17,6 @@
   <li style="margin:0 0 4px 0;"><strong>Ignore</strong>: close the incident without further action.</li>
 </ul>
 {{ m.button(links.task_instance, "Decide in the Healer incident tab", accent) }}
-{{ m.secondary_links(links) }}
+{{ m.secondary_links(links, words) }}
 {% endcall %}
 {% endblock %}

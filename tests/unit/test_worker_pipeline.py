@@ -7,13 +7,18 @@ task logs are rendered (with the real ``render_log_content``) from the REAL exce
 by running the example ETL functions in-process on the day-2 data, so the tracebacks point
 at the copy's files. The LLM is the real ``FakeProvider`` replaying the repository's
 ``fixtures/fake_llm`` scripts, and the store is SQLite under a temporary ``HEALER_HOME``.
+The demo outcomes are also played through the fake orchestrator ("Fakeflow"), which reports
+the same real exceptions, to check that the worker only speaks to the adapter's ports and in
+the adapter's words.
 """
 
 from __future__ import annotations
 
 import csv
+import dataclasses
 import importlib
 import json
+import logging
 import re
 import shutil
 import sys
@@ -31,6 +36,10 @@ from dag_healer.airflow.client import AirflowAPIError, TaskInstanceInfo, render_
 from dag_healer.cli.main import main
 from dag_healer.config import HealerConfig, config_from_mapping, load_config
 from dag_healer.contracts.io import contract_path, load_contract
+from dag_healer.core.specs import TaskInfo
+from dag_healer.masking import mask_text
+from dag_healer.orchestrators.fake import FakeAdapter, FakeWorld
+from dag_healer.repo.dagscan import scan_dags
 from dag_healer.repo.git import run_git
 from dag_healer.store import dispose_engines, session_scope
 from dag_healer.store import repo as store_repo
@@ -40,9 +49,11 @@ from dag_healer.worker.loop import run_worker
 from dag_healer.worker.pipeline import (
     compose_error_summary,
     failure_signature,
+    get_not_before,
     get_watermark,
     process_incident,
     reconcile,
+    reset_state,
     set_watermark,
     summarize_failure,
 )
@@ -287,22 +298,50 @@ class Bench:
     client: FakeAirflowClient
     home: Path
     failures: dict[str, tuple[str, BaseException]] = field(default_factory=dict)
+    world: FakeWorld | None = None
+
+    def use_fakeflow(self) -> FakeWorld:
+        """Report the failures through Fakeflow instead of the Airflow client double.
+
+        The flows are the repository's DAGs as the static scan sees them (like the end-to-end
+        world of the conformance harness); the worker then runs on a ``FakeAdapter``.
+        """
+        world = FakeWorld()
+        for dag in scan_dags(self.repo, self.cfg.repo.dags_dir):
+            world.add_pipeline(
+                dag.dag_id,
+                file=dag.file,
+                steps={task.task_id: task for task in dag.tasks},
+                datasets=dag.datasets,
+            )
+        self.world = world
+        return world
 
     def fail(self, dag_id: str, run_id: str = RUN_1, *, extra_line: str | None = None) -> str:
+        """Run ``dag_id`` on the day-2 data and report its real failure (``extra_line``: Airflow log)."""
         task_id, exc = self.failures.get(dag_id) or run_dag_in_process(self.repo, dag_id)
         self.failures[dag_id] = (task_id, exc)
-        self.client.add_failure(
-            dag_id, run_id, task_id, airflow_log(dag_id, task_id, exc, extra_line=extra_line)
-        )
+        if self.world is not None:
+            self.world.fail(dag_id, run_id, task_id, exc=exc)
+        else:
+            self.client.add_failure(
+                dag_id, run_id, task_id, airflow_log(dag_id, task_id, exc, extra_line=extra_line)
+            )
         return task_id
 
-    def run_once(self, provider: Any | None = None) -> Any:
+    def run_once(self, provider: Any | None = None, **kwargs: Any) -> Any:
+        orchestrator: dict[str, Any] = (
+            {"adapter": FakeAdapter(self.cfg, world=self.world)}
+            if self.world is not None
+            else {"client": self.client}
+        )
         return run_worker(
             self.cfg,
             once=True,
             provider=provider or FakeProvider(self.cfg),
-            client=self.client,
             install_signal_handlers=False,
+            **orchestrator,
+            **kwargs,
         )
 
     def incidents(self, dag_id: str) -> list[dict[str, Any]]:
@@ -597,6 +636,107 @@ def test_listener_event_is_confirmed_then_triaged(bench: Bench) -> None:
         assert [e.status for e in session.query(PendingEvent).all()] == ["confirmed"]
 
 
+#: The demo's outcome of each DAG: (status, category).
+DEMO_OUTCOMES: dict[str, tuple[str, str]] = {
+    "sales_daily_etl": ("reported", "data"),
+    "customers_sync": ("repaired", "code"),
+    "inventory_report": ("waiting_human", "ambiguous"),
+}
+#: Where the repair prompts start quoting the evidence (the repository's code and files).
+EVIDENCE_HEADING = "## Evidence (masked)"
+#: A fenced block of a prompt or of PR.md (its fence is longer than any backtick run inside).
+FENCED_BLOCK = re.compile(r"^(?P<fence>`{3,})[^`\n]*\n.*?^(?P=fence)[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
+def own_words(text: str) -> str:
+    """``text`` without its fenced blocks, which quote code, diffs, tracebacks and pytest output."""
+    return FENCED_BLOCK.sub("", text)
+
+
+class RecordingProvider(FakeProvider):
+    """The fake LLM provider, keeping every ``(kind, system prompt, user prompt)`` it is given."""
+
+    def __init__(self, cfg: Any) -> None:
+        super().__init__(cfg)
+        self.prompts: list[tuple[str, str, str]] = []
+
+    def classify(self, *, system: str, prompt: str) -> Any:
+        self.prompts.append(("classify", system, prompt))
+        return super().classify(system=system, prompt=prompt)
+
+    def repair_session(self, *, system: str, prompt: str, **kwargs: Any) -> Any:
+        self.prompts.append(("repair", system, prompt))
+        return super().repair_session(system=system, prompt=prompt, **kwargs)
+
+    def worded_texts(self) -> list[tuple[str, str]]:
+        """The labelled prompt texts dag-healer writes in the orchestrator's words.
+
+        The classify prompt leaves out its ``<incident>`` JSON, a repair prompt its evidence
+        section and its fenced blocks: they quote the example repository (DAG files,
+        ``src/etl/common.py``) and the machine (absolute paths), which may mention Airflow
+        whatever the orchestrator.
+        """
+        texts: list[tuple[str, str]] = []
+        for number, (kind, system, prompt) in enumerate(self.prompts):
+            texts.append((f"{kind} system prompt {number}", system))
+            if kind == "classify":
+                own = re.sub(r"<incident>.*?</incident>", "", prompt, flags=re.DOTALL)
+            else:
+                own = own_words(prompt.split(EVIDENCE_HEADING, 1)[0])
+            texts.append((f"{kind} prompt {number}", own))
+        return texts
+
+
+@pytest.mark.parametrize("orchestrator", ["airflow", "fake"])
+def test_the_demo_outcomes_through_each_orchestrator(bench: Bench, orchestrator: str) -> None:
+    """The same three outcomes through the Airflow adapter and through Fakeflow, each in its own words."""
+    from dag_healer.alerts import notify, render_alert
+
+    if orchestrator == "fake":
+        bench.use_fakeflow()
+    for dag_id in ETL_TASKS:
+        bench.fail(dag_id)
+    provider = RecordingProvider(bench.cfg)
+    alerts: list[tuple[str, dict[str, Any], str]] = []
+
+    def notifier(cfg: Any, incident: dict[str, Any], event: str, *, extra: dict[str, Any]) -> Any:
+        alerts.append((event, dict(extra), render_alert(cfg, incident, event, extra=extra).text))
+        return notify(cfg, incident, event, extra=extra)
+
+    stats = bench.run_once(provider, notifier=notifier)
+
+    assert stats.errors == [] and stats.created == 3
+    assert stats.processed == {"reported": 1, "repaired": 1, "waiting_human": 1}
+    instance, source = ("airflow", "rest") if orchestrator == "airflow" else ("fake", "poll")
+    for dag_id, outcome in DEMO_OUTCOMES.items():
+        incident = bench.incident(dag_id)
+        assert (incident["status"], incident["category"]) == outcome, bench.events(incident["id"])
+        assert (incident["orchestrator"], incident["source"]) == (instance, source)
+        assert incident["task_id"] == bench.failures[dag_id][0]
+    customers = bench.incident("customers_sync")
+    assert _diff_files(customers["diff"]) == {"src/etl/customers.py", customers["test_path"]}
+    pr_md = Path(customers["pr_md_path"]).read_text(encoding="utf-8")
+
+    # prompts and PR.md name the orchestrator, never the other one
+    own, other = ("Airflow", "Fakeflow") if orchestrator == "airflow" else ("Fakeflow", "Airflow")
+    assert [kind for kind, _system, _prompt in provider.prompts].count("classify") == 3
+    assert "repair" in [kind for kind, _system, _prompt in provider.prompts]
+    for label, text in [*provider.worded_texts(), ("PR.md", own_words(pr_md))]:
+        assert own in text, label
+        assert other not in text, label
+
+    # every alert gets the orchestrator's words and the links into its own UI (none for Airflow,
+    # whose UI hosts the Healer views)
+    assert sorted(event for event, _extra, _text in alerts) == ["repaired", "reported", "waiting_human"]
+    for _event, extra, text in alerts:
+        assert extra["vocabulary"]["product"] == own
+        if orchestrator == "airflow":
+            assert extra["native_links"] == {} and "Open in" not in text
+        else:
+            (url,) = extra["native_links"].values()
+            assert url.startswith("http://fakeflow.localhost/flows/") and "Open in Fakeflow" in text
+
+
 # =========================================================================== reconcile (no repo needed)
 
 
@@ -708,7 +848,8 @@ def test_reconcile_without_a_client_keeps_pending_events(cfg: HealerConfig) -> N
         ("final_failure", "failed", 1, 2, "discarded"),  # a try Airflow never ran
         ("every_failure", "up_for_retry", 1, 1, "confirmed"),
         ("every_failure", "running", 2, 1, "confirmed"),
-        ("every_failure", "running", 1, 1, "discarded"),
+        ("every_failure", "running", 1, 1, "pending_check"),  # not ended yet: checked again later
+        ("final_failure", "running", 1, 1, "pending_check"),
     ],
 )
 def test_pending_event_confirmation(
@@ -737,8 +878,42 @@ def test_pending_event_confirmation(
         assert stats.confirmed == 1
         assert [(i.source, i.try_number) for i in incidents] == [("listener", event_try)]
         assert "jane.doe@example.com" not in incidents[0].error_summary
+    elif expected == "pending_check":
+        assert (stats.pending_left, stats.discarded, stats.errors, incidents) == (1, 0, [], [])
     else:
         assert stats.discarded == 1 and incidents == []
+
+
+def test_a_listener_event_that_beats_the_end_of_the_try_is_confirmed_later(
+    tmp_path: Path, healer_env: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Airflow records the end of a try a few seconds after the listener posted its failure."""
+    cfg = make_cfg(tmp_path, monitor={"modes": ["listener"]})
+    client = FakeAirflowClient()
+    client.add_failure("etl", RUN_1, "run", SIMPLE_LOG, state="running", listed=False)
+    with session_scope(cfg.database_url) as session:
+        store_repo.add_pending_event(
+            session,
+            dag_id="etl",
+            run_id=RUN_1,
+            task_id="run",
+            try_number=1,
+            payload={"source": "listener", "error": SIMPLE_LOG},
+        )
+
+    with caplog.at_level(logging.INFO, logger="dag_healer.worker.pipeline"):
+        early = reconcile(cfg, None, client, now=NOW)
+    assert (early.pending_left, early.discarded, early.errors) == (1, 0, [])  # no error: not ended yet
+    assert _pending(cfg) == ["pending_check"] and _incidents(cfg) == []
+    assert not [r for r in caplog.records if r.name == pipeline.__name__ and r.levelno >= logging.WARNING]
+    assert (
+        "pending event 1 is checked again later: the task instance is running, not failed yet" in caplog.text
+    )
+
+    client.instances[("etl", RUN_1, "run", -1)].state = "failed"
+    later = reconcile(cfg, None, client, now=NOW + timedelta(seconds=5))
+    assert later.confirmed == 1 and _pending(cfg) == ["confirmed"]
+    assert [(i.source, i.task_id) for i in _incidents(cfg)] == [("listener", "run")]
 
 
 def test_pending_events_are_discarded_for_unknown_tis_disabled_modes_and_unmonitored_dags(
@@ -768,11 +943,149 @@ def test_pending_events_are_discarded_for_unknown_tis_disabled_modes_and_unmonit
 
     assert _pending(cfg) == ["discarded", "discarded", "discarded", "pending_check"]
     assert stats.discarded == 3 and stats.pending_left == 1
+    # the phase-5 text of an Airflow API error
+    assert stats.errors == [
+        "confirming pending event 4: AirflowAPIError: Airflow API request failed: timeout"
+    ]
     assert _incidents(cfg) == []
 
     # still unconfirmed a day later: discarded
     reconcile(cfg, None, client, now=datetime.now(timezone.utc) + timedelta(days=2))
     assert _pending(cfg)[-1] == "discarded"
+
+
+def test_pending_events_of_other_instances_are_left_alone(cfg: HealerConfig) -> None:
+    client = FakeAirflowClient()
+    client.add_failure("etl", RUN_1, "run", SIMPLE_LOG, listed=False)
+    with session_scope(cfg.database_url) as session:
+        for orchestrator in ("airflow-staging", "airflow"):
+            store_repo.add_pending_event(
+                session,
+                orchestrator=orchestrator,
+                dag_id="etl",
+                run_id=RUN_1,
+                task_id="run",
+                try_number=1,
+                payload={"source": "listener", "error": SIMPLE_LOG},
+            )
+
+    stats = reconcile(cfg, None, client, now=NOW)
+
+    assert (stats.confirmed, stats.discarded, stats.pending_left) == (1, 0, 0)
+    assert _pending(cfg) == ["pending_check", "confirmed"]  # the staging worker's event is untouched
+    assert [(i.orchestrator, i.source) for i in _incidents(cfg)] == [("airflow", "listener")]
+
+
+def test_queued_hints_are_stored_then_confirmed_by_the_adapter(tmp_path: Path, healer_env: Path) -> None:
+    cfg = make_cfg(tmp_path, monitor={"modes": ["poll", "queue"]})
+    world = FakeWorld(clock=lambda: NOW)
+    world.add_pipeline("etl", file="dags/etl.py", steps={"run": TaskInfo("run", "python")})
+    world.fail("etl", RUN_1, "run", text=SIMPLE_LOG)
+    with session_scope(cfg.database_url) as session:  # the poll is already past this failure
+        store_repo.kv_set(session, store_repo.cursor_key("fake"), {"seq": 99})
+    hint = {"pipeline_id": "etl", "run_id": RUN_1, "step_id": "run", "error": SIMPLE_LOG}
+    world.push("fake", {**hint, "input": {"rows": [{"email": "jane.doe@example.com"}]}})
+    world.push("fake", {**hint, "run_id": "forged__2026-10-17"})
+    world.push("fake", {"run_id": RUN_1})  # malformed: dropped (and acknowledged)
+
+    stats = reconcile(cfg, None, None, now=NOW, adapter=FakeAdapter(cfg, world=world))
+
+    assert stats.errors == [] and (stats.queued, stats.confirmed, stats.discarded) == (2, 1, 1)
+    assert world.queue == []
+    with session_scope(cfg.database_url) as session:
+        rows = [event.to_dict() for event in session.query(PendingEvent).order_by(PendingEvent.id)]
+    assert [(r["orchestrator"], r["channel"], r["run_id"], r["status"]) for r in rows] == [
+        ("fake", "fake", RUN_1, "confirmed"),
+        ("fake", "fake", "forged__2026-10-17", "discarded"),  # Fakeflow does not know this run
+    ]
+    assert rows[0]["payload"] == {"error": mask_text(SIMPLE_LOG), "source": "push", "via": "queue"}
+    assert "jane.doe@example.com" not in json.dumps(rows)
+    (incident,) = _incidents(cfg)
+    assert (incident.orchestrator, incident.source, incident.dag_id, incident.run_id) == (
+        "fake",
+        "push",
+        "etl",
+        RUN_1,
+    )
+    assert incident.error_summary.startswith("ValueError: bad row for [email]")
+    with session_scope(cfg.database_url) as session:
+        notes = [e.message for e in store_repo.list_events(session, incident.id) if e.kind == "confirmed"]
+    assert notes == ["The push event was confirmed by the Fakeflow API (state failed, attempt 1)."]
+
+
+def test_a_queued_message_the_store_rejects_does_not_block_the_others(
+    tmp_path: Path, healer_env: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = make_cfg(tmp_path, monitor={"modes": ["queue"]})
+    world = FakeWorld(clock=lambda: NOW)
+    world.add_pipeline("etl", file="dags/etl.py", steps={"run": TaskInfo("run", "python")})
+    world.fail("etl", RUN_1, "run", text=SIMPLE_LOG)
+    adapter = FakeAdapter(cfg, world=world)
+    normalize = adapter.normalize
+
+    def losing_the_run_id(channel: str, payload: Any, headers: Any) -> list[Any]:
+        hints = normalize(channel, payload, headers)
+        if payload.get("event_id") != "broken":
+            return hints
+        return [dataclasses.replace(h, ref=dataclasses.replace(h.ref, run_id="")) for h in hints]
+
+    monkeypatch.setattr(adapter, "normalize", losing_the_run_id)
+    hint = {"pipeline_id": "etl", "run_id": RUN_1, "step_id": "run", "error": SIMPLE_LOG}
+    world.push("fake", {**hint, "event_id": "broken"})  # the store rejects its pending event
+    world.push("fake", hint)
+
+    with caplog.at_level(logging.WARNING, logger="dag_healer.worker.pipeline"):
+        stats = reconcile(cfg, None, None, now=NOW, adapter=adapter)
+
+    assert stats.errors == [] and (stats.queued, stats.confirmed) == (1, 1)
+    assert world.queue == []  # both acknowledged: the rejected message is dropped, not redelivered
+    assert _pending(cfg) == ["confirmed"]
+    assert (
+        "dropping a queued fake event the store cannot keep: ValueError: Pending event is missing run_id"
+        in (caplog.text)
+    )
+
+
+def test_queued_messages_stay_in_the_queue_while_the_store_fails(
+    tmp_path: Path, healer_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_cfg(tmp_path, monitor={"modes": ["queue"]})
+    world = FakeWorld(clock=lambda: NOW)
+    world.add_pipeline("etl", file="dags/etl.py", steps={"run": TaskInfo("run", "python")})
+    for run_id in (RUN_1, RUN_2):
+        world.push("fake", {"pipeline_id": "etl", "run_id": run_id, "step_id": "run"})
+    adapter = FakeAdapter(cfg, world=world)
+    add_pending_event = store_repo.add_pending_event
+
+    def store_down(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the store is down")
+
+    monkeypatch.setattr(store_repo, "add_pending_event", store_down)
+    stats = reconcile(cfg, None, None, now=NOW, adapter=adapter)
+    assert stats.errors == ["storing queued events: RuntimeError: the store is down"]
+    assert stats.queued == 0 and len(world.queue) == 2  # nothing acknowledged: delivered again
+
+    monkeypatch.setattr(store_repo, "add_pending_event", add_pending_event)
+    stats = reconcile(cfg, None, None, now=NOW, adapter=adapter)
+    assert stats.errors == [] and stats.queued == 2 and world.queue == []
+
+
+def test_a_reset_keeps_old_fakeflow_failures_out_of_every_poll(tmp_path: Path, healer_env: Path) -> None:
+    cfg = make_cfg(tmp_path, orchestrator={"type": "fake"}, monitor={"modes": ["poll"]})
+    world = FakeWorld(clock=lambda: NOW)
+    world.add_pipeline("etl", file="dags/etl.py", steps={"run": TaskInfo("run", "python")})
+    world.fail("etl", RUN_1, "run", text=SIMPLE_LOG, at=NOW - timedelta(hours=2))
+    adapter = FakeAdapter(cfg, world=world)
+    floor = reset_state(cfg, NOW - timedelta(hours=1))  # what dag-healer store reset records
+
+    for minutes in (0, 1, 2):  # a poll that lists nothing keeps the floor for the next one
+        stats = reconcile(cfg, None, None, now=NOW + timedelta(minutes=minutes), adapter=adapter)
+        assert (stats.errors, stats.created) == ([], [])
+    assert _incidents(cfg) == [] and get_not_before(cfg) == floor
+
+    world.fail("etl", RUN_2, "run", text=SIMPLE_LOG, at=NOW + timedelta(minutes=3))
+    stats = reconcile(cfg, None, None, now=NOW + timedelta(minutes=4), adapter=adapter)
+    assert len(stats.created) == 1 and [i.run_id for i in _incidents(cfg)] == [RUN_2]
 
 
 # =========================================================================== process_incident
@@ -897,9 +1210,36 @@ def test_failure_signature_ignores_line_numbers_paths_and_numbers() -> None:
     assert summary.startswith("ValueError: bad row for [email]") and signature
 
 
-def test_watermark_state_file_round_trip_and_corruption(cfg: HealerConfig) -> None:
-    assert get_watermark(cfg) is None
+def test_the_poll_cursor_is_kept_in_healer_kv(cfg: HealerConfig) -> None:
+    assert get_watermark(cfg) is None and get_not_before(cfg) is None
     set_watermark(cfg, NOW)
-    assert get_watermark(cfg) == NOW
-    pipeline.state_path(cfg).write_text("{not json", encoding="utf-8")
-    assert get_watermark(cfg) is None
+    assert get_watermark(cfg) == NOW and get_not_before(cfg) is None
+    floor = reset_state(cfg, NOW + timedelta(hours=1))
+    assert get_watermark(cfg) == get_not_before(cfg) == floor == NOW + timedelta(hours=1)
+    set_watermark(cfg, NOW + timedelta(hours=2))  # keeps the floor of the reset
+    with session_scope(cfg.database_url) as session:
+        assert store_repo.kv_get(session, store_repo.cursor_key("airflow")) == {
+            "watermark": "2026-10-17T14:00:00+00:00",
+            "not_before": "2026-10-17T13:00:00+00:00",
+        }
+    assert not pipeline.state_path(cfg).exists()  # the phase-5 state file is only ever read
+
+
+def test_a_phase5_state_file_is_imported_once(tmp_path: Path, healer_env: Path) -> None:
+    corrupt = make_cfg(tmp_path / "corrupt")
+    pipeline.state_path(corrupt).write_text("{not json", encoding="utf-8")
+    assert get_watermark(corrupt) is None  # an unreadable file is not imported
+
+    floor = NOW - timedelta(seconds=30)
+    state = {pipeline.WATERMARK_KEY: NOW.isoformat(), pipeline.NOT_BEFORE_KEY: floor.isoformat()}
+    pipeline.save_state(corrupt, state)
+    cfg = make_cfg(tmp_path / "fresh")
+    assert (get_watermark(cfg), get_not_before(cfg)) == (NOW, floor)
+    pipeline.save_state(cfg, {pipeline.WATERMARK_KEY: (NOW - timedelta(days=1)).isoformat()})
+    assert get_watermark(cfg) == NOW  # imported once: the file no longer counts
+
+    client = FakeAirflowClient()
+    later = NOW + timedelta(seconds=10)
+    reconcile(cfg, None, client, now=later)
+    assert client.list_calls == [floor]  # the window starts at the imported floor
+    assert (get_watermark(cfg), get_not_before(cfg)) == (later, floor)

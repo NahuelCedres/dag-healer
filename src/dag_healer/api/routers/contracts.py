@@ -1,7 +1,8 @@
 """Contract routes: list, show and approve the data contracts of the repository.
 
 The API never writes contract files: an approval is queued as an ``approve_contract``
-command that the worker (single writer of the repository) applies.
+command that the worker (single writer of the repository) of this process's orchestrator
+instance applies.
 
 Reading a contract needs ``GET`` on ``DagAccessEntity.CODE``. Approving one needs ``PUT`` on
 the DAG itself (``requires_access_dag("PUT")``, no sub-entity): the FAB auth manager defines
@@ -19,7 +20,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from dag_healer.api import auth, schemas, views
-from dag_healer.api.deps import API_PREFIX, get_config, get_session, readable_dag_ids
+from dag_healer.api.deps import API_PREFIX, get_config, get_instance, get_session, readable_dag_ids
 from dag_healer.config import HealerConfig
 from dag_healer.contracts.io import compute_source_hash
 from dag_healer.masking import mask_text
@@ -39,12 +40,13 @@ def list_contracts(
     user: Any = Depends(auth.require_authenticated),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.ContractList:
     """Contracts of the DAGs the user can read."""
     records = views.load_contracts(cfg)
     readable = readable_dag_ids(authorizer, user, records)
-    pending = views.pending_approval_dags(session)
+    pending = views.pending_approval_dags(session, orchestrator=instance)
     return schemas.ContractList(
         contracts=[
             views.contract_view(
@@ -64,6 +66,7 @@ def get_contract(
     user: Any = Depends(read_code),
     authorizer: auth.Authorizer = Depends(auth.get_authorizer),
     cfg: HealerConfig = Depends(get_config),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.ContractView:
     """The contract of one DAG (404 when it has none)."""
@@ -73,7 +76,7 @@ def get_contract(
     return views.contract_view(
         record,
         can_approve=authorizer.can_edit_dag(user, dag_id, None),
-        pending_approval=dag_id in views.pending_approval_dags(session),
+        pending_approval=dag_id in views.pending_approval_dags(session, orchestrator=instance),
     )
 
 
@@ -87,6 +90,7 @@ def approve_contract(
     body: schemas.NoteBody | None = None,
     user: Any = Depends(edit_dag),
     cfg: HealerConfig = Depends(get_config),
+    instance: str = Depends(get_instance),
     session: Session = Depends(get_session),
 ) -> schemas.CommandAccepted:
     """Queue the approval of a draft (or stale) contract.
@@ -99,7 +103,7 @@ def approve_contract(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
     if record.status == "approved":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The contract is already approved")
-    query = select_pending_approval(dag_id)
+    query = select_pending_approval(dag_id, orchestrator=instance)
     existing = session.scalars(query).first()
     if existing is not None:
         return schemas.CommandAccepted(command_id=existing.id, status=existing.status)
@@ -115,18 +119,18 @@ def approve_contract(
             "note": mask_text(note) if note else None,
         },
         actor=actor,
+        orchestrator=instance,
     )
     session.commit()
     log.info("dag-healer: %s queued the approval of the %s contract (command %s)", actor, dag_id, command.id)
     return schemas.CommandAccepted(command_id=command.id, status=command.status)
 
 
-def select_pending_approval(dag_id: str) -> Select[tuple[Command]]:
-    """Query for the pending ``approve_contract`` command of ``dag_id``."""
-    return (
-        select(Command)
-        .where(
-            Command.kind == "approve_contract", Command.dag_id == dag_id, Command.status == COMMAND_PENDING
-        )
-        .order_by(Command.id)
+def select_pending_approval(dag_id: str, *, orchestrator: str | None = None) -> Select[tuple[Command]]:
+    """Query for the pending ``approve_contract`` command of ``dag_id`` (of one instance when set)."""
+    query = select(Command).where(
+        Command.kind == "approve_contract", Command.dag_id == dag_id, Command.status == COMMAND_PENDING
     )
+    if orchestrator is not None:
+        query = query.where(Command.orchestrator == orchestrator)
+    return query.order_by(Command.id)

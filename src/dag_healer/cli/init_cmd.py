@@ -3,8 +3,10 @@
 What it does, in order:
 
 1. snapshots the sha256 of every ``*.py`` file of the repository;
-2. scans the DAG folder statically (:func:`dag_healer.repo.dagscan.scan_dags`, never imports
-   user code) and detects the test layout (:func:`dag_healer.repo.profile.detect_test_layout`);
+2. scans the repository statically with the code locator of the configured orchestrator
+   (``adapter.code.scan``; for Airflow :func:`dag_healer.repo.dagscan.scan_dags` of the DAG
+   folder, ``--dags-dir`` included; user code is never imported) and detects the test layout
+   (:func:`dag_healer.repo.profile.detect_test_layout`);
 3. for every DAG with resolvable datasets, loads them (from ``--samples DIR`` when given,
    matched by relative path or file name) and infers a **draft** contract written to
    ``<contracts dir>/<dag_id>.yaml``. Approved contracts are never touched; existing drafts
@@ -12,12 +14,16 @@ What it does, in order:
 4. writes ``healer.yaml`` (with the detected ``tests_dir`` and the discovered task datasets)
    only when it does not exist yet;
 5. snapshots the ``*.py`` files again and fails loudly if anything changed: ``init`` must
-   never modify DAGs or code.
+   never modify DAGs or code;
+6. (the command only: :func:`run_init` never opens the store) creates the incident store, or
+   migrates one written by an older dag-healer (:func:`prepare_store`). A store that cannot be
+   prepared is only reported: the worker creates or migrates it when it starts.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import re
@@ -27,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dag_healer.cli._output import add_config_option, config_arg, error, render_table
+from dag_healer.cli._output import add_config_option, config_arg, error, mask_url, render_table
 from dag_healer.cli.main import register_command
 
 if TYPE_CHECKING:
@@ -97,6 +103,7 @@ class InitResult:
     changed_files: list[str]
     python_files: int
     warnings: list[str] = field(default_factory=list)
+    store: str | None = None  # set by the command (prepare_store), never by run_init
 
     @property
     def ok(self) -> bool:
@@ -180,6 +187,45 @@ def _relative_repo_path(repo_root: Path, base: Path) -> str:
     except ValueError:  # different drives on Windows
         return repo_root.as_posix()
     return Path(relative).as_posix()
+
+
+# --------------------------------------------------------------------------- scan
+
+
+def scan_repository(cfg: HealerConfig | None, repo_root: Path, dags_dir: str) -> list[DagInfo]:
+    """Every pipeline of ``repo_root``, found by the configured orchestrator's code locator.
+
+    The adapter is built for this scan only (no I/O) from ``cfg`` (the defaults without one)
+    with ``repo.path = repo_root`` and ``repo.dags_dir = dags_dir``, and closed afterwards. For
+    Airflow this is exactly ``scan_dags(repo_root, dags_dir)``. Raises :class:`InitError` when
+    the adapter cannot be loaded or built, or the scan fails.
+    """
+    from dag_healer.config import HealerConfig
+    from dag_healer.core.errors import OrchestratorError
+    from dag_healer.orchestrators import registry
+
+    base = cfg if cfg is not None else HealerConfig()
+    scan_cfg = base.model_copy(
+        update={"repo": base.repo.model_copy(update={"path": repo_root, "dags_dir": dags_dir})}
+    )
+    try:
+        settings = registry.orchestrator_settings(scan_cfg)
+        factory = registry.load_factory(settings.type)
+        adapter = registry.ensure_adapter(factory.create(scan_cfg), settings.type)
+    except registry.AdapterLoadError as exc:
+        raise InitError(str(exc)) from None
+    except Exception as exc:  # a third-party factory that fails in its own way
+        from dag_healer.masking import mask_text
+
+        reason = mask_text(f"{type(exc).__name__}: {exc}")[:500]
+        raise InitError(f"the orchestrator adapter cannot be built: {reason}") from None
+    try:
+        return list(adapter.code.scan(repo_root))
+    except OrchestratorError as exc:
+        raise InitError(f"{adapter.display_name} could not scan {repo_root}: {exc}") from None
+    finally:
+        with contextlib.suppress(Exception):  # closing is best effort
+            adapter.close()
 
 
 # --------------------------------------------------------------------------- datasets
@@ -430,10 +476,9 @@ def run_init(
 ) -> InitResult:
     """Run ``dag-healer init`` and return what it did (it prints nothing).
 
-    Raises :class:`InitError` when the repository, DAG folder, samples folder or an existing
-    ``healer.yaml`` is unusable.
+    Raises :class:`InitError` when the repository, DAG folder, samples folder, an existing
+    ``healer.yaml`` or the configured orchestrator adapter is unusable.
     """
-    from dag_healer.repo.dagscan import scan_dags
     from dag_healer.repo.profile import detect_test_layout, snapshot_hashes
 
     warnings: list[str] = []
@@ -448,7 +493,7 @@ def run_init(
         raise InitError(f"--samples folder not found: {samples_dir}")
 
     before = snapshot_hashes(repo_root, ("**/*.py",))
-    dags = scan_dags(repo_root, dags_folder)
+    dags = scan_repository(cfg, repo_root, dags_folder)
     layout = detect_test_layout(repo_root)
     contracts_dir = _contracts_dir(cfg, repo_root)
     configured = cfg.datasets if cfg is not None else {}
@@ -498,6 +543,52 @@ def run_init(
     )
 
 
+# --------------------------------------------------------------------------- store
+
+
+def prepare_store(config_path: Path) -> str:
+    """Create the incident store of ``config_path``, or migrate an older one; returns the report.
+
+    ``init_db(..., allow_migrate=True)`` on the configured store (``store.url``,
+    ``$HEALER_DATABASE_URL`` or the SQLite file under ``$HEALER_HOME``). Never raises: a store
+    that cannot be prepared is described as ``not prepared: ...`` (the worker creates or
+    migrates it when it starts).
+    """
+    from dag_healer.config import load_config_file
+    from dag_healer.store import get_engine
+    from dag_healer.store.db import init_db
+    from dag_healer.store.migrations import current_version
+    from dag_healer.store.models import SCHEMA_VERSION
+
+    url = ""
+    try:
+        url = load_config_file(config_path).database_url
+        engine = get_engine(url)
+        try:
+            before = current_version(engine)
+            init_db(engine, allow_migrate=True)
+            after = current_version(engine)
+        finally:
+            engine.dispose()
+    except Exception as exc:  # ConfigError, MigrationError, driver-specific connection errors
+        lines = str(exc).strip().splitlines()
+        detail = lines[0] if lines else ""
+        if url:
+            detail = detail.replace(url, mask_url(url) or "")
+        return (
+            f"not prepared: {type(exc).__name__}: {detail[:300]}; "
+            "the worker creates or migrates it when it starts"
+        )
+    shown = mask_url(url)
+    if before == 0:
+        return f"{shown} (created at schema v{after})"
+    if before > SCHEMA_VERSION:
+        return f"{shown} (schema v{before}, newer than this dag-healer: upgrade dag-healer)"
+    if before < after:
+        return f"{shown} (migrated from schema v{before} to v{after})"
+    return f"{shown} (schema v{after}, up to date)"
+
+
 # --------------------------------------------------------------------------- output
 
 
@@ -538,6 +629,8 @@ def format_report(result: InitResult) -> str:
         f"healer.yaml:   {result.config_path} ({config_state})",
         f"Tests:         {_tests_line(result.layout, result.repo_root)}",
     ]
+    if result.store is not None:
+        lines.append(f"Store:         {result.store}")
     if result.ok:
         lines.append(f"Code files:    unchanged ({result.python_files} Python files verified)")
     lines += ["", FINAL_NOTE]
@@ -580,6 +673,8 @@ def _run(args: argparse.Namespace) -> int:
     except InitError as exc:
         error(str(exc))
         return 1
+    if result.ok:
+        result.store = prepare_store(result.config_path)
     print(format_report(result))
     if not result.ok:
         error("dag-healer init changed repository code files. This must never happen; please report it:")
@@ -605,7 +700,9 @@ __all__ = [
     "InitResult",
     "dataset_candidates",
     "format_report",
+    "prepare_store",
     "profile_datasets",
     "run_init",
+    "scan_repository",
     "write_config",
 ]

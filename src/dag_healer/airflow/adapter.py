@@ -13,7 +13,8 @@ Port                   Airflow
                        back without a watermark, never before the ``not_before`` floor
 ``push.normalize``     the ``task-failed`` payload of the listener and ``on_failure_callback``
 ``push.confirm``       ``get_task_instance`` and the phase-5 rules (``failed`` vs ``up_for_retry``,
-                       a later try exists, a try Airflow never ran, 404 -> discarded)
+                       a later try exists, a try Airflow never ran, 404 -> discarded); a try
+                       that has not ended yet is checked again later
 ``inspector``          ``get_task_instance`` (describe), ``get_task_log`` (logs), ``get_dag`` and
                        ``get_dag_source`` (pipeline_source)
 ``code``               :class:`AirflowCodeLocator` (``scan_dags`` and the container path mappings)
@@ -43,6 +44,7 @@ import os
 import posixpath
 import re
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -109,6 +111,10 @@ MAX_SOURCE_CHARS = 32
 DEFAULT_LOG_MAX_CHARS = 2_000_000
 #: Remediation results remembered for their idempotency keys (per adapter).
 MAX_REMEMBERED_REMEDIATIONS = 256
+#: How long the outcome of a ``pipeline_source`` call without the text is kept for the call
+#: with the text that may follow it in the same gathering, and how many DAGs are kept.
+PIPELINE_MEMO_SECONDS = 60.0
+MAX_PIPELINE_MEMOS = 64
 
 AIRFLOW_VOCABULARY = Vocabulary()
 """Today's words (DAG, task, try, "Retry task"): every Airflow text stays identical."""
@@ -133,6 +139,9 @@ SANDBOX_ENV: dict[str, str | None] = {
 
 _RUNNING_STATES = frozenset({"running", "queued", "scheduled", "deferred", "up_for_reschedule", "restarting"})
 _INTEGER = re.compile(r"-?[0-9]+")
+#: Memo values of ``AirflowAdapter.pipeline_source``: a DAG that could not be read, and nothing.
+_UNREADABLE = object()
+_NOTHING = object()
 
 
 # =========================================================================== small helpers
@@ -240,7 +249,8 @@ def _cursor_time(cursor: Mapping[str, Any] | None, key: str) -> datetime | None:
 def confirm_try(ti: Any, try_number: int, trigger: str) -> tuple[bool, str]:
     """Does the task instance ``ti`` confirm the reported failure of try ``try_number``?
 
-    The phase-5 rules of ``worker.pipeline._confirm``, verbatim (reasons included). ``ti`` is a
+    The phase-5 rules of ``worker.pipeline._confirm``, verbatim (reasons included);
+    :meth:`AirflowAdapter.confirm` applies them once the try has ended. ``ti`` is a
     :class:`~dag_healer.airflow.client.TaskInstanceInfo` (or anything with ``state`` and
     ``try_number``); it shows the task instance's latest try.
     """
@@ -259,6 +269,29 @@ def confirm_try(ti: Any, try_number: int, trigger: str) -> tuple[bool, str]:
     if state == "up_for_retry":
         return False, "the try will be retried (monitor.trigger is final_failure)"
     return False, f"the task instance is {state}, not failed"
+
+
+def _unfinished_state(ti: Any, attempt: int) -> str | None:
+    """The state of try ``attempt`` while it is the latest try and has not ended, else ``None``.
+
+    The listener posts a failure while the task process finishes; the task SDK supervisor
+    records the end of the try (``failed``, ``up_for_retry``) a few seconds later, so a hint
+    can be checked while Airflow still shows the try ``running``.
+    """
+    if _as_int(getattr(ti, "try_number", None), 0) != attempt:
+        return None
+    state = _text(getattr(ti, "state", None)).lower()
+    return state if state in _RUNNING_STATES else None
+
+
+def _error_line(exc: BaseException) -> str:
+    """``Type: <first line of the message>`` (``Type`` alone without one); RAW.
+
+    The text the phase-5 worker reported for an Airflow API call that failed.
+    """
+    message = str(exc).strip()
+    first = message.splitlines()[0] if message else ""
+    return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
 
 
 def attempt_state(ti: Any, attempt: int) -> tuple[AttemptState, bool]:
@@ -368,6 +401,17 @@ def _inside(root: Path, rel: str) -> bool:
     except (OSError, ValueError):
         return False
     return candidate.is_file()
+
+
+def _dag_location(dag: Mapping[str, Any], text: str | None) -> PipelineSource:
+    """The :class:`PipelineSource` of a ``get_dag`` answer (and the DAG source, when read)."""
+    return PipelineSource(
+        path=_opt_text(dag.get("fileloc")),
+        relative_path=_opt_text(dag.get("relative_fileloc")),
+        text=text,
+        language="python",
+        origin="api:dagSources" if text is not None else "api:dags",
+    )
 
 
 # =========================================================================== code locator and links
@@ -522,6 +566,8 @@ class AirflowAdapter:
         self._lock = threading.RLock()
         self._remediation_lock = threading.RLock()
         self._results: OrderedDict[str, RemediationResult] = OrderedDict()
+        self._memo_lock = threading.Lock()
+        self._dags: OrderedDict[str, tuple[float, Any]] = OrderedDict()
         self._clock: Callable[[], datetime] = clock or _utcnow
         self._allow_rerun = bool(allow_rerun)
         self.instance = instance or airflow_instance(cfg)
@@ -720,10 +766,13 @@ class AirflowAdapter:
         """Check a pushed hint against the task instance (the phase-5 rules, :func:`confirm_try`).
 
         404 -> ``discarded`` ("Airflow does not know this task instance"); any other error ->
-        ``retry_later`` (the core discards the event once it is older than its maximum age). A
-        confirmed failure keeps the hint's key, source (``listener``/``callback``, anything else
-        is ``listener``) and RAW error text (its summary and signature come from the pushed
-        text, as in phase 5: no log is fetched).
+        ``retry_later`` with the phase-5 text ``"<Type>: <message>"`` (the core discards the
+        event once it is older than its maximum age). A try that is still the latest one and has
+        not ended (``running``, ``queued``...) is deferred too: ``retry_later`` with state
+        ``RUNNING``, because the listener posts a failure a few seconds before Airflow records
+        the end of the try. A confirmed failure keeps the hint's key, source
+        (``listener``/``callback``, anything else is ``listener``) and RAW error text (its
+        summary and signature come from the pushed text, as in phase 5: no log is fetched).
         """
         ref = hint.ref
         if ref.orchestrator != self.instance:
@@ -740,12 +789,14 @@ class AirflowAdapter:
             if isinstance(translate_error(exc), NotFound):
                 result = Confirmation(verdict="discarded", reason="Airflow does not know this task instance")
             else:
-                result = Confirmation(
-                    verdict="retry_later",
-                    reason=f"the Airflow API could not confirm the event: {error_text(exc)}",
-                )
+                result = Confirmation(verdict="retry_later", reason=_error_line(exc))
             self._log_confirmation(hint, result.verdict, type(exc).__name__)
             return result
+        unfinished = _unfinished_state(ti, ref.attempt)
+        if unfinished is not None:
+            reason = f"the task instance is {unfinished}, not failed yet"
+            self._log_confirmation(hint, "retry_later", reason)
+            return Confirmation(verdict="retry_later", reason=reason, state=AttemptState.RUNNING)
         confirmed, reason = confirm_try(ti, ref.attempt, trigger)
         self._log_confirmation(hint, "confirmed" if confirmed else "discarded", reason)
         if not confirmed:
@@ -821,8 +872,10 @@ class AirflowAdapter:
 
         A failed fetch (no such try, Airflow unreachable) gives an empty bundle with source and
         confidence ``none`` and the phase-5 note ``"Fetching the task log from Airflow failed:
-        <Type>: <message>"`` (RAW). An empty log is kept with the note ``"The Airflow log of try
-        <n> is empty."``. A log longer than ``max_chars`` keeps its end (where the traceback is).
+        <Type>: <message>"`` (RAW and whole: the core masks the note, then cuts its reason to 500
+        characters, as phase 5 did). An empty log is kept with the note ``"The Airflow log of
+        try <n> is empty."``. A log longer than ``max_chars`` keeps its end (where the traceback
+        is).
         """
         try:
             client = self._client_for("get_task_log")
@@ -843,7 +896,7 @@ class AirflowAdapter:
                 text="",
                 source="none",
                 confidence="none",
-                notes=(f"Fetching the task log from Airflow failed: {error_text(exc)}",),
+                notes=(f"Fetching the task log from Airflow failed: {type(exc).__name__}: {exc}",),
             )
         text = raw if isinstance(raw, str) else _text(raw)
         notes: list[str] = []
@@ -870,29 +923,62 @@ class AirflowAdapter:
         With ``include_text`` the source Airflow parsed is added (``get_dag_source``; ``None``
         when Airflow has none). Raises :class:`~dag_healer.core.errors.NotFound` for an unknown
         DAG; ``None`` when Airflow answers something that is not a DAG.
+
+        A call without the text always reads the DAG and remembers the outcome (the DAG, or that
+        it could not be read) for :data:`PIPELINE_MEMO_SECONDS`. The next call with the text
+        consumes it instead of reading the DAG again, so one gathering issues exactly the phase-5
+        calls: ``get_dag``, then ``get_dag_source`` when the core asks for the text. After a
+        remembered failure that call returns the source alone (no ``path``) instead of raising.
         """
+        if not include_text:
+            dag = self._read_dag(pipeline_id, remember=True)
+            return _dag_location(dag, None) if isinstance(dag, Mapping) else None
+        remembered = self._recall_dag(pipeline_id)
+        if remembered is _UNREADABLE:
+            return PipelineSource(
+                text=self._dag_source(pipeline_id), language="python", origin="api:dagSources"
+            )
+        dag = self._read_dag(pipeline_id, remember=False) if remembered is _NOTHING else remembered
+        if not isinstance(dag, Mapping):
+            return None
+        return _dag_location(dag, self._dag_source(pipeline_id))
+
+    def _read_dag(self, pipeline_id: str, *, remember: bool) -> Any:
+        """``get_dag`` (core errors), remembering the outcome for the next text request."""
         try:
             client = self._client_for("get_dag")
             dag = client.get_dag(pipeline_id)
         except Exception as exc:
+            if remember:
+                self._remember_dag(pipeline_id, _UNREADABLE)
             self._raise(exc, "reading a DAG")
-        if not isinstance(dag, Mapping):
-            return None
-        text: str | None = None
-        if include_text:
-            try:
-                client = self._client_for("get_dag_source")
-                source = client.get_dag_source(pipeline_id)
-            except Exception as exc:
-                self._raise(exc, "reading a DAG source")
-            text = source if isinstance(source, str) else None
-        return PipelineSource(
-            path=_opt_text(dag.get("fileloc")),
-            relative_path=_opt_text(dag.get("relative_fileloc")),
-            text=text,
-            language="python",
-            origin="api:dagSources" if text is not None else "api:dags",
-        )
+        if remember:
+            self._remember_dag(pipeline_id, dag if isinstance(dag, Mapping) else _UNREADABLE)
+        return dag
+
+    def _dag_source(self, pipeline_id: str) -> str | None:
+        """``get_dag_source`` (core errors); ``None`` when Airflow has no source."""
+        try:
+            client = self._client_for("get_dag_source")
+            source = client.get_dag_source(pipeline_id)
+        except Exception as exc:
+            self._raise(exc, "reading a DAG source")
+        return source if isinstance(source, str) else None
+
+    def _remember_dag(self, pipeline_id: str, outcome: Any) -> None:
+        with self._memo_lock:
+            self._dags[pipeline_id] = (time.monotonic(), outcome)
+            self._dags.move_to_end(pipeline_id)
+            while len(self._dags) > MAX_PIPELINE_MEMOS:
+                self._dags.popitem(last=False)
+
+    def _recall_dag(self, pipeline_id: str) -> Any:
+        """The remembered outcome of ``pipeline_id`` (consumed), ``_NOTHING`` when none is fresh."""
+        with self._memo_lock:
+            entry = self._dags.pop(pipeline_id, None)
+        if entry is None or time.monotonic() - entry[0] > PIPELINE_MEMO_SECONDS:
+            return _NOTHING
+        return entry[1]
 
     # ------------------------------------------------------------------ Remediator
     def available(self, ref: AttemptRef, native: Mapping[str, Any]) -> tuple[RemediationKind, ...]:
@@ -1067,6 +1153,8 @@ class AirflowAdapter:
 
     def close(self) -> None:
         """Close the REST client the adapter built (an injected one is the caller's). Idempotent."""
+        with self._memo_lock:
+            self._dags.clear()
         with self._lock:
             client, owned = self._client, self._owns_client
             if owned:
@@ -1112,6 +1200,7 @@ __all__ = [
     "INITIAL_LOOKBACK",
     "LOG_SOURCE",
     "MIN_POLL_OVERLAP",
+    "PIPELINE_MEMO_SECONDS",
     "POLL_SOURCE",
     "PUSH_CHANNEL",
     "SANDBOX_ENV",

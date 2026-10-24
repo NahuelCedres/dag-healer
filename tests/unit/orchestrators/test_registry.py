@@ -13,6 +13,7 @@ import sys
 import textwrap
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,7 +22,7 @@ from unittest import mock
 import pytest
 
 import dag_healer.orchestrators as orchestrators
-from dag_healer.config import HealerConfig
+from dag_healer.config import HealerConfig, config_from_mapping
 from dag_healer.core.ports import OrchestratorAdapter
 from dag_healer.orchestrators import compat, fake, registry
 from dag_healer.orchestrators.fake import FakeAdapter, FakeWorld
@@ -388,6 +389,57 @@ def test_reset_closes_the_cached_adapters_and_the_cache_is_bounded(
     assert not registry._adapters
     assert all(adapter.closed for adapter in adapters[-16:])  # type: ignore[attr-defined]
     assert not any(adapter.closed for adapter in adapters[:4])  # evicted, never closed: may still be in use
+
+
+# =========================================================================== configuration checks
+
+
+@pytest.mark.parametrize(
+    "modes", [["rest", "listener"], ["rest"], ["listener"], ["callback"], ["rest", "listener", "callback"]]
+)
+@pytest.mark.parametrize("trigger", ["final_failure", "every_failure"])
+def test_config_problems_accept_every_phase5_airflow_configuration(modes: list[str], trigger: str) -> None:
+    from dag_healer.airflow.adapter import AirflowAdapter
+
+    cfg = config_from_mapping({"monitor": {"modes": modes, "trigger": trigger}})
+    assert registry.config_problems(cfg, AirflowAdapter(cfg)) == []
+
+
+def test_config_problems_name_the_mode_or_trigger_and_the_orchestrator() -> None:
+    from dag_healer.airflow.adapter import AirflowAdapter
+
+    queue = config_from_mapping({"monitor": {"modes": ["rest", "queue"]}})
+    assert registry.config_problems(queue, AirflowAdapter(queue)) == [
+        "monitor.modes includes queue, but Apache Airflow has no hint queue to drain"
+    ]
+    portless = FakeAdapter()
+    portless.feed = portless.push = None
+    detection = config_from_mapping({"monitor": {"modes": ["rest", "poll", "listener", "push"]}})
+    assert registry.config_problems(detection, portless) == [
+        "monitor.modes includes rest, poll, but Fakeflow offers no failure feed to poll",
+        "monitor.modes includes listener, push, but Fakeflow accepts no pushed failure events",
+    ]
+    hidden = FakeAdapter()
+    hidden.capabilities = replace(fake.FAKE_CAPABILITIES, attempts_visible=False)
+    every = config_from_mapping({"monitor": {"modes": ["poll", "queue"], "trigger": "every_failure"}})
+    assert registry.config_problems(every, hidden) == [
+        "monitor.trigger is every_failure, but Fakeflow does not show automatic retries as failed "
+        "attempts: use final_failure"
+    ]
+    assert registry.config_problems(every, FakeAdapter()) == []
+    # duck typed: no monitor section at all, or one without wants()
+    assert registry.config_problems(SimpleNamespace(), hidden) == []
+    plain = SimpleNamespace(monitor=SimpleNamespace(modes=["listener", "queue"], trigger="final_failure"))
+    assert registry.config_problems(plain, AirflowAdapter(HealerConfig())) == [
+        "monitor.modes includes queue, but Apache Airflow has no hint queue to drain"
+    ]
+
+
+def test_the_mode_kinds_are_the_ones_of_the_configuration() -> None:
+    """The registry keeps its own copy of ``config.MODE_KINDS`` (the config module needs pydantic)."""
+    from dag_healer import config
+
+    assert registry._MODE_KINDS == dict(config.MODE_KINDS)
 
 
 # =========================================================================== compat

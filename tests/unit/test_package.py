@@ -135,6 +135,37 @@ def test_plugin_and_listener_import_is_light() -> None:
     assert json.loads(result.stdout.strip().splitlines()[-1]) == []
 
 
+#: Every dag_healer module a task process loads (``import dag_healer``, the failure callback,
+#: the listener and the plugin): the orchestrator ports (``dag_healer.core``) and the adapters
+#: (``dag_healer.orchestrators``, ``dag_healer.airflow.adapter``) never reach task runners.
+TASK_RUNNER_MODULES = [
+    "dag_healer",
+    "dag_healer._version",
+    "dag_healer.airflow",
+    "dag_healer.airflow.callback",
+    "dag_healer.airflow.listener",
+    "dag_healer.airflow.plugin",
+    "dag_healer.ingest",
+]
+
+
+def test_task_runner_import_graph_is_unchanged() -> None:
+    script = "\n".join(
+        [
+            FAKE_AIRFLOW_SNIPPET,
+            "_install_fake_airflow()",
+            "import json, sys",
+            "import dag_healer, dag_healer.ingest, dag_healer.airflow, dag_healer.airflow.callback",
+            "import dag_healer.airflow.listener, dag_healer.airflow.plugin",
+            "assert dag_healer.callback is dag_healer.airflow.callback.on_failure_callback",
+            "print(json.dumps(sorted(name for name in sys.modules if name.split('.')[0] == 'dag_healer')))",
+        ]
+    )
+    result = _run_python(script)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == TASK_RUNNER_MODULES
+
+
 # --------------------------------------------------------------------------- plugin + listener
 
 

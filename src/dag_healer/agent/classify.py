@@ -1,12 +1,13 @@
 """Incident classification: the deterministic policy combined with the LLM.
 
-:func:`classify_incident` computes the policy signals of an incident context, asks the LLM
-provider for a structured :class:`~dag_healer.agent.llm.Classification` (the prompt is
-``prompts/classify.md`` + the masked context + a ``<signals>{json}</signals>`` block carrying
-the policy hint) and lets :func:`dag_healer.agent.policy.decide` take the final decision. When
-the provider is missing or fails (no API key, refusal, network error...), the decision comes
-from the policy alone: LLM-dependent gates fall back to ``ambiguous`` and the diagnosis says
-that the LLM was unavailable.
+:func:`classify_incident` computes the policy signals of an incident context (with the
+orchestrator's error taxonomy), asks the LLM provider for a structured
+:class:`~dag_healer.agent.llm.Classification` (the prompt is ``prompts/classify.md`` rendered
+with the orchestrator's words + the masked context + a ``<signals>{json}</signals>`` block
+carrying the policy hint) and lets :func:`dag_healer.agent.policy.decide` take the final
+decision. When the provider is missing or fails (no API key, refusal, network error...), the
+decision comes from the policy alone: LLM-dependent gates fall back to ``ambiguous`` and the
+diagnosis says that the LLM was unavailable.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from dag_healer.agent.context import prompt_words
 from dag_healer.agent.llm import Classification, LLMProvider, LLMRefusal, LLMUnavailable
 from dag_healer.agent.policy import (
     Decision,
@@ -28,7 +30,11 @@ from dag_healer.agent.policy import (
     short_type,
 )
 from dag_healer.agent.prompts import load_prompt
+from dag_healer.agent.tests_gen import render_template
 from dag_healer.masking import mask_text, to_json_safe
+
+if TYPE_CHECKING:
+    from dag_healer.core.vocab import ErrorTaxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +171,7 @@ def signals_payload(
 
 def build_classify_prompt(ctx: Any, signals: Signals, hint: PolicyHint, *, min_confidence: float) -> str:
     """User prompt: the masked context as JSON, then the ``<signals>`` block (always last)."""
+    words = prompt_words(ctx)
     incident = json.dumps(context_payload(ctx), ensure_ascii=False, indent=1, default=str)
     block = json.dumps(
         signals_payload(signals, hint, min_confidence=min_confidence, ctx=ctx),
@@ -173,10 +180,19 @@ def build_classify_prompt(ctx: Any, signals: Signals, hint: PolicyHint, *, min_c
         default=str,
     )
     return (
-        "Classify the failed Airflow task described below.\n\n"
+        f"Classify the failed {words['product']} {words['step']} described below.\n\n"
         f"<incident>\n{incident}\n</incident>\n\n"
         f"<signals>\n{block}\n</signals>\n"
     )
+
+
+def system_prompt(ctx: Any = None) -> str:
+    """``prompts/classify.md`` rendered with the words of ``ctx``'s orchestrator (one pass).
+
+    Without a vocabulary (Airflow, or a context gathered offline) this is the phase-5 prompt.
+    Raises :class:`FileNotFoundError` when the prompt file is missing from the installation.
+    """
+    return render_template(load_prompt(PROMPT_FILE), prompt_words(ctx))
 
 
 def _excerpt(prompt: str) -> str:
@@ -233,7 +249,7 @@ def _facts(signals: Signals) -> list[str]:
     return facts
 
 
-def _policy_diagnosis(decision: Decision, signals: Signals, llm_error: str | None) -> str:
+def _policy_diagnosis(decision: Decision, signals: Signals, llm_error: str | None, *, step: str) -> str:
     parts: list[str] = []
     if llm_error:
         parts.append(
@@ -243,7 +259,7 @@ def _policy_diagnosis(decision: Decision, signals: Signals, llm_error: str | Non
     parts.append(decision.reason)
     if signals.exception_type:
         error = short_type(signals.exception_type) or signals.exception_type
-        text = f"The task failed with {error}"
+        text = f"The {step} failed with {error}"
         if signals.exception_message:
             text += f": {signals.exception_message}"
         frame = signals.top_repo_frame or {}
@@ -255,10 +271,15 @@ def _policy_diagnosis(decision: Decision, signals: Signals, llm_error: str | Non
 
 
 def _diagnosis(
-    decision: Decision, classification: Classification | None, signals: Signals, llm_error: str | None
+    decision: Decision,
+    classification: Classification | None,
+    signals: Signals,
+    llm_error: str | None,
+    *,
+    step: str,
 ) -> str:
     if classification is None or not classification.diagnosis.strip():
-        return _policy_diagnosis(decision, signals, llm_error)
+        return _policy_diagnosis(decision, signals, llm_error, step=step)
     text = mask_text(classification.diagnosis).strip()
     if decision.category != classification.category:
         text += f"\n\nPolicy decision: {decision.category}. {decision.reason}"
@@ -276,11 +297,34 @@ def _min_confidence(cfg: Any) -> float:
         return DEFAULT_MIN_CONFIDENCE
 
 
-def classify_incident(cfg: Any, ctx: Any, provider: LLMProvider | None) -> ClassificationOutcome:
-    """Classify one incident context; never raises because of the LLM provider."""
+def _configured_taxonomy(cfg: Any) -> ErrorTaxonomy | None:
+    """The error taxonomy of ``cfg``'s orchestrator (``registry.get_adapter``: cached, no I/O).
+
+    ``None`` when ``cfg`` has no ``orchestrator`` section or the adapter cannot be built.
+    """
+    if getattr(cfg, "orchestrator", None) is None:
+        return None
+    try:
+        from dag_healer.orchestrators.registry import get_adapter
+
+        return get_adapter(cfg).taxonomy
+    except Exception as exc:  # no taxonomy: the generic policy decides
+        logger.debug("No orchestrator error taxonomy for the classification: %s", type(exc).__name__)
+        return None
+
+
+def classify_incident(
+    cfg: Any, ctx: Any, provider: LLMProvider | None, *, taxonomy: ErrorTaxonomy | None = None
+) -> ClassificationOutcome:
+    """Classify one incident context; never raises because of the LLM provider.
+
+    ``taxonomy`` is the orchestrator's :class:`~dag_healer.core.vocab.ErrorTaxonomy` (the worker
+    passes its adapter's); ``None`` reads the configured orchestrator's taxonomy from ``cfg``.
+    """
     min_confidence = _min_confidence(cfg)
-    signals = compute_signals(ctx)
-    hint = policy_hint(signals)
+    words = prompt_words(ctx)
+    signals = compute_signals(ctx, taxonomy=taxonomy if taxonomy is not None else _configured_taxonomy(cfg))
+    hint = policy_hint(signals, step=words["step"])
     prompt = build_classify_prompt(ctx, signals, hint, min_confidence=min_confidence)
     classification: Classification | None = None
     tokens_used = 0
@@ -291,7 +335,7 @@ def classify_incident(cfg: Any, ctx: Any, provider: LLMProvider | None) -> Class
         llm_error = "no LLM provider is configured"
     else:
         try:
-            system = load_prompt(PROMPT_FILE)
+            system = system_prompt(ctx)
         except FileNotFoundError:
             llm_error = f"the {PROMPT_FILE} prompt is missing from the dag-healer installation"
             logger.error("Prompt %s not found in dag_healer.agent.prompts", PROMPT_FILE)
@@ -315,8 +359,8 @@ def classify_incident(cfg: Any, ctx: Any, provider: LLMProvider | None) -> Class
             logger.warning("LLM classification unavailable, using the policy alone: %s", llm_error)
         tokens_used = int(tokens_used or 0)
 
-    decision = decide(signals, classification, min_confidence=min_confidence)
-    diagnosis = _diagnosis(decision, classification, signals, llm_error)
+    decision = decide(signals, classification, min_confidence=min_confidence, step=words["step"])
+    diagnosis = _diagnosis(decision, classification, signals, llm_error, step=words["step"])
     if llm_error and decision.needs_llm_confirmation:
         decision.reason = f"{decision.reason} (LLM unavailable: {llm_error})"
 
@@ -356,4 +400,5 @@ __all__ = [
     "context_payload",
     "primary_violation",
     "signals_payload",
+    "system_prompt",
 ]

@@ -3,17 +3,26 @@
 The shapes are the contract with the React UI (``ui/src/api.ts``); field names must not
 change without updating it. Free text and samples are masked before they reach these
 models (see :mod:`dag_healer.api.views`).
+
+Wire contract v1 is frozen: later fields are additive only (section 7.4 of
+``docs/architecture/orchestrators.md``). Each model lists them in ``ADDITIVE_FIELDS`` with
+their neutral value, and a field that holds it is left out of the output, so every response
+for the default Airflow instance stays exactly as it was in v1.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
+
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 
 ContractStatus = Literal["approved", "draft", "stale", "missing"]
 Action = Literal["resolve_data", "resolve_code", "ignore", "retry_repair", "retry_task"]
+Host = Literal["airflow_plugin", "standalone"]
 
 MAX_NOTE_CHARS = 2000
 
@@ -23,12 +32,57 @@ class _Out(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Fields added after wire contract v1 and their neutral values (a neutral field is left out).
+    #: A public class variable, annotated in every model that sets it: pydantic releases differ
+    #: in how they treat a ``_private`` name assigned again in a subclass.
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {}
+
+    # No return annotation: pydantic would build the serialization (OpenAPI) schema of every
+    # response model from it instead of from the fields.
+    @model_serializer(mode="wrap")
+    def _leave_out_neutral_additions(self, handler: SerializerFunctionWrapHandler):
+        """Dump as usual, without the additive fields that hold their neutral value.
+
+        The rule of ``HealerConfig._leave_out_default_sections``: what v1 clients receive does
+        not change, and a field that differs from its neutral value is always shown.
+        """
+        data = handler(self)
+        if isinstance(data, dict):
+            for name, neutral in self.ADDITIVE_FIELDS.items():
+                if name in data and getattr(self, name) == neutral:
+                    del data[name]
+        return data
+
 
 # --------------------------------------------------------------------------- incidents
 
 
-class IncidentSummary(_Out):
-    """One incident in a list."""
+class IncidentLinks(_Out):
+    """Links to the Healer views of an incident, and into the orchestrator's own UI.
+
+    ``task_instance``, ``dag`` and ``healer`` open the Healer tabs (the same URL shapes in
+    the Airflow UI and on the standalone host). ``native`` holds labelled links into the
+    orchestrator's own pages (``{"AWS console": url}``); it is empty for Airflow, whose UI
+    hosts the Healer views.
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {"native": {}}
+
+    task_instance: str
+    dag: str
+    healer: str
+    native: dict[str, str] = Field(default_factory=dict)
+
+
+class _IncidentFields(_Out):
+    """Fields shared by :class:`IncidentSummary` and :class:`IncidentDetail`.
+
+    ``orchestrator`` is the instance id of the incident; ``error_name`` the native error name
+    the orchestrator reported (masked). The detail does not derive from the summary, so its
+    required ``links`` keeps the v1 position in the JSON (after ``alerts``).
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {"orchestrator": DEFAULT_ORCHESTRATOR, "error_name": None}
 
     id: str
     dag_id: str
@@ -46,6 +100,16 @@ class IncidentSummary(_Out):
     occurrences: int
     pr_url: str | None = None
     has_pr_md: bool = False
+    orchestrator: str = DEFAULT_ORCHESTRATOR
+    error_name: str | None = None
+
+
+class IncidentSummary(_IncidentFields):
+    """One incident in a list (``links`` only when there are native links to show)."""
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {**_IncidentFields.ADDITIVE_FIELDS, "links": None}
+
+    links: IncidentLinks | None = None
 
 
 class Sample(_Out):
@@ -87,16 +151,15 @@ class PendingCommandView(_Out):
     actor: str
 
 
-class IncidentLinks(_Out):
-    """Links into the Airflow UI."""
+class IncidentDetail(_IncidentFields):
+    """Everything the task-instance view shows about one incident.
 
-    task_instance: str
-    dag: str
-    healer: str
+    It has every field of :class:`IncidentSummary`, with ``links`` always set.
+    ``action_warnings`` holds texts to show next to offered actions
+    (``{"retry_task": [...]}``).
+    """
 
-
-class IncidentDetail(IncidentSummary):
-    """Everything the task-instance view shows about one incident."""
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {**_IncidentFields.ADDITIVE_FIELDS, "action_warnings": {}}
 
     diagnosis: str | None = None
     violated_rule: dict[str, Any] | None = None
@@ -118,6 +181,7 @@ class IncidentDetail(IncidentSummary):
     allowed_actions: list[Action] = Field(default_factory=list)
     pending_commands: list[PendingCommandView] = Field(default_factory=list)
     can_edit: bool = False
+    action_warnings: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class IncidentList(_Out):
@@ -224,11 +288,35 @@ class DagIncidents(_Out):
 # --------------------------------------------------------------------------- misc
 
 
+class MeOrchestrator(_Out):
+    """The orchestrator of this dag-healer (``GET /me``): its words and what it can do.
+
+    ``vocabulary`` has the keys of :class:`dag_healer.core.vocab.Vocabulary` (``product``,
+    ``pipeline``, ``step``, ``retry_action``...); ``capabilities`` those of
+    :class:`dag_healer.core.vocab.Capabilities`, with the remediation kinds as their values.
+    """
+
+    type: str
+    instance: str
+    display_name: str
+    vocabulary: dict[str, str]
+    capabilities: dict[str, Any]
+
+
 class MeView(_Out):
-    """``GET /me``."""
+    """``GET /me``.
+
+    ``host`` is where the views are served (the Airflow plugin or ``dag-healer serve``);
+    ``orchestrator`` is left out for the default Airflow instance, whose words are the UI's
+    defaults.
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {"host": "airflow_plugin", "orchestrator": None}
 
     user: str
     base_url: str
+    host: Host = "airflow_plugin"
+    orchestrator: MeOrchestrator | None = None
 
 
 class CommandAccepted(_Out):
@@ -246,6 +334,17 @@ class EventAccepted(_Out):
 
     accepted: bool
     pending_event_id: int | None = None
+
+
+class EventsAccepted(_Out):
+    """202 answer of ``POST /events/{channel}`` (one payload may carry several failure hints).
+
+    ``pending_event_ids`` are the stored hints, oldest first; ``accepted`` is False when none
+    was stored (every hint was of an unmonitored pipeline, or the payload had none).
+    """
+
+    accepted: bool
+    pending_event_ids: list[int] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- request bodies
@@ -302,11 +401,14 @@ __all__ = [
     "DatasetView",
     "EventAccepted",
     "EventView",
+    "EventsAccepted",
+    "Host",
     "IncidentDetail",
     "IncidentLinks",
     "IncidentList",
     "IncidentSummary",
     "LocatorView",
+    "MeOrchestrator",
     "MeView",
     "NoteBody",
     "PendingCommandView",

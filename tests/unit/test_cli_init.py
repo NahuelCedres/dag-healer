@@ -8,7 +8,10 @@ approved, the day-2 sales file violates its contract (DATA), the day-2 customers
 from __future__ import annotations
 
 import shutil
+import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,15 +24,22 @@ from dag_healer.datasets import load_dataset
 from dag_healer.repo.profile import snapshot_hashes
 
 EXAMPLE_REPO = Path(__file__).resolve().parents[2] / "example_existing_repo"
+V1_STORE = Path(__file__).resolve().parent / "fixtures" / "store" / "healer_v1.db"
 DAG_IDS = ("customers_sync", "inventory_report", "sales_daily_etl")
 
 
 @pytest.fixture
-def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """healer_env plus protection against main() exporting HEALER_CONFIG into later tests."""
+def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """healer_env plus protection against main() exporting HEALER_CONFIG into later tests.
+
+    ``dag-healer init`` opens the store, so its engines are disposed afterwards.
+    """
+    from dag_healer.store import dispose_engines
+
     monkeypatch.setenv("HEALER_CONFIG", "")
     monkeypatch.delenv("HEALER_CONFIG")
-    return healer_env
+    yield healer_env
+    dispose_engines()
 
 
 @pytest.fixture
@@ -243,6 +253,247 @@ def test_samples_missing_file_falls_back_to_the_repository(
     assert customers.column("signup_date") is not None
     (sales,) = _contract(demo_repo, "sales_daily_etl").datasets
     assert sales.column("amt") is not None
+
+
+# --------------------------------------------------------------------------- scanning
+
+#: An adapter whose code locator records how ``init`` uses it (importable as ``init_spy_adapter``).
+SPY_ADAPTER = """
+from dag_healer.core.specs import DagInfo, TaskInfo
+from dag_healer.orchestrators.fake import FakeAdapter
+
+CALLS = []
+
+
+class SpyLocator:
+    def scan(self, repo_root):
+        CALLS.append(("scan", repo_root))
+        return [DagInfo(dag_id="spy_flow", file="flows/spy.py", tasks=[TaskInfo("load", "lambda")])]
+
+    def path_mappings(self, repo_root, step):
+        return []
+
+    def pipeline_file(self, repo_root, pipeline_id, source):
+        return None
+
+
+class SpyAdapter(FakeAdapter):
+    display_name = "Spyflow"
+
+    def __init__(self, cfg):
+        super().__init__(cfg, instance="spy")
+        self.code = SpyLocator()
+
+    def close(self):
+        CALLS.append(("close",))
+
+
+class Factory:
+    type = "spy"
+    display_name = "Spyflow"
+    options_model = None
+    secret_options = ()
+
+    def create(self, cfg, *, client=None):
+        CALLS.append(("create", cfg.repo_root, cfg.repo.dags_dir))
+        return SpyAdapter(cfg)
+
+
+FACTORY = Factory()
+"""
+
+
+def test_init_scans_with_the_orchestrator_code_locator(
+    demo_repo: Path,
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dag_healer.orchestrators import registry
+
+    folder = tmp_path / "adapters"
+    folder.mkdir()
+    (folder / "init_spy_adapter.py").write_text(SPY_ADAPTER, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(folder))
+    monkeypatch.delitem(sys.modules, "init_spy_adapter", raising=False)
+    (demo_repo / "healer.yaml").write_text(
+        "version: 1\norchestrator: {type: 'init_spy_adapter:FACTORY', instance: spy}\n", encoding="utf-8"
+    )
+    try:
+        out = _init(demo_repo, capsys, "--dags-dir", "src")
+    finally:
+        registry.reset_adapters()
+    root = demo_repo.resolve()
+    assert sys.modules["init_spy_adapter"].CALLS == [("create", root, "src"), ("scan", root), ("close",)]
+    assert "(DAG folder: src): 1 DAG(s) found" in out
+    assert "spy_flow" in out and "flows/spy.py" in out
+
+
+def test_init_dags_dir_selects_the_scanned_folder(
+    make_repo: Any, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dag_healer.repo.dagscan import scan_dags
+
+    dag = """
+        from airflow.sdk import DAG
+        from airflow.providers.standard.operators.python import PythonOperator
+
+
+        def run(**_):
+            return 1
+
+
+        with DAG("nested", schedule=None) as dag:
+            PythonOperator(task_id="run", python_callable=run)
+        """
+    repo = make_repo({"airflow/dags/nested.py": dag})
+    scanned = init_cmd.scan_repository(None, repo.resolve(), "airflow/dags")
+    assert [dag.dag_id for dag in scanned] == ["nested"]
+    assert scanned == scan_dags(repo, "airflow/dags")  # Airflow: exactly the static DAG scan
+    out = _init(repo, capsys, "--dags-dir", "airflow/dags")
+    assert "(DAG folder: airflow/dags): 1 DAG(s) found" in out
+    assert load_config(repo / "healer.yaml").repo.dags_dir == "airflow/dags"
+
+
+def test_init_rejects_an_orchestrator_that_cannot_load(
+    demo_repo: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (demo_repo / "healer.yaml").write_text(
+        "version: 1\norchestrator: {type: 'no_such_pkg.adapter:FACTORY', instance: elsewhere}\n",
+        encoding="utf-8",
+    )
+    assert main(["init", "--repo", str(demo_repo)]) == 1
+    assert "module 'no_such_pkg.adapter' is not installed" in capsys.readouterr().err
+    assert not (demo_repo / "healer").exists()
+    assert not (isolated / "healer.db").exists()
+
+
+BROKEN_FACTORY = """
+class Factory:
+    type = "broken"
+    display_name = "Brokenflow"
+    options_model = None
+    secret_options = ()
+
+    def create(self, cfg, *, client=None):
+        raise ValueError("token for ann@example.com is not set")
+
+
+FACTORY = Factory()
+"""
+
+
+def test_init_reports_a_factory_that_fails_in_its_own_way(
+    demo_repo: Path,
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "adapters"
+    folder.mkdir()
+    (folder / "init_broken_adapter.py").write_text(BROKEN_FACTORY, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(folder))
+    monkeypatch.delitem(sys.modules, "init_broken_adapter", raising=False)
+    (demo_repo / "healer.yaml").write_text(
+        "version: 1\norchestrator: {type: 'init_broken_adapter:FACTORY', instance: broken}\n",
+        encoding="utf-8",
+    )
+    assert main(["init", "--repo", str(demo_repo)]) == 1
+    err = capsys.readouterr().err
+    assert "the orchestrator adapter cannot be built: ValueError: token for [email] is not set" in err
+    assert "ann@example.com" not in err and "Traceback" not in err
+    assert not (demo_repo / "healer").exists()
+
+
+# --------------------------------------------------------------------------- the store
+
+
+def _store_line(out: str) -> str:
+    lines = out.splitlines()
+    index = next(i for i, line in enumerate(lines) if line.startswith("Store:"))
+    assert lines[index - 1].startswith("Tests:")  # printed right after the test layout
+    return lines[index]
+
+
+def test_init_creates_the_store_and_then_finds_it_up_to_date(
+    demo_repo: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dag_healer.store import get_engine
+    from dag_healer.store.migrations import current_version
+
+    out = _init(demo_repo, capsys)
+    url = load_config(demo_repo / "healer.yaml").database_url
+    assert url.endswith(f"{isolated.name}/healer.db")  # under HEALER_HOME, outside the repository
+    assert _store_line(out) == f"Store:         {url} (created at schema v2)"
+    assert current_version(get_engine(url)) == 2
+    assert _store_line(_init(demo_repo, capsys)) == f"Store:         {url} (schema v2, up to date)"
+
+
+def test_init_migrates_a_store_of_schema_v1(
+    demo_repo: Path,
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dag_healer.store import get_engine
+    from dag_healer.store.migrations import current_version
+
+    store = tmp_path / "old store" / "healer.db"
+    store.parent.mkdir()
+    shutil.copyfile(V1_STORE, store)
+    url = f"sqlite:///{store.as_posix()}"
+    monkeypatch.setenv("HEALER_DATABASE_URL", url)
+    out = _init(demo_repo, capsys)
+    assert _store_line(out) == f"Store:         {url} (migrated from schema v1 to v2)"
+    assert current_version(get_engine(url)) == 2
+    assert (store.parent / "healer.db.bak-v1").is_file()
+    assert not (isolated / "healer.db").exists()
+
+
+def test_init_reports_a_store_it_cannot_prepare(
+    demo_repo: Path,
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("HEALER_DATABASE_URL", f"sqlite:///{(blocker / 'healer.db').as_posix()}")
+    out = _init(demo_repo, capsys)  # the exit code stays 0
+    line = _store_line(out)
+    assert line.startswith("Store:         not prepared: ")
+    assert line.endswith("; the worker creates or migrates it when it starts")
+    assert init_cmd.FINAL_NOTE in out
+
+
+def test_store_problems_never_show_the_password(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dag_healer.store as store
+
+    url = "postgresql+psycopg2://healer:s3cret-pw@db.invalid/healer"
+    config_file = tmp_path / "healer.yaml"
+    config_file.write_text(f"store: {{url: '{url}'}}\n", encoding="utf-8")
+
+    def unreachable(target: str) -> Any:
+        raise RuntimeError(f"cannot connect to {target}\nsecond line")
+
+    monkeypatch.setattr(store, "get_engine", unreachable)
+    assert init_cmd.prepare_store(config_file) == (
+        "not prepared: RuntimeError: cannot connect to postgresql+psycopg2://healer:***@db.invalid/healer; "
+        "the worker creates or migrates it when it starts"
+    )
+
+
+def test_run_init_never_opens_the_store(demo_repo: Path, isolated: Path) -> None:
+    result = init_cmd.run_init(demo_repo)
+    assert result.ok and result.store is None
+    assert "Store:" not in init_cmd.format_report(result)
+    assert list(isolated.iterdir()) == []
 
 
 # --------------------------------------------------------------------------- approval and demo premises

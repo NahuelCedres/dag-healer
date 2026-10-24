@@ -1,9 +1,9 @@
 {% extends "_layout.html.j2" %}
 {% import "_macros.html.j2" as m %}
 {% block headline %}{{ incident.category_label | capitalize }} issue detected{% endblock %}
-{% block lead %}{% if violated_rule %}The input data of this task does not match its data contract. The code was not changed.{% else %}This failure was classified as a data issue. The code was not changed.{% endif %}{% endblock %}
+{% block lead %}{% if violated_rule %}The input data of this {{ words.step }} does not match its data contract. The code was not changed.{% else %}This failure was classified as a data issue. The code was not changed.{% endif %}{% endblock %}
 {% block content %}
-{{ m.summary(incident) }}
+{{ m.summary(incident, words) }}
 {% if violated_rule %}{{ m.rule_box(violated_rule) }}{% endif %}
 {{ m.text_section("Diagnosis", incident.diagnosis) }}
 {{ m.violations(violations, violations_more) }}
@@ -12,10 +12,10 @@
 {{ m.list_section("Evidence", incident.evidence) }}
 {% call m.section("Next steps") %}
 <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
-  <li style="margin:0 0 4px 0;">Fix or re-deliver the input data, then retry the task from the Healer incident tab.</li>
+  <li style="margin:0 0 4px 0;">Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab.</li>
   <li style="margin:0 0 4px 0;">If the change in the data is intended, update the data contract and approve it again.</li>
 </ul>
 {{ m.button(links.task_instance, "Open the Healer incident", accent) }}
-{{ m.secondary_links(links) }}
+{{ m.secondary_links(links, words) }}
 {% endcall %}
 {% endblock %}

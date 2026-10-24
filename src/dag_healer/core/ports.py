@@ -31,6 +31,7 @@ from dag_healer.core.specs import PathMapping, PipelineSpec, StepSpec
 from dag_healer.core.vocab import Capabilities, ErrorTaxonomy, RemediationKind, Vocabulary
 
 if TYPE_CHECKING:  # annotations only: keeps ``import dag_healer.core`` free of pathlib
+    from datetime import datetime
     from pathlib import Path
 
 # =========================================================================== detection
@@ -41,10 +42,22 @@ class FailureFeed(Protocol):
     """Pull detection: failures read from the orchestrator API (the source of truth)."""
 
     def poll(
-        self, *, cursor: Mapping[str, Any] | None, is_monitored: Callable[[str], bool], limit: int = 200
+        self,
+        *,
+        cursor: Mapping[str, Any] | None,
+        is_monitored: Callable[[str], bool],
+        limit: int = 200,
+        now: datetime | None = None,
     ) -> FailurePage:
         """Terminal or retrying failures observed after ``cursor`` (overlap allowed: the store key
-        dedupes). ``is_final`` must be set on every item; refs must be resolved."""
+        dedupes). ``is_final`` must be set on every item; refs must be resolved.
+
+        ``now`` is the moment the poll starts (aware UTC): feeds use it for their window and
+        their new cursor, and use their own clock when it is ``None``. The worker passes it only
+        to feeds whose ``poll`` accepts it, so feeds written without the keyword keep working.
+        A cursor may hold ``"not_before"`` (ISO-8601), the floor written by
+        ``dag-healer store reset``: failures from before that moment are not listed again.
+        """
         ...
 
 
@@ -63,7 +76,9 @@ class PushIntake(Protocol):
 
     def confirm(self, hint: FailureHint, *, trigger: Trigger) -> Confirmation:
         """I/O: verify the hint against the API, decide final vs retrying, localise the step.
-        Transient errors -> ``retry_later``; unknown/forged/stale -> ``discarded``."""
+        Transient errors -> ``retry_later``; an attempt that has not ended yet -> ``retry_later``
+        with ``state=RUNNING`` (no error: the core checks it again); unknown/forged/stale ->
+        ``discarded``."""
         ...
 
 
@@ -119,7 +134,14 @@ class RunInspector(Protocol):
 
 @runtime_checkable
 class CodeLocator(Protocol):
-    """Static mapping from pipelines and steps to repo code. No network I/O, never executes user code."""
+    """Static mapping from pipelines and steps to repo code. No network I/O, never executes user code.
+
+    A locator may also offer ``reported_file(repo_root, source) -> str | None``: the repository
+    file the orchestrator's report (``source``) points at, or ``None``, without falling back to
+    a scan. It is optional and not a member of this protocol (``isinstance`` keeps accepting
+    locators without it). When it exists, the context gathering uses it and its own static
+    scan for the definition file instead of :meth:`pipeline_file`.
+    """
 
     def scan(self, repo_root: Path) -> list[PipelineSpec]:
         """Every pipeline in the repository with its steps and dataset references (used by init)."""

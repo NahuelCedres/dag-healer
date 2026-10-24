@@ -1,25 +1,37 @@
 """Gather the evidence of one incident: log, traceback, code, data contract and masked sample.
 
-:func:`gather_context` is what the worker calls before classification. It collects, best
+:func:`gather_context` is what the worker calls before classification. It reaches the
+orchestrator only through the ports of :mod:`dag_healer.core.ports` (an adapter, or a phase-5
+Airflow client wrapped by :func:`dag_healer.orchestrators.compat.as_adapter`) and collects, best
 effort and without ever raising for a missing piece (each gap becomes a ``notes`` entry):
 
-* the log of the failed try from the Airflow REST API (rendered structured log), with the
-  Python traceback extracted from it (:func:`extract_traceback`) and the frames that point
-  into the user's repository mapped to repo-relative paths (:func:`map_to_repo_path`);
-* the DAG file (Airflow's ``fileloc`` mapped into the repository, else the static DAG scan),
-  its source, the task as found by :func:`dag_healer.repo.dagscan.scan_dags` and the source of
-  the modules involved (DAG file, task callable module, modules in the traceback);
-* the DAG's data contract, read from the repository **working tree** (``cfg.repo_root``), and
-  the result of validating *every* dataset of that contract against the files currently in
-  the working tree (the failing task is often not the one that reads the file). Only an
+* the orchestrator's view of the failed attempt (``inspector.describe``) and its log
+  (``inspector.logs``), with the Python traceback extracted from them (:func:`extract_traceback`)
+  and the frames that point into the user's repository mapped to repo-relative paths
+  (:func:`map_to_repo_path`, with the adapter's path mappings);
+* the pipeline (DAG) file (the file the orchestrator reports mapped into the repository, else
+  the static scan of the adapter's code locator), its source, the step (task) as found by that
+  scan and the source of the modules involved (pipeline file, step callable module, modules in
+  the traceback);
+* the pipeline's data contract, read from the repository **working tree** (``cfg.repo_root``),
+  and the result of validating *every* dataset of that contract against the files currently
+  in the working tree (the failing step is often not the one that reads the file). Only an
   approved, non-stale contract produces ``violations``; a draft or stale one produces
   ``draft_violations``, which are evidence only;
-* a masked sample of the most relevant dataset (offending rows first).
+* a masked sample of the most relevant dataset (offending rows first);
+* the orchestrator's vocabulary and display name (the words of the notes, the prompts and the
+  PR texts: :func:`prompt_words`) and its deep links (``links.links``).
+
+Without an orchestrator the gathering is offline: the error comes from the explicit error text
+or the incident's ``error_summary`` and the repository is scanned for Airflow DAGs, as before
+the orchestrator ports existed. Notes are written in the orchestrator's words; with Airflow (or
+offline) they are the phase-5 texts.
 
 Everything that can carry data values (error text, exception message, traceback, log
-excerpt, violation messages, sample rows) goes through :mod:`dag_healer.masking` before it is
-stored on the context, so the context can be persisted, shown and sent to the LLM as is.
-Source code is kept verbatim (the repair agent edits it).
+excerpt, violation messages, sample rows, the orchestrator's error name and ``native_ref``)
+goes through :mod:`dag_healer.masking` before it is stored on the context, so the context can
+be persisted, shown and sent to the LLM as is. Source code is kept verbatim (the repair agent
+edits it).
 """
 
 from __future__ import annotations
@@ -28,21 +40,27 @@ import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from dag_healer.contracts.schema import Contract, DatasetContract, DatasetLocator, Violation
+from dag_healer.core.errors import NotSupported, OrchestratorError
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR, AttemptRef
+from dag_healer.core.specs import PathMapping
 from dag_healer.core.tracebacks import CAUSE_SEPARATOR, CONTEXT_SEPARATOR
+from dag_healer.core.vocab import Vocabulary
 from dag_healer.masking import mask_text, to_json_safe
+from dag_healer.orchestrators.compat import as_adapter
 from dag_healer.repo.dagscan import TaskInfo
 
 if TYPE_CHECKING:
     import pandas as pd
 
-    from dag_healer.airflow.client import AirflowClient
     from dag_healer.config import HealerConfig
+    from dag_healer.core.ports import OrchestratorAdapter
+    from dag_healer.core.specs import DagInfo
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +70,8 @@ ContractStatus = Literal["approved", "draft", "stale", "missing"]
 CONTAINER_REPO_ROOT = "/opt/airflow/repo"
 #: Airflow's default DAG folder (``$AIRFLOW_HOME/dags``) in the official image.
 DEFAULT_AIRFLOW_DAGS_FOLDER = "/opt/airflow/dags"
+#: Display name of the orchestrator of a context gathered offline (the phase-5 orchestrator).
+DEFAULT_ORCHESTRATOR_NAME = "Apache Airflow"
 
 MAX_LOG_EXCERPT_LINES = 200
 MAX_LINE_CHARS = 2000
@@ -59,6 +79,8 @@ MAX_ERROR_CHARS = 8000
 MAX_TRACEBACK_CHARS = 20000
 MAX_SNIPPET_BYTES = 60_000
 SNIPPET_CONTEXT_LINES = 40
+#: Length of the reason in a note about a failed gathering step (cut after masking).
+MAX_REASON_CHARS = 500
 _MAX_MESSAGE_LINES = 20
 _MAX_SUFFIX_PARTS = 8
 
@@ -79,6 +101,8 @@ _ERRORISH_RE = re.compile(
 _DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 _STDLIB_RE = re.compile(r"/(?:lib|lib64)/python\d|/site-packages/|/dist-packages/", re.IGNORECASE)
 _SEPARATORS = frozenset({CAUSE_SEPARATOR, CONTEXT_SEPARATOR})
+_AIRFLOW_WORDS = Vocabulary().as_dict()
+_VOWELS = frozenset("AEIOU")
 
 
 # =========================================================================== the context
@@ -93,6 +117,14 @@ class IncidentContext:
     of the exception that was finally raised last, as Python prints them). ``code_snippets``
     maps repo-relative paths to their source (at most :data:`MAX_SNIPPET_BYTES` in total).
     ``masked_sample`` is ``{"dataset", "columns", "rows", "masked": True}``.
+
+    The orchestrator fields come last (they all have defaults): ``orchestrator`` is the
+    instance id of the incident, ``orchestrator_name`` the adapter's display name,
+    ``vocabulary`` its words (``Vocabulary.as_dict()``; ``{}`` offline means the Airflow words),
+    ``error_name`` the orchestrator's own name of the error and ``native`` the incident's
+    ``native_ref`` (both masked), ``log_source`` / ``log_confidence`` where the log came from
+    and how sure the adapter is that it belongs to the attempt, and ``native_links`` the
+    labelled links into the orchestrator's UI.
     """
 
     incident_id: str
@@ -119,6 +151,14 @@ class IncidentContext:
     masked_sample: dict[str, Any] | None = None
     datasets_checked: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    orchestrator: str = DEFAULT_ORCHESTRATOR
+    orchestrator_name: str = DEFAULT_ORCHESTRATOR_NAME
+    error_name: str | None = None
+    native: dict[str, Any] = field(default_factory=dict)
+    log_source: str | None = None
+    log_confidence: str = "exact"
+    vocabulary: dict[str, str] = field(default_factory=dict)
+    native_links: dict[str, str] = field(default_factory=dict)
 
     @property
     def top_repo_frame(self) -> dict[str, Any] | None:
@@ -126,7 +166,15 @@ class IncidentContext:
         return self.repo_frames[-1] if self.repo_frames else None
 
     def to_prompt_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe dict of every field (no DataFrames, no pydantic objects)."""
+        """Return a JSON-safe dict of the evidence (no DataFrames, no pydantic objects).
+
+        The phase-5 keys come first, in their phase-5 order. The orchestrator fields are added
+        only when they tell the LLM something: ``orchestrator`` for an instance other than
+        ``airflow``, ``vocabulary`` when it differs from the Airflow words, ``error_name`` when
+        known and ``log_confidence`` when the log was matched to the attempt heuristically. So
+        an Airflow context gives exactly the phase-5 dict; ``orchestrator_name``, ``native``,
+        ``log_source`` and ``native_links`` never enter it.
+        """
         from dag_healer.contracts.io import contract_to_dict
 
         data: dict[str, Any] = {
@@ -155,7 +203,56 @@ class IncidentContext:
             "datasets_checked": list(self.datasets_checked),
             "notes": list(self.notes),
         }
+        if self.orchestrator and self.orchestrator != DEFAULT_ORCHESTRATOR:
+            data["orchestrator"] = self.orchestrator
+        if self.vocabulary and dict(self.vocabulary) != _AIRFLOW_WORDS:
+            data["vocabulary"] = dict(self.vocabulary)
+        if self.error_name:
+            data["error_name"] = self.error_name
+        if self.log_confidence == "heuristic":
+            data["log_confidence"] = self.log_confidence
         return to_json_safe(data)
+
+
+def _field(obj: Any, name: str) -> Any:
+    """``obj[name]`` for a mapping, ``obj.<name>`` otherwise (``None`` when missing)."""
+    if isinstance(obj, Mapping):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def upper_first(word: str) -> str:
+    """``word`` as a label: ``task`` -> ``Task``, ``map index`` -> ``Map index``; ``DAG`` stays ``DAG``.
+
+    Only the first letter changes (:meth:`str.capitalize` would turn ``DAG`` into ``Dag``).
+    """
+    return word[:1].upper() + word[1:]
+
+
+def prompt_words(ctx: Any = None) -> dict[str, str]:
+    """The words the texts about ``ctx`` are written with (notes, prompts, PR texts).
+
+    ``ctx`` is an :class:`IncidentContext`, a mapping or any object with ``vocabulary`` and
+    ``orchestrator_name`` (``None`` too). Its vocabulary (the ``Vocabulary.as_dict()`` shape)
+    goes over the Airflow words of :class:`~dag_healer.core.vocab.Vocabulary`: a missing or
+    blank word keeps the Airflow one and an unknown key is ignored. Two words are added:
+    ``display_name`` (the orchestrator's display name, ``"Apache Airflow"`` by default) and
+    ``a_product`` (``product`` with its article: ``"An Airflow"``, ``"A Fakeflow"``). Without a
+    vocabulary every word is today's Airflow word, so a rendered text does not change.
+    """
+    words = dict(_AIRFLOW_WORDS)
+    vocabulary = _field(ctx, "vocabulary")
+    if isinstance(vocabulary, Mapping):
+        for name, value in vocabulary.items():
+            if name in words and isinstance(value, str) and value.strip():
+                words[name] = value
+    display_name = _field(ctx, "orchestrator_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        display_name = DEFAULT_ORCHESTRATOR_NAME
+    words["display_name"] = display_name
+    product = words["product"]
+    words["a_product"] = f"{'An' if product[:1].upper() in _VOWELS else 'A'} {product}"
+    return words
 
 
 # =========================================================================== tracebacks
@@ -333,6 +430,23 @@ def _path_roots(cfg: HealerConfig) -> list[tuple[str, str]]:
     return sorted(unique.items(), key=lambda item: len(item[0]), reverse=True)
 
 
+def _mapping_roots(cfg: HealerConfig, mappings: Sequence[PathMapping]) -> list[tuple[str, str]]:
+    """The repository root and an adapter's path mappings as ``(prefix, base)`` pairs, longest first.
+
+    The repository root comes first, then the mappings in their order; the first pair of a
+    prefix wins. Mappings without a runtime prefix are ignored.
+    """
+    roots: list[tuple[str, str]] = [(posixpath.normpath(_posix(cfg.repo_root)), "")]
+    for mapping in mappings:
+        prefix = str(getattr(mapping, "runtime_prefix", "") or "").strip()
+        if prefix:
+            roots.append((posixpath.normpath(_posix(prefix)), str(getattr(mapping, "repo_base", "") or "")))
+    unique: dict[str, str] = {}
+    for prefix, base in roots:
+        unique.setdefault(prefix, base)
+    return sorted(unique.items(), key=lambda item: len(item[0]), reverse=True)
+
+
 def _suffix_match(path: str, cfg: HealerConfig) -> str | None:
     """Map an unknown absolute path by its longest suffix that exists in the repository."""
     root = cfg.repo_root
@@ -353,16 +467,24 @@ def _suffix_match(path: str, cfg: HealerConfig) -> str | None:
     return None
 
 
-def map_to_repo_path(path: str | os.PathLike[str] | None, cfg: HealerConfig) -> str | None:
-    """Map a file path seen in Airflow (logs, ``fileloc``) to a repo-relative posix path.
+def map_to_repo_path(
+    path: str | os.PathLike[str] | None,
+    cfg: HealerConfig,
+    *,
+    mappings: Sequence[PathMapping] | None = None,
+) -> str | None:
+    """Map a file path seen in the orchestrator (traceback, DAG file) to a repo-relative posix path.
 
-    Understands the container mount (``/opt/airflow/repo/src/etl/x.py`` -> ``src/etl/x.py``),
-    the Airflow DAG folder (``$AIRFLOW__CORE__DAGS_FOLDER`` or ``/opt/airflow/dags``:
-    ``<dags_folder>/x.py`` -> ``<repo.dags_dir>/x.py``), any absolute path under
-    ``cfg.repo_root``, relative paths that exist in the repository (or in its DAG folder) and,
-    as a last resort, other absolute paths whose tail exists in the repository (DAG bundles
-    cloned elsewhere). Library paths (site-packages, the standard library) and pseudo files
-    such as ``<frozen ...>`` return ``None``.
+    ``mappings`` are the adapter's runtime-prefix -> repo-base pairs
+    (``CodeLocator.path_mappings``); any absolute path under ``cfg.repo_root`` maps too. Without
+    them (``None``) the Airflow defaults apply: the container mount
+    (``/opt/airflow/repo/src/etl/x.py`` -> ``src/etl/x.py``), the Airflow DAG folder
+    (``$AIRFLOW__CORE__DAGS_FOLDER`` or ``/opt/airflow/dags``: ``<dags_folder>/x.py`` ->
+    ``<repo.dags_dir>/x.py``) and the repository root. In both cases relative paths that exist
+    in the repository (or in its DAG folder) map as they are and, as a last resort, other
+    absolute paths whose tail exists in the repository (DAG bundles cloned elsewhere). Library
+    paths (site-packages, the standard library) and pseudo files such as ``<frozen ...>``
+    return ``None``.
     """
     if path is None:
         return None
@@ -373,7 +495,8 @@ def map_to_repo_path(path: str | os.PathLike[str] | None, cfg: HealerConfig) -> 
         return None
     if raw.startswith("/") or _is_windows_path(raw):
         normalised = posixpath.normpath(raw)
-        for prefix, base in _path_roots(cfg):
+        roots = _path_roots(cfg) if mappings is None else _mapping_roots(cfg, mappings)
+        for prefix, base in roots:
             rel = _relative_to(normalised, prefix)
             if rel:
                 return _join_rel(base, rel)
@@ -428,14 +551,53 @@ def _note(ctx: IncidentContext, message: str) -> None:
     logger.debug("incident %s: %s", ctx.incident_id, text)
 
 
+def _failure_reason(exc: BaseException) -> BaseException:
+    """The exception a note names: the cause of an adapter error raised from another exception.
+
+    Adapters raise :mod:`dag_healer.core.errors` exceptions chained to the transport error
+    (``raise NotFound(...) from AirflowAPIError(...)``); the note keeps naming the transport
+    error, as the phase-5 notes did (``Reading the DAG from the Airflow API failed:
+    AirflowAPIError: ...``).
+    """
+    cause = exc.__cause__
+    if isinstance(exc, OrchestratorError) and cause is not None:
+        return cause
+    return exc
+
+
+def _reason(exc: BaseException) -> str:
+    """``Type: message`` of a failure, masked and cut to :data:`MAX_REASON_CHARS` characters."""
+    reason = _failure_reason(exc)
+    return mask_text(f"{type(reason).__name__}: {reason}")[:MAX_REASON_CHARS]
+
+
+def _bundle_note(ctx: IncidentContext, note: str) -> None:
+    """Record a note of a log bundle: masked, then its reason (after the first ``": "``) cut.
+
+    Adapters write a failed fetch as ``"<what> failed: <Type>: <message>"`` (RAW and whole).
+    Masking the whole note before cutting its reason to :data:`MAX_REASON_CHARS` characters
+    gives the phase-5 note, and never leaves part of a value that was cut in two unmasked.
+    """
+    masked = mask_text(note)
+    head, separator, reason = masked.partition(": ")
+    text = f"{head}{separator}{reason[:MAX_REASON_CHARS]}" if separator else masked
+    ctx.notes.append(text)
+    logger.debug("incident %s: %s", ctx.incident_id, text)
+
+
+def _record_failure(ctx: IncidentContext, what: str, exc: BaseException) -> None:
+    """Report a failed gathering step: a ``"<what> failed: <reason>"`` note and a warning."""
+    reason = _reason(exc)
+    logger.warning("dag-healer: %s failed for incident %s: %s", what, ctx.incident_id, reason)
+    ctx.notes.append(f"{what} failed: {reason}")
+
+
 def _safely(ctx: IncidentContext, what: str, func: Callable[[], Any]) -> Any:
     """Run one gathering step; failures become notes (masked, no traceback)."""
     try:
         return func()
     except Exception as exc:
-        reason = mask_text(f"{type(exc).__name__}: {exc}")[:500]
-        logger.warning("dag-healer: %s failed for incident %s: %s", what, ctx.incident_id, reason)
-        ctx.notes.append(f"{what} failed: {reason}")
+        _record_failure(ctx, what, exc)
         return None
 
 
@@ -494,19 +656,145 @@ def _mask_violation(violation: Violation) -> Violation:
 # =========================================================================== gathering steps
 
 
-def _fetch_log(ctx: IncidentContext, client: AirflowClient | Any | None) -> str:
-    if client is None:
-        _note(ctx, "No Airflow API client: the task log was not fetched.")
+@dataclass(frozen=True)
+class _Orchestrator:
+    """The orchestrator side of one gathering: the adapter and the attempt it is asked about."""
+
+    adapter: OrchestratorAdapter
+    ref: AttemptRef
+    native: Mapping[str, Any]
+
+
+def _resolve_adapter(cfg: HealerConfig, ctx: IncidentContext, client: Any) -> OrchestratorAdapter | None:
+    """``client`` as an adapter (``None`` offline); an object that cannot be used becomes a note."""
+    try:
+        return as_adapter(cfg, client)
+    except Exception as exc:  # TypeError (neither an adapter nor a client), AdapterLoadError
+        _record_failure(ctx, "Using the orchestrator client", exc)
+        return None
+
+
+def _vocabulary_of(adapter: OrchestratorAdapter) -> dict[str, str]:
+    """The adapter's words (``vocabulary.as_dict()``); ``{}`` (the Airflow words) when unreadable."""
+    try:
+        words = adapter.vocabulary.as_dict()
+    except Exception as exc:  # a broken third-party vocabulary must not stop the gathering
+        logger.debug("dag-healer: ignoring the vocabulary of %s: %s", type(adapter).__name__, exc)
+        return {}
+    if not isinstance(words, Mapping):
+        return {}
+    return {str(name): str(word) for name, word in words.items()}
+
+
+def _describe(ctx: IncidentContext, orch: _Orchestrator) -> Any:
+    """The orchestrator's view of the attempt (``AttemptDetail``), ``None`` when it cannot tell.
+
+    A failure never adds a note: phase 5 read the error from the log alone, and an adapter
+    that cannot describe attempts (``NotSupported``) is not a problem worth reporting.
+    """
+    try:
+        return orch.adapter.inspector.describe(orch.ref, orch.native)
+    except NotSupported as exc:
+        logger.debug(
+            "incident %s: the attempt cannot be described: %s", ctx.incident_id, mask_text(exc)[:500]
+        )
+    except Exception as exc:
+        logger.warning(
+            "dag-healer: describing the failed attempt failed for incident %s: %s",
+            ctx.incident_id,
+            _reason(exc),
+        )
+    return None
+
+
+def _fetch_log(ctx: IncidentContext, orch: _Orchestrator | None, detail: Any) -> str:
+    """The RAW log text of the attempt (``""`` when there is none); its notes are recorded masked."""
+    words = prompt_words(ctx)
+    if orch is None:
+        _note(ctx, f"No {words['product']} API client: the {words['step']} log was not fetched.")
         return ""
-    text = client.get_task_log(ctx.dag_id, ctx.run_id, ctx.task_id, ctx.try_number, map_index=ctx.map_index)
-    text = text or ""
-    if not text.strip():
-        _note(ctx, f"The Airflow log of try {ctx.try_number} is empty.")
-    return text
+    text = _safely(
+        ctx,
+        f"Fetching the {words['step']} log from {words['product']}",
+        lambda: _read_log(ctx, orch, detail, step=words["step"]),
+    )
+    return text or ""
 
 
-def _apply_error_info(cfg: HealerConfig, ctx: IncidentContext, log_text: str, explicit: str) -> None:
-    exc_type, exc_message, frames, traceback_text = extract_traceback(log_text)
+def _read_log(ctx: IncidentContext, orch: _Orchestrator, detail: Any, *, step: str) -> str:
+    """Ask for the log (``inspector.logs``), keep its notes (masked), source and confidence."""
+    bundle = orch.adapter.inspector.logs(orch.ref, detail)
+    raw_notes = getattr(bundle, "notes", None) or ()
+    notes = [raw_notes] if isinstance(raw_notes, str) else [str(note) for note in raw_notes if note]
+    for note in notes:
+        _bundle_note(ctx, note)
+    source = getattr(bundle, "source", None)
+    ctx.log_source = str(source) if source else None
+    ctx.log_confidence = str(getattr(bundle, "confidence", None) or "exact")
+    if ctx.log_source == "none" and notes:
+        unavailable = " ".join(ctx.notes[-len(notes) :])
+        logger.warning("dag-healer: no %s log for incident %s: %s", step, ctx.incident_id, unavailable)
+    text = getattr(bundle, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+class _Scan(NamedTuple):
+    """The incident's pipeline and step in the static scan of the repository, or why it failed."""
+
+    pipeline: DagInfo | None
+    step: TaskInfo | None
+    error: BaseException | None = None
+
+
+def _scan(cfg: HealerConfig, ctx: IncidentContext, adapter: OrchestratorAdapter | None) -> _Scan:
+    """Scan the repository once (the adapter's code locator; ``scan_dags`` offline).
+
+    A failure is kept, not reported: :func:`_apply_repo_info` reports it where the phase-5 note was.
+    """
+    try:
+        if adapter is not None:
+            pipelines = adapter.code.scan(cfg.repo_root)
+        else:
+            from dag_healer.repo.dagscan import scan_dags
+
+            pipelines = scan_dags(cfg.repo_root, cfg.repo.dags_dir)
+        found = next((spec for spec in pipelines or () if getattr(spec, "dag_id", None) == ctx.dag_id), None)
+        return _Scan(found, found.task(ctx.task_id) if found is not None else None)
+    except Exception as exc:  # a broken DAG folder must not stop the gathering
+        return _Scan(None, None, exc)
+
+
+def _path_mappings(cfg: HealerConfig, ctx: IncidentContext, orch: _Orchestrator, step: Any) -> list[Any]:
+    """The adapter's path mappings for ``step`` (only the repository root when they are unreadable)."""
+    words = prompt_words(ctx)
+    found = _safely(
+        ctx,
+        f"Reading the {words['product']} path mappings",
+        lambda: list(orch.adapter.code.path_mappings(cfg.repo_root, step) or ()),
+    )
+    return found or []
+
+
+def _apply_error_info(
+    cfg: HealerConfig,
+    ctx: IncidentContext,
+    log_text: str,
+    explicit: str,
+    *,
+    primary: str = "",
+    mappings: Sequence[PathMapping] | None = None,
+) -> None:
+    """The exception, the traceback and the repository frames of the failure, and the error text.
+
+    The traceback comes from ``primary`` (the orchestrator's ``traceback_text``) first, then from
+    the log, then from the explicit error text; frames map with the adapter's ``mappings``
+    (``None``: the Airflow defaults of :func:`map_to_repo_path`).
+    """
+    exc_type, exc_message, frames, traceback_text = (
+        extract_traceback(primary) if primary else (None, None, [], "")
+    )
+    if exc_type is None and not frames:
+        exc_type, exc_message, frames, traceback_text = extract_traceback(log_text)
     if exc_type is None and not frames and explicit:
         parsed = extract_traceback(explicit)
         if parsed[0] is not None or parsed[2]:
@@ -516,7 +804,7 @@ def _apply_error_info(cfg: HealerConfig, ctx: IncidentContext, log_text: str, ex
     ctx.traceback_text = _tail(mask_text(traceback_text), MAX_TRACEBACK_CHARS)
     repo_frames: list[dict[str, Any]] = []
     for frame in frames:
-        rel = map_to_repo_path(frame.get("file"), cfg)
+        rel = map_to_repo_path(frame.get("file"), cfg, mappings=mappings)
         if rel:
             repo_frames.append({"file": rel, "line": frame.get("line"), "function": frame.get("function")})
     ctx.repo_frames = repo_frames
@@ -531,53 +819,95 @@ def _apply_error_info(cfg: HealerConfig, ctx: IncidentContext, log_text: str, ex
     ctx.log_excerpt = _log_excerpt(excerpt_source) if excerpt_source.strip() else ""
 
 
-def _api_dag_file(cfg: HealerConfig, ctx: IncidentContext, client: Any) -> str | None:
-    """The DAG file according to Airflow (``fileloc`` / ``relative_fileloc``), repo-relative."""
-    if client is None:
-        return None
-    dag = _safely(ctx, "Reading the DAG from the Airflow API", lambda: client.get_dag(ctx.dag_id))
-    if not isinstance(dag, Mapping):
-        return None
-    mapped = map_to_repo_path(dag.get("fileloc"), cfg) if dag.get("fileloc") else None
-    if mapped and _inside_repo(cfg, mapped):
-        return mapped
-    relative = dag.get("relative_fileloc")
-    if isinstance(relative, str) and relative.strip():
-        candidate = _join_rel(cfg.repo.dags_dir or "dags", _posix(relative.strip()))
-        if candidate and _inside_repo(cfg, candidate):
-            return candidate
-    if mapped:
-        _note(ctx, f"Airflow reports the DAG file {mapped}, which is not in the repository working tree.")
+def _reported_dag_file(
+    cfg: HealerConfig, ctx: IncidentContext, orch: _Orchestrator, mappings: Sequence[PathMapping] | None
+) -> str | None:
+    """The pipeline file the orchestrator reports (``inspector.pipeline_source``), repo-relative.
+
+    A locator with the optional ``reported_file`` hook (Airflow: ``fileloc``, else
+    ``relative_fileloc``) gives the reported file only; any other locator decides with
+    ``pipeline_file``. When neither finds a file and the reported path maps (with the adapter's
+    ``mappings``) to a repository path that is not in the working tree, a note says so.
+    """
+    words = prompt_words(ctx)
+    pipeline, product = words["pipeline"], words["product"]
+    source = _safely(
+        ctx,
+        f"Reading the {pipeline} from the {product} API",
+        lambda: orch.adapter.inspector.pipeline_source(ctx.dag_id, ref=orch.ref, native=orch.native),
+    )
+    code = orch.adapter.code
+    reported_file = getattr(code, "reported_file", None)
+    found: Any = None
+    if not callable(reported_file):
+        found = _safely(
+            ctx,
+            f"Locating the {pipeline} file",
+            lambda: code.pipeline_file(cfg.repo_root, ctx.dag_id, source),
+        )
+    elif source is not None:
+        found = _safely(ctx, f"Locating the {pipeline} file", lambda: reported_file(cfg.repo_root, source))
+    if isinstance(found, str) and found:
+        return found
+    path = getattr(source, "path", None)
+    mapped = map_to_repo_path(path, cfg, mappings=mappings) if isinstance(path, str) and path else None
+    if mapped and _inside_repo(cfg, mapped) is None:
+        _note(
+            ctx,
+            f"{product} reports the {pipeline} file {mapped}, which is not in the repository working tree.",
+        )
     return None
 
 
-def _apply_repo_info(cfg: HealerConfig, ctx: IncidentContext, client: Any) -> None:
-    from dag_healer.repo.dagscan import scan_dags
+def _api_dag_source(ctx: IncidentContext, orch: _Orchestrator) -> str | None:
+    """The pipeline definition text the orchestrator serves (``pipeline_source(include_text=True)``)."""
+    source = orch.adapter.inspector.pipeline_source(
+        ctx.dag_id, ref=orch.ref, native=orch.native, include_text=True
+    )
+    text = getattr(source, "text", None) if source is not None else None
+    return text if isinstance(text, str) else None
 
-    dags = _safely(ctx, "Scanning the DAG folder", lambda: scan_dags(cfg.repo_root, cfg.repo.dags_dir))
-    dag_info = next((dag for dag in dags or [] if dag.dag_id == ctx.dag_id), None)
-    dag_file = _api_dag_file(cfg, ctx, client)
-    if dag_file is None and dag_info is not None:
-        dag_file = dag_info.file
+
+def _apply_repo_info(
+    cfg: HealerConfig,
+    ctx: IncidentContext,
+    orch: _Orchestrator | None,
+    scan: _Scan,
+    mappings: Sequence[PathMapping] | None,
+) -> None:
+    """The pipeline file, its source and the step, with the phase-5 notes in their phase-5 order.
+
+    The scan ran before the error was extracted (its path mappings need the step); its failure
+    is reported here, where the phase-5 note was. The orchestrator is asked for the definition
+    text only when the working-tree file cannot be read.
+    """
+    words = prompt_words(ctx)
+    pipeline = words["pipeline"]
+    if scan.error is not None:
+        _record_failure(ctx, f"Scanning the {pipeline} folder", scan.error)
+    dag_file = _reported_dag_file(cfg, ctx, orch, mappings) if orch is not None else None
+    if dag_file is None and scan.pipeline is not None:
+        dag_file = scan.pipeline.file
     ctx.dag_file = dag_file
     if dag_file is None:
-        _note(ctx, f"The file defining DAG {ctx.dag_id} was not found in the repository.")
+        _note(ctx, f"The file defining {pipeline} {ctx.dag_id} was not found in the repository.")
 
     local = _inside_repo(cfg, dag_file) if dag_file else None
     if local is not None:
-        ctx.dag_source = _safely(ctx, "Reading the DAG file", lambda: _read_source(local))
-    if ctx.dag_source is None and client is not None:
-        source = _safely(
-            ctx, "Reading the DAG source from the Airflow API", lambda: client.get_dag_source(ctx.dag_id)
+        ctx.dag_source = _safely(ctx, f"Reading the {pipeline} file", lambda: _read_source(local))
+    if ctx.dag_source is None and orch is not None:
+        ctx.dag_source = _safely(
+            ctx,
+            f"Reading the {pipeline} source from the {words['product']} API",
+            lambda: _api_dag_source(ctx, orch),
         )
-        ctx.dag_source = source if isinstance(source, str) else None
     if ctx.dag_source is None:
-        _note(ctx, "The DAG source is not available.")
+        _note(ctx, f"The {pipeline} source is not available.")
 
-    if dag_info is not None:
-        ctx.task = dag_info.task(ctx.task_id)
+    ctx.task = scan.step
     if ctx.task is None:
-        _note(ctx, f"Task {ctx.task_id} was not found by the static scan of DAG {ctx.dag_id}.")
+        step = upper_first(words["step"])
+        _note(ctx, f"{step} {ctx.task_id} was not found by the static scan of {pipeline} {ctx.dag_id}.")
 
 
 def _snippet_window(text: str, focus_lines: list[int], budget: int) -> str | None:
@@ -762,11 +1092,12 @@ def _apply_contract(cfg: HealerConfig, ctx: IncidentContext) -> None:
     from dag_healer.contracts.schema import ContractError
     from dag_healer.contracts.validate import validate_contract
 
+    pipeline = prompt_words(ctx)["pipeline"]
     contract: Contract | None = None
     try:
         path = contract_path(cfg.contracts_dir, ctx.dag_id)
     except ValueError as exc:
-        _note(ctx, f"No contract lookup for this DAG id: {exc}")
+        _note(ctx, f"No contract lookup for this {pipeline} id: {exc}")
         path = None
     if path is not None and not path.is_file() and path.with_suffix(".yml").is_file():
         path = path.with_suffix(".yml")
@@ -776,7 +1107,10 @@ def _apply_contract(cfg: HealerConfig, ctx: IncidentContext) -> None:
         except ContractError as exc:
             _note(ctx, f"The data contract file is invalid and was ignored: {exc}")
     elif path is not None:
-        _note(ctx, f"No data contract for DAG {ctx.dag_id} ({path.name} not found in {cfg.contracts.dir}).")
+        _note(
+            ctx,
+            f"No data contract for {pipeline} {ctx.dag_id} ({path.name} not found in {cfg.contracts.dir}).",
+        )
 
     if contract is None:
         ctx.contract_status = "missing"
@@ -815,20 +1149,40 @@ def _apply_contract(cfg: HealerConfig, ctx: IncidentContext) -> None:
 # =========================================================================== entry point
 
 
+def _native_links(ctx: IncidentContext, orch: _Orchestrator) -> dict[str, str]:
+    """Labelled links into the orchestrator's UI (``links.links``); ``{}`` on any failure (no note)."""
+    try:
+        links = orch.adapter.links.links(orch.ref, orch.native)
+    except Exception as exc:  # links are a convenience: a failure is not evidence
+        logger.debug("incident %s: no native links: %s", ctx.incident_id, type(exc).__name__)
+        return {}
+    if not isinstance(links, Mapping):
+        return {}
+    return {str(label): str(url) for label, url in links.items() if label and url}
+
+
 def gather_context(
     cfg: HealerConfig,
     incident: Mapping[str, Any],
-    client: AirflowClient | Any | None,
+    client: OrchestratorAdapter | Any | None,
     *,
     error_text: str | None = None,
 ) -> IncidentContext:
     """Collect the evidence of ``incident`` (an ``Incident.to_dict()``-shaped mapping).
 
-    ``client`` is an :class:`~dag_healer.airflow.client.AirflowClient` (or any object with
-    ``get_task_log``, ``get_dag`` and ``get_dag_source``) or ``None``; without it the error
-    comes from ``error_text`` or the incident's ``error_summary``. Contracts, datasets and code
-    are read from ``cfg.repo_root`` (the repository working tree). Never raises for missing
-    or broken pieces: they are recorded in ``notes``.
+    ``client`` is the orchestrator: an :class:`~dag_healer.core.ports.OrchestratorAdapter`
+    (used as is), a phase-5 Airflow REST client or a test double of one (wrapped with
+    :func:`~dag_healer.orchestrators.compat.as_adapter`), or ``None``. ``None`` means offline:
+    no orchestrator call, the error comes from ``error_text`` or the incident's
+    ``error_summary`` and the repository is scanned with :func:`dag_healer.repo.dagscan.scan_dags`;
+    an adapter is never built from ``cfg`` here. Contracts, datasets and code are read from
+    ``cfg.repo_root`` (the repository working tree). Never raises for missing or broken
+    pieces: they are recorded in ``notes``.
+
+    With an adapter the order is: ``inspector.describe`` (silent when it fails),
+    ``inspector.logs``, ``code.scan`` and ``code.path_mappings`` (before the traceback is
+    mapped), ``inspector.pipeline_source`` (with ``include_text=True`` only when the working-tree
+    pipeline file cannot be read) and ``links.links``.
     """
     ctx = IncidentContext(
         incident_id=str(incident.get("id") or ""),
@@ -838,14 +1192,44 @@ def gather_context(
         map_index=_as_int(incident.get("map_index"), -1),
         try_number=_as_int(incident.get("try_number"), 1),
     )
+    adapter = _resolve_adapter(cfg, ctx, client)
+    ref = AttemptRef.from_row(
+        incident, default_orchestrator=adapter.instance if adapter is not None else DEFAULT_ORCHESTRATOR
+    )
+    native_ref = incident.get("native_ref")
+    native: Mapping[str, Any] = native_ref if isinstance(native_ref, Mapping) else {}
+    orch = _Orchestrator(adapter, ref, native) if adapter is not None else None
+    ctx.orchestrator = ref.orchestrator
+    ctx.native = _mask_tree(dict(native))
+    if adapter is not None:
+        ctx.orchestrator_name = str(getattr(adapter, "display_name", "") or DEFAULT_ORCHESTRATOR_NAME)
+        ctx.vocabulary = _vocabulary_of(adapter)
+
+    detail = _describe(ctx, orch) if orch is not None else None
+    error_name = getattr(detail, "error_name", None) or incident.get("error_name")
+    ctx.error_name = mask_text(error_name) if error_name else None
     explicit = str(error_text if error_text is not None else (incident.get("error_summary") or ""))
-    log_text = _safely(ctx, "Fetching the task log from Airflow", lambda: _fetch_log(ctx, client)) or ""
-    _safely(ctx, "Extracting the error", lambda: _apply_error_info(cfg, ctx, log_text, explicit))
+    log_text = _fetch_log(ctx, orch, detail)
+    scan = _scan(cfg, ctx, adapter)
+    mappings = _path_mappings(cfg, ctx, orch, scan.step) if orch is not None else None
+    primary = str(getattr(detail, "traceback_text", None) or "")
+    _safely(
+        ctx,
+        "Extracting the error",
+        lambda: _apply_error_info(cfg, ctx, log_text, explicit, primary=primary, mappings=mappings),
+    )
     if not ctx.error_text and explicit:
         ctx.error_text = _tail(mask_text(explicit), MAX_ERROR_CHARS)
-    _safely(ctx, "Locating the DAG and task", lambda: _apply_repo_info(cfg, ctx, client))
+    words = prompt_words(ctx)
+    _safely(
+        ctx,
+        f"Locating the {words['pipeline']} and {words['step']}",
+        lambda: _apply_repo_info(cfg, ctx, orch, scan, mappings),
+    )
     _safely(ctx, "Collecting source code", lambda: _apply_code_snippets(cfg, ctx))
     _safely(ctx, "Checking the data contract", lambda: _apply_contract(cfg, ctx))
+    if orch is not None:
+        ctx.native_links = _native_links(ctx, orch)
     logger.info(
         "Context for incident %s (%s.%s): exception=%s, repo_frames=%d, contract=%s, "
         "violations=%d, draft_violations=%d, notes=%d",
@@ -864,9 +1248,12 @@ def gather_context(
 
 __all__ = [
     "CONTAINER_REPO_ROOT",
+    "DEFAULT_ORCHESTRATOR_NAME",
     "ContractStatus",
     "IncidentContext",
     "extract_traceback",
     "gather_context",
     "map_to_repo_path",
+    "prompt_words",
+    "upper_first",
 ]

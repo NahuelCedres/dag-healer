@@ -801,14 +801,17 @@ def test_import_state_file_imports_the_phase5_poll_position_once(
     from dag_healer.worker import pipeline
 
     cfg = config_from_mapping({"repo": {"path": str(tmp_path)}})
-    pipeline.reset_state(cfg, T0)  # what the phase-5 `store reset` wrote
-    pipeline.set_watermark(cfg, T0 + timedelta(minutes=5))  # ... and a later poll
+    later = (T0 + timedelta(minutes=5)).isoformat()
+    # what a phase-5 worker left behind: the floor of `store reset` and a later poll
+    pipeline.save_state(cfg, {"rest_watermark": later, "rest_not_before": T0.isoformat()})
     path = pipeline.state_path(cfg)
 
     cursor = store_repo.import_state_file(session, path)
     assert cursor == {"watermark": (T0 + timedelta(minutes=5)).isoformat(), "not_before": T0.isoformat()}
     assert store_repo.kv_get(session, "cursor:airflow") == cursor
-    pipeline.set_watermark(cfg, T0 + timedelta(hours=1))
+    pipeline.save_state(
+        cfg, {"rest_watermark": (T0 + timedelta(hours=1)).isoformat(), "rest_not_before": T0.isoformat()}
+    )
     assert store_repo.import_state_file(session, path) is None  # one time only: the cursor wins
     assert store_repo.kv_get(session, "cursor:airflow") == cursor
     assert path.is_file()
@@ -915,8 +918,15 @@ def test_cli_reset_clears_the_poll_cursors_unless_kept(
 
     assert main(["-c", config, "store", "reset", "--yes"]) == 0
     assert "healer_kv: 1" in capsys.readouterr().out
-    assert counts(store)["healer_kv"] == 0
     assert set(counts(store).items()) >= {("healer_incidents", 0), ("healer_schema_version", 2)}
+    # the old cursor is gone; the poll restarts at the moment of the reset
+    with db.session_scope(url_of(store)) as session:
+        items = store_repo.kv_items(session)
+    assert list(items) == ["cursor:airflow"]
+    cursor = items["cursor:airflow"]
+    assert set(cursor) == {"watermark", "not_before"} and cursor["watermark"] == cursor["not_before"]
+    floor = datetime.fromisoformat(cursor["not_before"])
+    assert abs(datetime.now(timezone.utc) - floor) < timedelta(minutes=1)
 
 
 def test_pending_event_columns_match_the_ingest_payload_contract() -> None:

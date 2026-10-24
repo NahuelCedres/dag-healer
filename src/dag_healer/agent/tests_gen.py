@@ -11,6 +11,11 @@ the phase prompts from ``agent/prompts/repair_test.md`` and ``repair_fix.md``. E
 of evidence placed in a prompt comes from the (already masked) :class:`IncidentContext`;
 free text is passed through :func:`dag_healer.masking.mask_text` once more as a safety net.
 Source code is included verbatim (it is code, not data).
+
+The prompts speak the orchestrator's words (:func:`dag_healer.agent.context.prompt_words`: the
+context's vocabulary, its display name and ``a_product``). They are rendered in one pass, the
+words being values like any other, so evidence and code that contain ``{{ ... }}`` are never
+substituted; with the Airflow words (or none) every prompt is the phase-5 text.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dag_healer.agent.context import prompt_words, upper_first
 from dag_healer.masking import mask_text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -50,10 +56,10 @@ TOOL_NAMES: tuple[str, ...] = (
     "run_tests",
 )
 
-#: Stable system prompt shared by both phases (cache friendly: it never changes per incident).
-SYSTEM_PROMPT = """\
-You are dag-healer's repair agent. dag-healer watches an existing Apache Airflow deployment; \
-when a task fails because of a bug in the repository's code, you reproduce the bug with a \
+#: Template of the system prompt shared by both phases (see :func:`system_prompt`).
+_SYSTEM_TEMPLATE = """\
+You are dag-healer's repair agent. dag-healer watches an existing {{display_name}} deployment; \
+when a {{step}} fails because of a bug in the repository's code, you reproduce the bug with a \
 pytest test and then fix it with the smallest possible change, in a disposable clone of the \
 repository. A human reviews your work as a pull request, so be precise, conservative and honest.
 
@@ -104,6 +110,19 @@ def render_template(template: str, values: Mapping[str, Any]) -> str:
         return "" if value is None else str(value)
 
     return _PLACEHOLDER.sub(_replace, template)
+
+
+def system_prompt(ctx: IncidentContext | Any = None) -> str:
+    """The system prompt of both repair phases, in the words of ``ctx``'s orchestrator.
+
+    It depends on the orchestrator only (never on the incident), so it stays cache friendly;
+    without a context it is :data:`SYSTEM_PROMPT`, the Airflow text.
+    """
+    return render_template(_SYSTEM_TEMPLATE, prompt_words(ctx))
+
+
+#: The system prompt with the Airflow words (the phase-5 text).
+SYSTEM_PROMPT = system_prompt()
 
 
 # --------------------------------------------------------------------------- helpers
@@ -342,12 +361,12 @@ def choose_test_location(
 # --------------------------------------------------------------------------- evidence
 
 
-def _contract_summary(ctx: Any) -> str:
+def _contract_summary(ctx: Any, words: Mapping[str, str]) -> str:
     contract = _get(ctx, "contract")
     status = _get(ctx, "contract_status", "missing")
     if contract is None:
         if status == "missing":
-            return "Contract status: missing (the DAG has no data contract)."
+            return f"Contract status: missing (the {words['pipeline']} has no data contract)."
         return f"Contract status: {status} (contract details not included)."
     data = _as_dict(contract)
     lines = [f"Contract status: {status}."]
@@ -355,7 +374,7 @@ def _contract_summary(ctx: Any) -> str:
         dataset = _as_dict(dataset)
         locator = _as_dict(dataset.get("locator"))
         lines.append(
-            f"- dataset `{dataset.get('name')}` (task `{dataset.get('task_id')}`, "
+            f"- dataset `{dataset.get('name')}` ({words['step']} `{dataset.get('task_id')}`, "
             f"{locator.get('type', '?')} `{locator.get('path', '?')}`)"
         )
         for column in dataset.get("columns", []) or []:
@@ -398,11 +417,11 @@ def _sample_block(ctx: Any) -> str:
     )
 
 
-def _code_block(ctx: Any) -> str:
+def _code_block(ctx: Any, words: Mapping[str, str]) -> str:
     snippets = _get(ctx, "code_snippets", {}) or {}
     if not snippets:
         dag_source = _get(ctx, "dag_source")
-        dag_file = _get(ctx, "dag_file") or "DAG file"
+        dag_file = _get(ctx, "dag_file") or f"{upper_first(words['pipeline'])} file"
         snippets = {dag_file: dag_source} if dag_source else {}
     blocks = []
     for path, source in snippets.items():
@@ -416,15 +435,21 @@ def _code_block(ctx: Any) -> str:
 
 
 def render_evidence(ctx: IncidentContext | Any, *, incident: Mapping[str, Any] | None = None) -> str:
-    """Render the masked evidence of an incident as Markdown for the repair prompts."""
+    """Render the masked evidence of an incident as Markdown for the repair prompts.
+
+    Labels use the orchestrator's words (``- DAG / task: ...`` for Airflow).
+    """
     incident = incident or {}
+    words = prompt_words(ctx)
+    pipeline, step = upper_first(words["pipeline"]), words["step"]
     target = repro_target(ctx)
     dag_id = _get(ctx, "dag_id", incident.get("dag_id", "?"))
     task_id = _get(ctx, "task_id", incident.get("task_id", "?"))
     lines = [
-        f"- DAG / task: `{dag_id}` / `{task_id}` (run `{_get(ctx, 'run_id', incident.get('run_id', '?'))}`, "
-        f"try {_get(ctx, 'try_number', incident.get('try_number', '?'))}, "
-        f"map index {_get(ctx, 'map_index', incident.get('map_index', -1))})",
+        f"- {pipeline} / {step}: `{dag_id}` / `{task_id}` "
+        f"(run `{_get(ctx, 'run_id', incident.get('run_id', '?'))}`, "
+        f"{words['attempt']} {_get(ctx, 'try_number', incident.get('try_number', '?'))}, "
+        f"{words['map_index']} {_get(ctx, 'map_index', incident.get('map_index', -1))})",
     ]
     exc_type = _get(ctx, "exception_type")
     exc_message = _get(ctx, "exception_message")
@@ -442,12 +467,12 @@ def render_evidence(ctx: IncidentContext | Any, *, incident: Mapping[str, Any] |
     task = _get(ctx, "task")
     if task is not None and (_get(task, "callable_name") or _get(task, "operator")):
         lines.append(
-            f"- Task definition: operator `{_get(task, 'operator', '?')}`, callable "
+            f"- {upper_first(step)} definition: operator `{_get(task, 'operator', '?')}`, callable "
             f"`{_get(task, 'callable_module', '?')}.{_get(task, 'callable_name', '?')}` in "
             f"`{_get(task, 'callable_file', _get(ctx, 'dag_file', '?'))}`"
         )
     if _get(ctx, "dag_file"):
-        lines.append(f"- DAG file: `{_get(ctx, 'dag_file')}`")
+        lines.append(f"- {pipeline} file: `{_get(ctx, 'dag_file')}`")
     diagnosis = incident.get("diagnosis")
     if diagnosis:
         lines.append(f"- Classifier diagnosis: {mask_text(diagnosis)}")
@@ -470,7 +495,7 @@ def render_evidence(ctx: IncidentContext | Any, *, incident: Mapping[str, Any] |
             if isinstance(f, Mapping)
         ]
         sections.append("### Repository frames (outermost first)\n" + "\n".join(frame_lines))
-    sections.append("### Data contract\n" + _contract_summary(ctx))
+    sections.append("### Data contract\n" + _contract_summary(ctx, words))
     for title, key in (
         ("### Contract violations on the current data", "violations"),
         ("### Draft-contract violations (evidence only, not approved)", "draft_violations"),
@@ -489,12 +514,13 @@ def render_evidence(ctx: IncidentContext | Any, *, incident: Mapping[str, Any] |
     if log_excerpt:
         log_lines = mask_text(log_excerpt).splitlines()[-_MAX_LOG_LINES:]
         sections.append(
-            f"### Task log excerpt (last {len(log_lines)} lines, masked)\n" + _fence("\n".join(log_lines))
+            f"### {upper_first(step)} log excerpt (last {len(log_lines)} lines, masked)\n"
+            + _fence("\n".join(log_lines))
         )
     notes = _get(ctx, "notes", []) or []
     if notes:
         sections.append("### Notes from context gathering\n" + "\n".join(f"- {mask_text(n)}" for n in notes))
-    code = _code_block(ctx)
+    code = _code_block(ctx, words)
     if code:
         sections.append(code)
     return "\n\n".join(sections)
@@ -552,6 +578,7 @@ def build_test_prompt(
             f"The repository already has tests in `{tests_dir}/`; add a new file, do not edit the others."
         )
     values = {
+        **prompt_words(ctx),
         "test_file": test_file,
         "tests_dir": tests_dir,
         "test_style": describe_test_style(layout, tests_dir, bool(created_tests_dir)),
@@ -593,6 +620,7 @@ def build_fix_prompt(
         limits.append(f"at most {max_diff_lines} changed lines")
     diff_limits = (" and ".join(limits) + " in total, the new test included") if limits else "keep it small"
     values = {
+        **prompt_words(ctx),
         "test_file": test_file,
         "tests_dir": _clean_rel(tests_dir),
         "allowed_paths": _format_paths(list(allowed_paths)),
@@ -622,4 +650,5 @@ __all__ = [
     "render_evidence",
     "render_template",
     "repro_target",
+    "system_prompt",
 ]

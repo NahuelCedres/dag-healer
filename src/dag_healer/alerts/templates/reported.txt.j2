@@ -3,12 +3,12 @@
 {{ incident.category_label }} ISSUE: {{ incident.task_label }}
 
 {% if violated_rule %}
-The input data of this task does not match its data contract. The code was not changed.
+The input data of this {{ words.step }} does not match its data contract. The code was not changed.
 {% else %}
 This failure was classified as a data issue. The code was not changed.
 {% endif %}
 
-{{ m.summary(incident) }}
+{{ m.summary(incident, words) }}
 
 {% if violated_rule %}
 {{ m.heading("Violated rule") }}
@@ -21,8 +21,8 @@ This failure was classified as a data issue. The code was not changed.
 {{ m.text_block("Error", incident.error_summary) }}
 {{ m.list_block("Evidence", incident.evidence) }}
 {{ m.heading("Next steps") }}
-- Fix or re-deliver the input data, then retry the task from the Healer incident tab.
+- Fix or re-deliver the input data, then retry the {{ words.step }} from the Healer incident tab.
 - If the change in the data is intended, update the data contract and approve it again.
 
-{{ m.links_block(links) }}
+{{ m.links_block(links, words) }}
 {{ m.footer(incident, generated_at) }}

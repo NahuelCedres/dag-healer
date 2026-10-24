@@ -1,9 +1,10 @@
-{#- Plain-text building blocks of the alert emails (rendered with trim_blocks/lstrip_blocks). -#}
-{% macro summary(incident) %}
-DAG:            {{ incident.dag_id }}
-Task:           {{ incident.task_id }}{{ " (map index %d)" % incident.map_index if incident.map_index >= 0 else "" }}
+{#- Plain-text building blocks of the alert emails (rendered with trim_blocks/lstrip_blocks).
+    ``words`` holds the orchestrator's words and labels ("DAG", "Task", "Try" for Airflow). -#}
+{% macro summary(incident, words) %}
+{{ "%-15s " % (words.pipeline_label ~ ":") }}{{ incident.dag_id }}
+{{ "%-15s " % (words.step_label ~ ":") }}{{ incident.task_id }}{{ " (%s %d)" % (words.map_index, incident.map_index) if incident.map_index >= 0 else "" }}
 Run:            {{ incident.run_id }}
-Try:            {{ incident.try_number }}
+{{ "%-15s " % (words.attempt_label ~ ":") }}{{ incident.try_number }}
 Classification: {{ incident.category_label }}{{ " (confidence " ~ incident.confidence_pct ~ ")" if incident.confidence_pct else "" }}
 Status:         {{ incident.status }}
 {% if incident.occurrences > 1 %}
@@ -77,14 +78,17 @@ Sensitive values are masked (h:... = salted hash, *** = redacted).
 {{ "%-17s" % (label ~ ":") }} {{ url }}
 {%- endmacro %}
 
-{% macro links_block(links, pr_label=None) %}
+{% macro links_block(links, words, pr_label=None) %}
 {{ heading("Links") }}
 {{ link_line("Healer incident", links.task_instance) }}
 {% if links.pr %}
 {{ link_line(pr_label or ("Pull request" if links.pr_kind == "pull_request" else "PR.md"), links.pr) }}
 {% endif %}
-{{ link_line("DAG incidents", links.dag) }}
+{{ link_line(words.pipeline_label ~ " incidents", links.dag) }}
 {{ link_line("Healer page", links.healer) }}
+{% for label, url in links.native.items() %}
+{{ link_line("Open in " ~ label, url) }}
+{% endfor %}
 {% endmacro %}
 
 {% macro footer(incident, generated_at) %}

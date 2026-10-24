@@ -5,7 +5,7 @@ FIX PROPOSED: {{ incident.task_label }}
 dag-healer reproduced this failure with a new test and proposed a minimal code fix.
 The new test fails without the fix and passes with it. Nothing is merged automatically.
 
-{{ m.summary(incident) }}
+{{ m.summary(incident, words) }}
 
 {{ m.text_block("Root cause", incident.diagnosis) }}
 {{ m.text_block("The fix", incident.fix_summary) }}
@@ -34,7 +34,7 @@ Review PR.md: {{ links.pr }}
 {{ m.list_block("Notes", notes) }}
 {{ m.heading("Next steps") }}
 - Review and merge the change like any other contribution.
-- Once the fix is deployed, retry the task from the Healer incident tab.
+- Once the fix is deployed, retry the {{ words.step }} from the Healer incident tab.
 
-{{ m.links_block(links, "Proposed fix") }}
+{{ m.links_block(links, words, "Proposed fix") }}
 {{ m.footer(incident, generated_at) }}

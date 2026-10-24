@@ -72,6 +72,9 @@ def test_hint_confirmation_and_page() -> None:
     )
     assert confirmed.failures[0].ref.step_id == "Transform"
     assert Confirmation(verdict="discarded", reason="forged").failures == ()
+    assert Confirmation(verdict="discarded", reason="forged").state is None
+    not_ended = Confirmation(verdict="retry_later", reason="running", state=AttemptState.RUNNING)
+    assert (not_ended.failures, not_ended.state) == ((), AttemptState.RUNNING)
 
     page = FailurePage(failures=confirmed.failures, cursor={"watermark": "2026-10-18T00:00:00+00:00"})
     assert page.complete is True and len(page.failures) == 1

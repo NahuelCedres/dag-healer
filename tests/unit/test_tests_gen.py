@@ -21,7 +21,9 @@ from dag_healer.agent.tests_gen import (
     render_evidence,
     render_template,
     repro_target,
+    system_prompt,
 )
+from dag_healer.orchestrators.fake import FAKE_VOCABULARY
 from dag_healer.repo.dagscan import TaskInfo
 from dag_healer.repo.profile import TestLayout
 
@@ -309,3 +311,101 @@ def test_prompts_are_english_markdown(name: str) -> None:
     text = load_prompt(name)
     assert text.startswith("# Phase")
     assert "{{evidence}}" in text and "{{previous_attempts}}" in text
+
+
+# --------------------------------------------------------------------------- orchestrator words
+
+
+def _fakeflow_ctx(**overrides: object) -> IncidentContext:
+    """``_ctx`` as gathered through the Fakeflow adapter (``orchestrators.fake``)."""
+    values: dict[str, object] = {
+        "orchestrator": "fake",
+        "orchestrator_name": "Fakeflow",
+        "vocabulary": FAKE_VOCABULARY.as_dict(),
+        "notes": [],
+    }
+    values.update(overrides)
+    return _ctx(**values)
+
+
+def test_the_system_prompt_is_the_airflow_text_by_default() -> None:
+    assert SYSTEM_PROMPT == system_prompt() == system_prompt(_ctx())
+    assert SYSTEM_PROMPT.startswith(
+        "You are dag-healer's repair agent. dag-healer watches an existing Apache Airflow deployment; "
+        "when a task fails because of a bug in the repository's code, you reproduce the bug"
+    )
+    assert "{{" not in SYSTEM_PROMPT
+
+
+def test_the_system_prompt_speaks_the_orchestrator_words() -> None:
+    text = system_prompt(_fakeflow_ctx())
+    assert text != SYSTEM_PROMPT
+    assert text.startswith(
+        "You are dag-healer's repair agent. dag-healer watches an existing Fakeflow deployment; "
+        "when a step fails because of a bug in the repository's code, you reproduce the bug"
+    )
+    assert "Airflow" not in text and "{{" not in text
+    # only the words differ, and a mapping works as well as a context
+    assert text == SYSTEM_PROMPT.replace("Apache Airflow", "Fakeflow").replace("a task fails", "a step fails")
+    assert system_prompt({"vocabulary": FAKE_VOCABULARY.as_dict(), "orchestrator_name": "Fakeflow"}) == text
+
+
+def test_the_airflow_prompts_keep_their_phase5_words() -> None:
+    test_prompt = build_test_prompt(_ctx(), NO_TESTS, "tests/test_customers_parse_signup_date.py")
+    for phrase in (
+        "An Airflow task of this repository failed and dag-healer classified the failure",
+        "Prefer the exact value that broke\n     the task, for example",
+        "no network, no database, no Airflow, no",
+        "Application code,\n  DAGs, configuration, data and fixtures are read-only",
+        "- DAG / task: `customers_sync` / `transform` (run `manual__2026-10-17T10:00:00+00:00`, try 1, "
+        "map index -1)",
+        "- Task definition: operator `PythonOperator`, callable `src.etl.customers.transform_customers`",
+        "- DAG file: `dags/customers_sync.py`",
+        "### Task log excerpt (last 2 lines, masked)",
+    ):
+        assert phrase in test_prompt, phrase
+    fix_prompt = build_fix_prompt(_ctx(), "tests/test_x.py", "1 failed")
+    assert "An Airflow task of this repository failed because of a CODE bug." in fix_prompt
+    missing = render_evidence(
+        _ctx(contract_status="missing", code_snippets={}, dag_file=None, dag_source="x = 1\n")
+    )
+    assert "Contract status: missing (the DAG has no data contract)." in missing
+    assert "#### `DAG file`" in missing
+
+
+def test_a_fakeflow_context_renders_fakeflow_prompts() -> None:
+    ctx = _fakeflow_ctx()
+    test_prompt = build_test_prompt(ctx, NO_TESTS, "tests/test_customers_parse_signup_date.py")
+    for phrase in (
+        "A Fakeflow step of this repository failed and dag-healer classified the failure",
+        "Prefer the exact value that broke\n     the step, for example",
+        "no network, no database, no Fakeflow, no",
+        "Application code,\n  flows, configuration, data and fixtures are read-only",
+        "- Flow / step: `customers_sync` / `transform` (run `manual__2026-10-17T10:00:00+00:00`, "
+        "attempt 1, map index -1)",
+        "- Step definition: operator `PythonOperator`",
+        "- Flow file: `dags/customers_sync.py`",
+        "### Step log excerpt (last 2 lines, masked)",
+    ):
+        assert phrase in test_prompt, phrase
+    fix_prompt = build_fix_prompt(ctx, "tests/test_x.py", "1 failed")
+    assert "A Fakeflow step of this repository failed because of a CODE bug." in fix_prompt
+    for prompt in (test_prompt, fix_prompt):
+        assert "Airflow" not in prompt and "{{" not in prompt
+    missing = render_evidence(
+        _fakeflow_ctx(contract_status="missing", code_snippets={}, dag_file=None, dag_source="x = 1\n")
+    )
+    assert "Contract status: missing (the flow has no data contract)." in missing
+    assert "#### `Flow file`" in missing
+
+
+def test_words_in_the_evidence_are_never_substituted() -> None:
+    code = "TEMPLATE = '{{step}} of {{product}} ({{ pipeline }})'\n"
+    ctx = _fakeflow_ctx(code_snippets={"src/etl/customers.py": code}, exception_message="bad {{attempt}}")
+    for prompt in (
+        build_test_prompt(ctx, NO_TESTS, "tests/test_x.py"),
+        build_fix_prompt(ctx, "tests/test_x.py", "E   {{step}} failed"),
+    ):
+        assert code.strip() in prompt
+        assert "bad {{attempt}}" in prompt
+    assert "E   {{step}} failed" in build_fix_prompt(ctx, "tests/test_x.py", "E   {{step}} failed")

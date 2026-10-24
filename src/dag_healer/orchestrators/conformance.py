@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import inspect
 import json
 import os
 import posixpath
@@ -87,11 +86,6 @@ MAX_INSTANCE_CHARS = 64
 FORBIDDEN_IMPORTS: tuple[str, ...] = ("airflow", "boto3", "botocore", "fastapi", "pandas")
 #: A run id with ``:``, ``+``, ``/`` and a space (check 9).
 ODD_RUN_ID = "manual__2026-10-18T09:00:00+00:00 a/b"
-E2E_SKIP_REASON = (
-    "end-to-end case skipped until step 6 of the orchestrator refactor "
-    "(docs/architecture/orchestrators.md, section 12.1): worker.pipeline.process_incident "
-    "has no 'adapter' parameter yet, so the worker cannot run an incident through a port"
-)
 #: Phase-5 equivalents of the neutral sources (store schema v1 accepts only the phase-5 names).
 _V1_SOURCES = {"poll": "rest", "push": "listener", "eventbridge": "listener", "sqs": "listener"}
 
@@ -378,13 +372,6 @@ def _exception_and_frames(
         if exception_type:
             return exception_type, frames
     return None, []
-
-
-def _process_incident_with_adapter() -> Any | None:
-    """``worker.pipeline.process_incident`` when it accepts ``adapter=`` (step 6), else ``None``."""
-    from dag_healer.worker.pipeline import process_incident
-
-    return process_incident if "adapter" in inspect.signature(process_incident).parameters else None
 
 
 # =========================================================================== the suite
@@ -877,6 +864,7 @@ class OrchestratorConformance:
         from dag_healer.agent.fake import FakeProvider
         from dag_healer.store import dispose_engines, session_scope
         from dag_healer.store import repo as store_repo
+        from dag_healer.worker.pipeline import process_incident
 
         pytest = _pytest()
         hook = _hook(harness, "end_to_end")
@@ -894,10 +882,6 @@ class OrchestratorConformance:
             exception_type, _frames = _exception_and_frames(detail, adapter.inspector.logs(case.ref, detail))
             assert exception_type, f"no exception in the evidence of {case.ref}"
 
-        process_incident = _process_incident_with_adapter()
-        if process_incident is None:
-            pytest.skip(E2E_SKIP_REASON)
-        parameters = inspect.signature(process_incident).parameters
         provider = setup.provider if setup.provider is not None else FakeProvider(cfg)
         try:
             ids = {}
@@ -906,25 +890,26 @@ class OrchestratorConformance:
                     incident, _created = store_failure(session, polled[case.ref.key()])
                     ids[case.ref.key()] = incident.id
             for case in setup.cases:
-                kwargs: dict[str, Any] = {"provider": provider, "adapter": adapter}
-                if "client" in parameters:
-                    kwargs["client"] = None
-                status = process_incident(cfg, None, ids[case.ref.key()], **kwargs)
+                status = process_incident(
+                    cfg, None, ids[case.ref.key()], provider=provider, client=None, adapter=adapter
+                )
                 assert status == case.expected_status, f"{case.ref.pipeline_id}: {status}"
                 with session_scope(cfg.database_url) as session:
                     incident = store_repo.get_incident(session, ids[case.ref.key()])
                     assert incident is not None and incident.category == case.category
-                    if case.category == "code":
-                        assert incident.pr_url or (
-                            incident.pr_md_path and Path(incident.pr_md_path).is_file()
-                        )
-                        assert incident.test_path, "a CODE repair adds a test"
+                    if case.category != "code":
+                        continue
+                    assert incident.pr_url or (incident.pr_md_path and Path(incident.pr_md_path).is_file())
+                    assert incident.test_path, "a CODE repair adds a test"
+                    if incident.pr_md_path:
+                        text = Path(incident.pr_md_path).read_text(encoding="utf-8")
+                        product = adapter.vocabulary.product
+                        assert product in text, f"PR.md does not name the orchestrator ({product})"
         finally:
             dispose_engines()
 
 
 __all__ = [
-    "E2E_SKIP_REASON",
     "FORBIDDEN_IMPORTS",
     "MAX_NATIVE_BYTES",
     "ODD_RUN_ID",

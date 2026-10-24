@@ -169,6 +169,27 @@ def test_commit_config_day2_and_branches(demo: ModuleType, tmp_path: Path, isola
     assert demo.healer_branches(repo) == ["healer/customers_sync-transform-1234abcd"]
 
 
+# --------------------------------------------------------------------------- store
+
+
+@pytest.mark.parametrize("reset", [True, False])
+def test_prepare_store_migrates_before_anything_writes(
+    demo: ModuleType, monkeypatch: pytest.MonkeyPatch, reset: bool
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def compose_exec(service: str, command: list[str], *, check: bool = True) -> tuple[int, str]:
+        calls.append((service, list(command)))
+        return 0, ""
+
+    monkeypatch.setattr(demo, "compose_exec", compose_exec)
+    demo.prepare_store(reset)
+    expected = [(demo.APISERVER, ["dag-healer", "store", "migrate"])]
+    if reset:
+        expected.append((demo.APISERVER, ["dag-healer", "store", "reset", "--yes", "--artifacts"]))
+    assert calls == expected
+
+
 # --------------------------------------------------------------------------- HTTP session
 
 

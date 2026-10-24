@@ -274,6 +274,7 @@ class Confirmation:
     verdict: Literal["confirmed", "discarded", "retry_later"]
     reason: str                        # shown in the pending-event row and logs (masked)
     failures: tuple[Failure, ...] = ()  # confirmed + localised; usually one
+    state: AttemptState | None = None  # retry_later + RUNNING: the attempt has not ended yet (no error)
 
 
 @dataclass(frozen=True)
@@ -438,9 +439,12 @@ Adapters translate `httpx` errors, `AirflowAPIError` and `botocore.exceptions.Cl
 @runtime_checkable
 class FailureFeed(Protocol):
     def poll(self, *, cursor: Mapping[str, Any] | None, is_monitored: Callable[[str], bool],
-             limit: int = 200) -> FailurePage:
+             limit: int = 200, now: datetime | None = None) -> FailurePage:
         """Terminal or retrying failures observed after ``cursor`` (overlap allowed: the store key
-        dedupes). ``is_final`` must be set on every item; refs must be resolved."""
+        dedupes). ``is_final`` must be set on every item; refs must be resolved. ``now`` is the
+        poll start (window and new cursor; None = the feed's clock). The worker passes it only
+        to feeds whose ``poll`` accepts it. A cursor's ``not_before`` (ISO-8601, written by
+        ``store reset``) is a floor every built-in feed honours."""
 
 
 @runtime_checkable
@@ -454,7 +458,8 @@ class PushIntake(Protocol):
 
     def confirm(self, hint: FailureHint, *, trigger: Trigger) -> Confirmation:
         """I/O: verify the hint against the API, decide final vs retrying, localise the step.
-        Transient errors -> ``retry_later``; unknown/forged/stale -> ``discarded``."""
+        Transient errors -> ``retry_later``; an attempt that has not ended yet -> ``retry_later``
+        with ``state=RUNNING``; unknown/forged/stale -> ``discarded``."""
 
 
 @dataclass(frozen=True)
@@ -493,6 +498,9 @@ class CodeLocator(Protocol):
         """Runtime-prefix -> repo-base pairs for this step (the core adds ``(repo_root, "")``)."""
     def pipeline_file(self, repo_root: Path, pipeline_id: str, source: PipelineSource | None) -> str | None:
         """Repo-relative definition file of a pipeline, using the orchestrator's report when given."""
+    # Optional, not a protocol member: reported_file(repo_root, source) -> str | None, the file the
+    # orchestrator's report points at without a scan fallback (AirflowCodeLocator). The context
+    # gathering prefers it, then its own static scan, which keeps the phase-5 note order.
 
 
 @dataclass(frozen=True)
@@ -642,7 +650,15 @@ def reconcile(cfg, session_factory, adapter, *, now) -> ReconcileReport:
   2. `res = adapter.remediator.remediate(ref, native, kind, idempotency_key=f"healer-{command.id}-{incident.id[:16]}", actor=command.actor)`.
   3. The worker records an event with `mask_text(res.detail)` and the warnings.
   4. `NotSupported` marks the command `failed` with a clear message.
-- **The phase-5 confirmation rules for Airflow** (`failed` vs `up_for_retry`, a later try exists, `trigger`) move verbatim into `AirflowAdapter.confirm`.
+- **The phase-5 confirmation rules for Airflow** (`failed` vs `up_for_retry`, a later try exists, `trigger`) move verbatim into `AirflowAdapter.confirm`, except that a try which has not ended yet is checked again later (section 8).
+- **As built in step 6** (where the sketch above is refined):
+  - `run_worker` builds its own adapter with the factory, not from the registry cache, because it closes it on exit; only that adapter is health-checked (a warning). An injected `client` or `adapter` is neither checked nor closed. `registry.config_problems(cfg, adapter)` rejects a mode the adapter cannot serve, and `every_failure` without visible attempts, with `WorkerStartError` (`dag-healer worker` prints it and exits 1). The first iteration writes or checks the `healer_kv` record `instance:<id>` → `{"type": ...}`, so a store that is down at start is retried as in phase 5.
+  - The poll passes `now=` (the iteration time) only to feeds whose `poll` accepts it. Keys already in the store are skipped before anything else is asked; a failure without `error_summary` gets the RAW text of `inspector.logs(ref, None)`, and `summarize_failure` gives its summary and signature (phase-5 call pattern). The cursor is saved only after a successful listing.
+  - Queued hints are stored with `payload = {"error", "source", "via": "queue"}`. A pending event's mode check is `wants("queue")` when `via` is `queue`, else `wants(source)`, because adapters normalise queued hints with their push source. A message the intake cannot read is dropped and acknowledged.
+  - Pending events keep the phase-5 order of checks and texts: mode, monitored, then no push intake (kept). `retry_later` is discarded after `PENDING_MAX_AGE = 24 h`, and a confirmed incident takes its summary and signature from the pushed error text.
+  - A `retry_later` is reported in `ReconcileStats.errors` (and as a warning) with the phase-5 text `confirming pending event <id>: <Type>: <message>`, unless its `state` is `RUNNING`: the attempt has not ended yet, so the event is checked again on the next cycle and only an info line is logged.
+  - Each queued message is stored in its own transaction. A message whose hints the store rejects (`ValueError`, a value that does not fit its column) is dropped and acknowledged like an unreadable one; when the store itself fails, that message and the next ones stay unacknowledged.
+  - `get_watermark` / `set_watermark` / `reset_state` of `worker/pipeline.py` read and write `cursor:<instance>` (`dag-healer store reset` restarts the poll there); `state.json` is only imported once.
 
 **Context gathering** (`agent/context.py`):
 
@@ -662,8 +678,15 @@ def gather_context(cfg, incident, client, *, error_text=None) -> IncidentContext
     # contracts, datasets, masked sample: unchanged (keyed by pipeline_id == dag_id; s3:// via datasets)
 ```
 
+As built in step 6:
+- A `describe` failure adds no note (`NotSupported` is logged at debug, any other error as a masked warning): phase 5 read the error from the log alone, so a missing description is no gap in the evidence.
+- `code.scan` runs once, before the traceback is mapped, because the path mappings need the step; its failure note keeps its phase-5 position.
+- The pipeline file comes from the locator's optional `reported_file` hook (section 3.7) when it has one, else from `pipeline_file`, then from the scan. `pipeline_source(include_text=True)` is asked only when the working-tree file is unreadable. `AirflowAdapter` remembers the `get_dag` outcome for 60 s, so a gathering makes phase 5's `get_dag` [+ `get_dag_source`] calls.
+- Notes use the adapter's words and name the transport error that a core error was raised from (`... failed: AirflowAPIError: ...`).
+
 New `IncidentContext` fields, all defaulted, so `policy`, `classify`, `repair` and `tests_gen` need no change:
 - `orchestrator: str = "airflow"`
+- `orchestrator_name: str = "Apache Airflow"` (the adapter's display name)
 - `error_name: str | None = None`
 - `native: dict = {}` (masked keys only)
 - `log_source: str | None = None`
@@ -671,7 +694,9 @@ New `IncidentContext` fields, all defaulted, so `policy`, `classify`, `repair` a
 - `vocabulary: dict[str, str] = {}`
 - `native_links: dict[str, str] = {}`
 
-`to_prompt_dict()` adds `orchestrator`, `vocabulary`, `error_name` and `log_confidence`. The legacy keys stay.
+`to_prompt_dict()` keeps the legacy keys in their order and adds the new ones only when they say something: `orchestrator` when it is not `airflow`, `vocabulary` when it differs from the Airflow words, `error_name` when it is known, and `log_confidence` when it is `heuristic`. The Airflow classify prompt is therefore unchanged (inventory 6.2).
+
+Prompts, PR.md and alerts are written with `agent.context.prompt_words(ctx)`: the vocabulary over the Airflow words, plus `display_name` and `a_product` ("An Airflow", "A Fakeflow"). The prompt files use them as `{{tokens}}`, rendered in the same single pass as the other template values. A rendered prompt is never rendered again, because evidence and code can contain braces.
 
 **Policy** (`agent/policy.py`):
 - `compute_signals(ctx, *, taxonomy: ErrorTaxonomy | None = None)`. `Signals` gains `native_error_name` and `native_error_kind`.
@@ -681,7 +706,8 @@ New `IncidentContext` fields, all defaulted, so `policy`, `classify`, `repair` a
   - `aggregate` → classify the sampled child failure when present, else AMBIGUOUS;
   - `code` / `data_shape` → feed `error_kind`.
 - `INFRA_TYPES` stays exactly as it is, Airflow names included. Airflow decisions therefore cannot change, and Airflow exception names never occur in Lambdas.
-- `classify_incident(cfg, ctx, provider)` keeps its signature and reads the taxonomy from `get_adapter(cfg).taxonomy` (cached, no I/O).
+- `classify_incident(cfg, ctx, provider, *, taxonomy=None)`: the worker passes `adapter.taxonomy`; without it the taxonomy comes from `get_adapter(cfg).taxonomy` (cached, no I/O).
+- `Signals.to_dict()` leaves out `native_error_name` and `native_error_kind` while they are `None`, so the Airflow `<signals>` block keeps its keys. `policy_hint(signals, *, step="task")` and `decide(..., step="task")` write the orchestrator's word for a step in their reasons.
 
 ---
 
@@ -848,7 +874,7 @@ Entry points become visible only after `pip install`, so an editable install mus
 | `healer_pending_events` | Adds `orchestrator VARCHAR(64) NOT NULL DEFAULT 'airflow'`, `channel VARCHAR(32) NOT NULL DEFAULT 'task-failed'` and `native_ref JSON NULL`. `task_id` stays NOT NULL; unresolved hints use `UNRESOLVED_STEP = ""`. |
 | `healer_commands` | Adds `orchestrator VARCHAR(64) NOT NULL DEFAULT 'airflow'`. |
 | `healer_contracts` (cache) | Adds `orchestrator`. PK `dag_id` becomes `(orchestrator, dag_id)`. Rows are copied with `'airflow'`. |
-| `healer_kv` (new) | `key VARCHAR(250) PK, value JSON, updated_at`. Holds `cursor:<instance>`. The first worker run imports the phase-5 `<healer_home>/state.json` watermark if present. |
+| `healer_kv` (new) | `key VARCHAR(250) PK, value JSON, updated_at`. Holds `cursor:<instance>` and the record `instance:<instance>` → `{"type": <adapter type>}` (written by the worker's first start; a worker of another type refuses to start under that id). The first read of an Airflow instance's cursor imports the phase-5 `<healer_home>/state.json` (watermark and `rest_not_before` floor) if present. `store reset` deletes both kinds of row and writes a new cursor at the moment of the reset (`--keep-state` keeps them). |
 | `healer_incident_events`, `healer_alerts`, `healer_schema_version` | unchanged |
 
 Model code:
@@ -1052,6 +1078,12 @@ Backends (`hosting/auth/`), each returning `Principal`:
   - the static `task-failed` route is declared first, so it keeps matching before the generic one.
   - EventBridge API destinations use a connection with `AuthorizationType: API_KEY`, `ApiKeyName: X-Healer-Token` [V], and must get a response within 5 s [V]. The handler is a pure normalize-and-store returning 202, which fits.
 
+As built in step 6:
+- Each additive field is left out of the JSON while it holds its neutral value: `orchestrator` `"airflow"`, `error_name` null, `links` null on summaries, `links.native` `{}`, `action_warnings` `{}`, `host` `"airflow_plugin"` and `orchestrator` null on `/me`. Every response for the default Airflow instance is therefore byte-identical to v1, and `/me` answers `{user, base_url}` for it. The `/me` `orchestrator` block is filled for any other instance (another type, or a named Airflow instance).
+- The warnings of offered actions are `IncidentDetail.action_warnings` (`{"retry_task": [...]}`: the `ci_deploy` warning on a `repaired` incident). `retry_task` without an available remediation is not offered, and its route answers 409.
+- `POST /events/{channel}` answers 202 `EventsAccepted {accepted, pending_event_ids}`, 404 for a channel the adapter's intake does not list, 422 for a body that is not a JSON object or that `normalize` rejects (`ValueError`), and 500 "The event could not be read" when `normalize` raises anything else (only the exception type is logged). The intake gets the request headers without `X-Healer-Token`, `Authorization` and `Cookie`. `/events/task-failed` answers 404 only under an adapter without the `task-failed` channel.
+- Lists, filters and the commands the API enqueues are scoped to the process's instance (`deps.get_instance`); an incident of another instance answers 404. No API dependency migrates the store: an outdated schema keeps answering 503.
+
 ### 7.5 Deep links (`links.py`)
 
 - The signatures of `task_instance_url`, `dag_url`, `healer_page_url`, `pr_md_url` and `incident_links` are unchanged. They point at the Healer views, which both hosts serve on the same shapes.
@@ -1059,7 +1091,8 @@ Backends (`hosting/auth/`), each returning `Principal`:
 - New: `native_links(cfg, incident) -> dict[str, str]` delegates to `get_adapter(cfg).links.links(ref, native_ref)`.
   - Airflow: `{"Airflow task": <base>/dags/<d>/runs/<r>/tasks/<t>[/mapped/<i>]}`.
   - Step Functions: `{"AWS console": ..., "CloudWatch logs": ...}` from configurable templates (9.11).
-- Emails add an "Open in {product}" line only when native links exist **and** the type is not Airflow, so Airflow emails stay byte-identical.
+- Emails add one "Open in <label>" link per native link (for example "Open in AWS console") only when native links exist **and** the type is not Airflow, so Airflow emails stay byte-identical.
+- The API applies the same rule (`shown_native_links`): `links.native` and the summaries' `links` stay empty for Airflow, whose own UI hosts the Healer views (the `task_instance` link already opens it).
 
 ### 7.6 React views reused in both hosts
 
@@ -1093,7 +1126,7 @@ differs from the first draft; the details are in `docs/architecture/inventory-ph
 |---|---|---|
 | `airflow/client.py` | unchanged; constants re-exported from `core.tracebacks` | `AirflowAPIError` → `OrchestratorError(transient = status in (None, 429, 5xx))` |
 | worker `reconcile`, REST branch: `list_failed_task_instances(updated_since=since)` lists `state=failed` only (`updated_at_gte`); `since = watermark - max(60 s, 2 × poll_interval_seconds)`, 24 h back without a watermark, never before the `rest_not_before` floor of `store reset`; the watermark is the **start time of the last successful poll**, kept in `<healer_home>/state.json`; unmonitored DAGs and keys already in the store are skipped, and only for a new key `get_task_log` → `summarize_failure` gives `error_summary` + `signature` | `AirflowAdapter.poll` → the same query and window | `Failure(source="rest", is_final=True)` (the query never returns a retrying try); cursor `{"watermark": <poll start>, "not_before": <floor or null>}`, both imported once from `state.json`; the log is still fetched only for keys the store does not have (the core calls `inspector.logs(ref, None)` for a new key and passes its text on as the RAW `error_summary`), so the API call pattern and the summaries/signatures are unchanged; source label stays `rest` so UI badges are identical |
-| worker confirmation of listener/callback events: `get_task_instance(dag_id, run_id, task_id, map_index)` + `_confirm(ti, try_number, trigger)`; a source missing from `monitor.modes` or an unmonitored DAG → discarded before any call; no client → kept | `AirflowAdapter.confirm` (phase-5 rules moved verbatim: `failed` vs `up_for_retry`; a later try exists; a try Airflow never ran; 404 → discarded; other errors → `retry_later`) | the core keeps the mode/monitored checks and discards a `retry_later` event once `received_at` is older than `PENDING_MAX_AGE = 24 h` (phase 5; the 3.9 sketch says 1 h); a confirmed incident keeps the pushed `error` text for its summary and signature (no log fetch) and the note "The `<source>` event was confirmed by the Airflow API (`<reason>`)." |
+| worker confirmation of listener/callback events: `get_task_instance(dag_id, run_id, task_id, map_index)` + `_confirm(ti, try_number, trigger)`; a source missing from `monitor.modes` or an unmonitored DAG → discarded before any call; no client → kept | `AirflowAdapter.confirm` (phase-5 rules moved verbatim: `failed` vs `up_for_retry`; a later try exists; a try Airflow never ran; 404 → discarded; other errors → `retry_later`). One rule changed: a try that is still the latest one and has not ended (`running`, `queued`...) → `retry_later` with `state=RUNNING` instead of discarded. On Airflow 3.3 the listener posts its event about 5 s before the task SDK supervisor records the end of the try, so phase 5 discarded most listener events, and listener-only mode lost those failures | the core keeps the mode/monitored checks and discards a `retry_later` event once `received_at` is older than `PENDING_MAX_AGE = 24 h` (phase 5; the 3.9 sketch says 1 h); a confirmed incident keeps the pushed `error` text for its summary and signature (no log fetch) and the note "The `<source>` event was confirmed by the Airflow API (`<reason>`)." |
 | `api/routers/events.py` `task-failed` | unchanged route; `AirflowAdapter.normalize("task-failed", ...)` also exists for the conformance suite and future generic use | |
 | `agent/context._fetch_log` → `get_task_log(dag_id, run_id, task_id, try_number, map_index=)` (no client → a note) | `AirflowAdapter.logs` → `get_task_log` rendered by `render_log_content` (`confidence="exact"`) | |
 | error from the structured log: the context makes **no** `get_task_instance` call; `extract_traceback(log)` first, then the explicit `error_text` / `incident.error_summary` | `AirflowAdapter.describe` → `get_task_instance` (state, operator, `max_tries`) with `traceback_text=""` | the traceback keeps coming from the log (`extract_traceback(logs.text)`), so the prompts stay identical; `describe` adds one API call per gathering |
@@ -1101,7 +1134,7 @@ differs from the first draft; the details are in `docs/architecture/inventory-ph
 | `agent/context._path_roots` (Airflow part) | `AirflowCodeLocator.path_mappings` → `("/opt/airflow/repo", "")`, `($AIRFLOW__CORE__DAGS_FOLDER, dags_dir)`, `("/opt/airflow/dags", dags_dir)` | `map_to_repo_path(path, cfg, mappings=None)` defaults to exactly these |
 | `repo/dagscan.scan_dags` | `AirflowCodeLocator.scan(repo_root)` → `scan_dags(repo_root, cfg.repo.dags_dir)` (honours `init --dags-dir`) | dagscan code unchanged |
 | worker `retry_task` → `clear_task_instances(dag_id, run_id, task_ids, only_failed=True)` with `task_ids = [task_id]`, or `[(task_id, map_index)]` for a mapped task instance (the command payload may override `run_id` / `task_id` / `map_index`); no client → the command fails | `remediate(..., RETRY_STEP)` → `clear_task_instances(dag_id, run_id, [task_id] or [(task_id, map_index)], only_failed=True)`; `RERUN_PIPELINE` → `trigger_dag_run` (off by default; no caller today) | the event text stays "`<actor>` cleared `<task>` in run `<run>` (N task instance(s)); Airflow will run it again." plus the "not merged yet" sentence for a CODE incident with a branch |
-| worker `loop._default_client`: `AirflowClient.from_config(cfg)`, `health()` at start (a warning only), `close()` on exit when the worker built it | `get_adapter(cfg)` (no I/O), `adapter.health()` at start (a warning only), `adapter.close()` on exit | `run_worker(..., client=)` keeps working through `compat.as_adapter` |
+| worker `loop._default_client`: `AirflowClient.from_config(cfg)`, `health()` at start (a warning only), `close()` on exit when the worker built it | `loop._default_adapter`: a new adapter from the factory (no I/O; not the registry cache, which the worker must not close), `adapter.health()` at start (a warning only), `adapter.close()` on exit | `run_worker(..., client=)` keeps working through `compat.as_adapter`; an injected client is neither health-checked nor closed (phase 5) |
 | `policy.INFRA_TYPES` (Airflow names) | stays in the policy; `AIRFLOW_TAXONOMY` repeats them (`AirflowTaskTimeout`, `AirflowTaskTerminated`, `AirflowZombieTaskException`, `TaskDeferralTimeout`) | decisions identical |
 | `pytest_runner.scrubbed_env` Airflow part | `sandbox_env()` returns the `AIRFLOW_HOME` / `UNIT_TEST_MODE` / sqlite overrides; the core keeps the generic scrub plus the new cloud scrub | |
 | `cli/doctor_cmd` `check_airflow_api` / `check_airflow_auth` / `check_plugin_entry_point` | `doctor_checks()` (same functions, same output) | the doctor CLI composes the generic checks with the adapter's |
@@ -1569,6 +1602,7 @@ Under the Airflow adapter every later step must reproduce them byte for byte, ap
 - A grep guard: no `.list_failed_task_instances(`, `.get_task_instance(`, `.get_task_log(`, `.get_dag(`, `.get_dag_source(`, `.clear_task_instances(` or `.trigger_dag_run(` call outside `airflow/`, `cli/doctor_cmd.py` and `scripts/`.
 - `core` and `orchestrators/__init__` import in < 50 ms with no third-party modules (`sys.modules` diff).
 - The task-runner import graph is unchanged (extends the existing light-import test).
+- As built: `test_architecture.py` holds the import rules and the client-call guard. `orchestrators/registry.py`, `compat.py` and the package `__init__` follow the core's rules, since the core imports them. The import-time bound is measured on top of the standard library modules the two packages use (`core/test_core_imports.py`; inventory 6.7). `test_package.py` pins the `dag_healer` modules a task process loads.
 
 ### 11.7 Host and auth tests
 
@@ -1585,7 +1619,7 @@ Under the Airflow adapter every later step must reproduce them byte for byte, ap
   - the shell is served at `/plugin/healer` and `/dags/x/runs/y/tasks/z/plugin/healer-ti`;
   - `/healer/static/standalone/index.js` has a JavaScript MIME type;
   - the route guard test is reused.
-- Container (`tests/airflow`): the auth matrix is unchanged, plus "plugin registered with 3 react_apps + `/healer`" and "`/me.orchestrator.type == "airflow"`".
+- Container (`tests/airflow`): the auth matrix is unchanged, plus "plugin registered with 3 react_apps + `/healer`". `/me` keeps its v1 body `{user, base_url}` for the default Airflow instance (7.4); its `orchestrator` block (`type == "airflow"`) is checked by the unit suite with a named Airflow instance.
 - UI (vitest): standalone path → mode resolution; vocabulary defaults equal today's strings; existing view tests untouched.
 - `pytest_runner`: a sandboxed test printing `os.environ` shows no `AWS_*` credential variables and `AWS_EC2_METADATA_DISABLED=true`.
 

@@ -16,6 +16,7 @@ _EXPORTS = {
     "find_pull_request": "dag_healer.pr.github",
     "render_pr_markdown": "dag_healer.pr.prmd",
     "render_pr_title": "dag_healer.pr.prmd",
+    "review_checklist": "dag_healer.pr.prmd",
     "write_pr_artifacts": "dag_healer.pr.prmd",
     "pr_artifacts_dir": "dag_healer.pr.prmd",
 }

@@ -3,13 +3,17 @@
 ``gather_context`` runs against a temporary copy of ``example_existing_repo`` prepared the
 way the demo does it: ``dag-healer init`` drafts the contracts, the sales and customers
 contracts are approved, and the day-2 files are copied over ``data/incoming``. The Airflow
-client is a duck-typed fake serving logs rendered from the recorded fixtures.
+client is a duck-typed fake serving logs rendered from the recorded fixtures. The last
+section gathers through the ports of a Fakeflow world (``orchestrators.fake``), whose step
+code fails for real from a "deployed" copy of a small repository.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,15 +22,23 @@ import pytest
 
 from dag_healer.agent import context as context_module
 from dag_healer.agent.context import (
+    DEFAULT_ORCHESTRATOR_NAME,
     IncidentContext,
     extract_traceback,
     gather_context,
     map_to_repo_path,
+    prompt_words,
 )
 from dag_healer.airflow.client import AirflowAPIError, render_log_content
 from dag_healer.config import HealerConfig, config_from_mapping, load_config_file
 from dag_healer.contracts.io import approve_contract, contract_path, load_contract, save_contract
 from dag_healer.contracts.schema import Violation
+from dag_healer.core.evidence import LogBundle, PipelineSource
+from dag_healer.core.ids import AttemptRef
+from dag_healer.core.specs import PathMapping, TaskInfo
+from dag_healer.core.vocab import Vocabulary
+from dag_healer.masking import mask_text
+from dag_healer.orchestrators.fake import FAKE_VOCABULARY, FakeAdapter, FakeWorld
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_REPO = ROOT / "example_existing_repo"
@@ -328,6 +340,54 @@ def test_map_to_repo_path_with_a_custom_dags_dir(make_repo: Any, monkeypatch: py
     assert map_to_repo_path("etl.py", cfg) == "airflow/dags/etl.py"
 
 
+def test_map_to_repo_path_with_adapter_mappings(small_repo: HealerConfig) -> None:
+    root = small_repo.repo_root
+    lambda_like = [PathMapping("/var/task", "src/etl"), PathMapping("/var/task/vendor/", "pipelines")]
+    # the runtime prefix maps to its repo base; the longest prefix wins
+    assert (
+        map_to_repo_path("/var/task/customers.py", small_repo, mappings=lambda_like) == "src/etl/customers.py"
+    )
+    assert map_to_repo_path("/var/task/vendor/flows/job.py", small_repo, mappings=lambda_like) == (
+        "pipelines/flows/job.py"
+    )
+    # the Airflow defaults know nothing about /var/task (and its tail is not in the repository)
+    assert map_to_repo_path("/var/task/customers.py", small_repo) is None
+    # the repository root always comes first, and the first mapping of a prefix wins
+    shadowing = [PathMapping(root.as_posix(), "elsewhere"), PathMapping("/var/task/", "dags")]
+    assert map_to_repo_path(root / "src" / "new_file.py", small_repo, mappings=shadowing) == "src/new_file.py"
+    assert map_to_repo_path("/var/task/my_dag.py", small_repo, mappings=[*lambda_like, *shadowing]) == (
+        "src/etl/my_dag.py"
+    )
+    # relative paths, library paths and pseudo files behave as without mappings
+    assert (
+        map_to_repo_path("src/etl/customers.py", small_repo, mappings=lambda_like) == "src/etl/customers.py"
+    )
+    assert map_to_repo_path("/var/task/site-packages/x.py", small_repo, mappings=lambda_like) is None
+    assert map_to_repo_path("<string>", small_repo, mappings=lambda_like) is None
+    assert map_to_repo_path("/var/task/../outside.py", small_repo, mappings=lambda_like) is None
+
+
+def test_map_to_repo_path_without_mappings_keeps_the_airflow_defaults(
+    small_repo: HealerConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIRFLOW__CORE__DAGS_FOLDER", "/srv/airflow/my-dags")
+    airflow = [
+        PathMapping("/opt/airflow/repo", ""),
+        PathMapping("/srv/airflow/my-dags", "dags"),
+        PathMapping("/opt/airflow/dags", "dags"),
+    ]
+    for path in (
+        "/opt/airflow/repo/src/etl/customers.py",
+        "/srv/airflow/my-dags/sub/other.py",
+        "/opt/airflow/dags/my_dag.py",
+        "/tmp/airflow/dag_bundles/git/tracking_repo/src/etl/customers.py",
+    ):
+        assert map_to_repo_path(path, small_repo) == map_to_repo_path(path, small_repo, mappings=airflow), (
+            path
+        )
+    assert map_to_repo_path("/srv/airflow/my-dags/sub/other.py", small_repo) == "dags/sub/other.py"
+
+
 # =========================================================================== gather_context
 
 
@@ -439,6 +499,22 @@ def test_gather_context_falls_back_to_the_error_summary_when_airflow_fails(cfg: 
     assert ctx.repo_frames == [{"file": "src/etl/customers.py", "line": 19, "function": "parse_signup_date"}]
     assert "olivia.martin" not in ctx.error_text + ctx.log_excerpt + ctx.traceback_text
     assert ctx.dag_file == "dags/customers_sync.py"
+
+
+def test_a_failed_log_fetch_note_is_masked_before_its_reason_is_cut(cfg: HealerConfig) -> None:
+    """The phase-5 note: the reason is masked first, then cut to 500 characters."""
+    # "AirflowAPIError: Airflow API error 503: " is 40 characters: the number starts at 495
+    error = AirflowAPIError("x" * 454 + " 12345678901234 was refused", status_code=503)
+
+    class Client(FakeClient):
+        def get_task_log(self, *_args: Any, **_kwargs: Any) -> str:
+            raise error
+
+    ctx = gather_context(cfg, incident("customers_sync", "transform"), Client())
+    reason = mask_text(f"AirflowAPIError: {error}")[:500]
+    assert reason.endswith(" [numb")  # a cut raw text would end with an unmasked "12345"
+    assert f"Fetching the task log from Airflow failed: {reason}" in ctx.notes
+    assert not any("12345" in note for note in ctx.notes)
     assert ctx.contract_status == "approved"
 
 
@@ -615,3 +691,431 @@ def test_incident_context_defaults() -> None:
     assert ctx.contract_status == "missing" and ctx.top_repo_frame is None
     data = ctx.to_prompt_dict()
     assert data["contract"] is None and data["task"] is None and data["violations"] == []
+
+
+# =========================================================================== orchestrator ports
+
+#: The keys of ``to_prompt_dict`` before the orchestrator ports, in their order.
+LEGACY_PROMPT_KEYS = [
+    "incident_id", "dag_id", "run_id", "task_id", "map_index", "try_number", "error_text",
+    "exception_type", "exception_message", "traceback_text", "repo_frames", "log_excerpt",
+    "dag_file", "dag_source", "task", "code_snippets", "contract", "contract_status",
+    "violations", "draft_violations", "sample_dataset", "masked_sample", "datasets_checked", "notes",
+]  # fmt: skip
+ORCHESTRATOR_FIELDS = {
+    "orchestrator", "orchestrator_name", "error_name", "native", "log_source", "log_confidence",
+    "vocabulary", "native_links",
+}  # fmt: skip
+
+
+def test_incident_context_orchestrator_defaults() -> None:
+    ctx = IncidentContext(incident_id="i", dag_id="d", run_id="r", task_id="t")
+    assert DEFAULT_ORCHESTRATOR_NAME == "Apache Airflow"
+    assert (ctx.orchestrator, ctx.orchestrator_name) == ("airflow", "Apache Airflow")
+    assert (ctx.error_name, ctx.native, ctx.log_source, ctx.log_confidence) == (None, {}, None, "exact")
+    assert (ctx.vocabulary, ctx.native_links) == ({}, {})
+    assert list(ctx.to_prompt_dict()) == LEGACY_PROMPT_KEYS
+
+
+def test_to_prompt_dict_adds_the_orchestrator_fields_only_when_they_say_something() -> None:
+    airflow = IncidentContext(
+        incident_id="i",
+        dag_id="d",
+        run_id="r",
+        task_id="t",
+        vocabulary=Vocabulary().as_dict(),
+        log_confidence="none",
+        log_source="none",
+        native={"try": 1},
+        native_links={"Airflow task": "http://airflow.test/dags/d"},
+    )
+    assert list(airflow.to_prompt_dict()) == LEGACY_PROMPT_KEYS
+    other = IncidentContext(
+        incident_id="i",
+        dag_id="d",
+        run_id="r",
+        task_id="t",
+        orchestrator="sfn-prod",
+        vocabulary=FAKE_VOCABULARY.as_dict(),
+        error_name="States.Runtime",
+        log_confidence="heuristic",
+    )
+    data = other.to_prompt_dict()
+    assert list(data) == [*LEGACY_PROMPT_KEYS, "orchestrator", "vocabulary", "error_name", "log_confidence"]
+    assert (data["orchestrator"], data["error_name"], data["log_confidence"]) == (
+        "sfn-prod",
+        "States.Runtime",
+        "heuristic",
+    )
+    assert data["vocabulary"] == FAKE_VOCABULARY.as_dict()
+
+
+def test_prompt_words_default_to_the_airflow_words() -> None:
+    expected = {**Vocabulary().as_dict(), "display_name": "Apache Airflow", "a_product": "An Airflow"}
+    assert prompt_words() == expected
+    assert prompt_words(IncidentContext(incident_id="i", dag_id="d", run_id="r", task_id="t")) == expected
+    assert prompt_words({"vocabulary": {}, "orchestrator_name": "  "}) == expected
+
+
+def test_prompt_words_follow_the_context_vocabulary() -> None:
+    ctx = IncidentContext(
+        incident_id="i",
+        dag_id="d",
+        run_id="r",
+        task_id="t",
+        vocabulary=FAKE_VOCABULARY.as_dict(),
+        orchestrator_name="Fakeflow",
+    )
+    words = prompt_words(ctx)
+    assert (words["product"], words["pipeline"], words["step"], words["attempt"]) == (
+        "Fakeflow",
+        "flow",
+        "step",
+        "attempt",
+    )
+    assert (words["display_name"], words["a_product"]) == ("Fakeflow", "A Fakeflow")
+    # a missing or blank word keeps the Airflow one; an unknown key is ignored
+    partial = prompt_words({"vocabulary": {"step": "state", "pipeline": " ", "colour": "blue"}})
+    assert (partial["step"], partial["pipeline"], partial["display_name"]) == (
+        "state",
+        "DAG",
+        "Apache Airflow",
+    )
+    assert "colour" not in partial
+    assert prompt_words({"vocabulary": {"product": "Emr"}})["a_product"] == "An Emr"
+
+
+def test_gather_context_keeps_the_phase5_airflow_calls_and_notes(cfg: HealerConfig) -> None:
+    in_repo = FakeClient(
+        rendered("customers_sync_transform_failed.json"),
+        dag=fixture_json("airflow_api/dag_customers_sync.json"),
+    )
+    gather_context(cfg, incident("customers_sync", "transform"), in_repo)
+    # describing the attempt needs get_task_instance, which this client lacks: no call, no note
+    assert [call[0] for call in in_repo.calls] == ["log", "dag"]
+
+    unknown = FakeClient("[2026-10-17T10:00:00Z] INFO - nothing", source="dag = 1\n")
+    ctx = gather_context(cfg, incident("not_in_repo", "t1"), unknown)
+    assert [call[0] for call in unknown.calls] == ["log", "dag", "source"]  # the DAG is read once
+    assert ctx.dag_source == "dag = 1\n"
+    assert ctx.notes == [
+        "No Python traceback was found in the log or the error text.",
+        "Reading the DAG from the Airflow API failed: AirflowAPIError: Airflow API error 404: "
+        "The Dag with ID: `x` was not found",
+        "The file defining DAG not_in_repo was not found in the repository.",
+        "Task t1 was not found by the static scan of DAG not_in_repo.",
+        f"No data contract for DAG not_in_repo (not_in_repo.yaml not found in {cfg.contracts.dir}).",
+    ]
+
+
+def test_a_scan_failure_is_noted_where_phase5_noted_it(
+    cfg: HealerConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_scan(self: Any, repo_root: Path) -> list[Any]:
+        raise OSError("the DAG folder is gone")
+
+    monkeypatch.setattr("dag_healer.airflow.adapter.AirflowCodeLocator.scan", broken_scan)
+    client = FakeClient("[2026-10-17T10:00:00Z] INFO - nothing")
+    ctx = gather_context(cfg, incident("sales_daily_etl", "transform_sales"), client)
+    assert ctx.notes[:6] == [
+        "No Python traceback was found in the log or the error text.",
+        "Scanning the DAG folder failed: OSError: the DAG folder is gone",
+        "Reading the DAG from the Airflow API failed: AirflowAPIError: Airflow API error 404: "
+        "The Dag with ID: `x` was not found",
+        "The file defining DAG sales_daily_etl was not found in the repository.",
+        "The DAG source is not available.",
+        "Task transform_sales was not found by the static scan of DAG sales_daily_etl.",
+    ]
+    assert ctx.contract_status == "approved"  # the rest of the gathering goes on
+
+
+def test_a_reported_dag_file_outside_the_working_tree_is_noted(cfg: HealerConfig) -> None:
+    log = rendered("customers_sync_transform_failed.json")
+    gone = FakeClient(log, dag={"fileloc": "/opt/airflow/repo/dags/gone.py"})
+    ctx = gather_context(cfg, incident("customers_sync", "transform"), gone)
+    assert (
+        "Airflow reports the DAG file dags/gone.py, which is not in the repository working tree." in ctx.notes
+    )
+    assert ctx.dag_file == "dags/customers_sync.py"  # the static scan
+    assert [call[0] for call in gone.calls] == ["log", "dag"]  # the scanned file is readable: no source call
+
+    relative = FakeClient(
+        log, dag={"fileloc": "/elsewhere/bundle/x.py", "relative_fileloc": "customers_sync.py"}
+    )
+    ctx = gather_context(cfg, incident("customers_sync", "transform"), relative)
+    assert ctx.dag_file == "dags/customers_sync.py"  # relative_fileloc under the DAG folder
+    assert not [note for note in ctx.notes if "reports the DAG file" in note]
+
+
+def test_gather_context_records_the_airflow_orchestrator_fields(cfg: HealerConfig) -> None:
+    client = FakeClient(rendered("sales_daily_etl_transform_chained_keyerror.json"))
+    row = incident("sales_daily_etl", "transform_sales", native_ref={"contact": EMAIL})
+    ctx = gather_context(cfg, row, client)
+    assert (ctx.orchestrator, ctx.orchestrator_name) == ("airflow", "Apache Airflow")
+    assert ctx.vocabulary == Vocabulary().as_dict()
+    assert (ctx.log_source, ctx.log_confidence, ctx.error_name) == ("airflow:task-log", "exact", None)
+    assert ctx.native == {"contact": "[email]"}
+    assert list(ctx.native_links) == ["Airflow task"]
+    assert ctx.native_links["Airflow task"].endswith(
+        "/dags/sales_daily_etl/runs/manual__2026-10-17T18%3A48%3A46.093857%2B00%3A00/tasks/transform_sales"
+    )
+    assert list(ctx.to_prompt_dict()) == LEGACY_PROMPT_KEYS
+
+    failed = gather_context(cfg, incident("customers_sync", "transform"), FakeClient(fail=True))
+    assert (failed.log_source, failed.log_confidence) == ("none", "none")
+    assert list(failed.to_prompt_dict()) == LEGACY_PROMPT_KEYS
+
+    offline = gather_context(cfg, incident("customers_sync", "transform"), None)
+    assert (offline.orchestrator, offline.orchestrator_name, offline.vocabulary) == (
+        "airflow",
+        "Apache Airflow",
+        {},
+    )
+    assert (offline.log_source, offline.native_links) == (None, {})
+
+
+def test_another_airflow_instance_and_a_known_error_name_reach_the_prompt(cfg: HealerConfig) -> None:
+    row = incident(
+        "sales_daily_etl", "transform_sales", orchestrator="airflow-prod", error_name=f"Timeout of {EMAIL}"
+    )
+    ctx = gather_context(cfg, row, FakeClient(rendered("sales_daily_etl_transform_chained_keyerror.json")))
+    assert (ctx.orchestrator, ctx.error_name) == ("airflow-prod", "Timeout of [email]")
+    data = ctx.to_prompt_dict()
+    assert list(data) == [*LEGACY_PROMPT_KEYS, "orchestrator", "error_name"]
+    assert (data["orchestrator"], data["error_name"]) == ("airflow-prod", "Timeout of [email]")
+
+
+def test_an_unusable_client_becomes_a_note_and_the_gathering_goes_offline(cfg: HealerConfig) -> None:
+    ctx = gather_context(
+        cfg, incident("sales_daily_etl", "transform_sales"), object(), error_text="KeyError: 'amount'"
+    )
+    assert ctx.notes[0].startswith(
+        "Using the orchestrator client failed: TypeError: expected an orchestrator adapter"
+    )
+    assert ctx.notes[1] == "No Airflow API client: the task log was not fetched."
+    assert (ctx.exception_type, ctx.contract_status) == ("KeyError", "approved")
+
+
+# --------------------------------------------------------------------------- a Fakeflow world
+
+ORDERS_MODULE = '''\
+"""Orders ETL (context test fixture)."""
+
+
+def parse_amount(row):
+    value = row["amount"]
+    try:
+        return float(value)
+    except ValueError:
+        raise ValueError(f"order of {row['email']}: amount {value!r} is not a number") from None
+'''
+FLOW_FILE = '''\
+"""Fakeflow flow definition (context test fixture)."""
+from etl.orders import parse_amount
+
+STEPS = {"transform": parse_amount}
+'''
+FLOW_RUN = "scheduled__2026-10-18T09:00:00+00:00"
+TRANSFORM = TaskInfo("transform", "python", "parse_amount", "etl.orders", "etl/orders.py", 4)
+
+
+def raise_from(path: Path, function: str, *args: Any) -> BaseException:
+    """Load ``path`` under a unique module name, call ``function`` and return what it raised."""
+    spec = importlib.util.spec_from_file_location(f"_context_fixture_{uuid.uuid4().hex}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        getattr(module, function)(*args)
+    except Exception as exc:  # the real failure of the fixture code
+        return exc
+    raise AssertionError(f"{function} did not fail")
+
+
+@pytest.fixture
+def fakeflow(
+    make_repo: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[HealerConfig, FakeWorld]:
+    """A Fakeflow world whose ``transform`` step failed for real in a deployed copy of the code.
+
+    The deployed copy is flat (``<deployed>/orders.py``) while the repository keeps the module
+    in ``etl/``: only the world's path mapping leads the traceback frames back to the repository.
+    """
+    monkeypatch.delenv("AIRFLOW__CORE__DAGS_FOLDER", raising=False)
+    files = {"etl/__init__.py": "", "etl/orders.py": ORDERS_MODULE, "flows/orders_flow.py": FLOW_FILE}
+    repo = make_repo(files, name="flow repo")
+    deployed = tmp_path / "deployed"
+    deployed.mkdir()
+    shutil.copyfile(repo / "etl" / "orders.py", deployed / "orders.py")
+    exc = raise_from(deployed / "orders.py", "parse_amount", {"amount": "n/a", "email": EMAIL})
+    world = FakeWorld()
+    world.add_pipeline("orders_flow", file="flows/orders_flow.py", steps={"transform": TRANSFORM})
+    world.add_path_mapping(deployed.as_posix(), "etl")
+    world.fail("orders_flow", FLOW_RUN, "transform", exc=exc)
+    return config_from_mapping({"repo": {"path": str(repo)}}), world
+
+
+def flow_incident(dag_id: str = "orders_flow", task_id: str = "transform", **extra: Any) -> dict[str, Any]:
+    """An incident row of the Fakeflow instance."""
+    row = incident(
+        dag_id, task_id, orchestrator="fake", run_id=FLOW_RUN, source="poll", native_ref={"seq": 1}
+    )
+    row.update(extra)
+    return row
+
+
+def test_gather_context_through_the_fakeflow_ports(fakeflow: tuple[HealerConfig, FakeWorld]) -> None:
+    cfg, world = fakeflow
+    ctx = gather_context(cfg, flow_incident(), FakeAdapter(cfg, world=world))
+
+    assert (ctx.orchestrator, ctx.orchestrator_name) == ("fake", "Fakeflow")
+    assert ctx.vocabulary == FAKE_VOCABULARY.as_dict()
+    assert (ctx.exception_type, ctx.error_name) == ("ValueError", "ValueError")
+    assert ctx.exception_message == "order of [email]: amount 'n/a' is not a number"
+    # mapped through the world's path mapping (the deployed copy is flat)
+    assert ctx.repo_frames == [{"file": "etl/orders.py", "line": 9, "function": "parse_amount"}]
+    assert (ctx.dag_file, ctx.task) == ("flows/orders_flow.py", TRANSFORM)
+    assert ctx.dag_source == FLOW_FILE
+    assert set(ctx.code_snippets) == {"flows/orders_flow.py", "etl/orders.py"}
+    assert (ctx.log_source, ctx.log_confidence, ctx.native) == ("fake:step-log", "exact", {"seq": 1})
+    assert list(ctx.native_links) == ["Fakeflow"]
+    assert ctx.notes == [
+        f"No data contract for flow orders_flow (orders_flow.yaml not found in {cfg.contracts.dir})."
+    ]
+    data = ctx.to_prompt_dict()
+    assert list(data) == [*LEGACY_PROMPT_KEYS, "orchestrator", "vocabulary", "error_name"]
+    assert (data["orchestrator"], data["vocabulary"], data["error_name"]) == (
+        "fake",
+        FAKE_VOCABULARY.as_dict(),
+        "ValueError",
+    )
+    assert not (ORCHESTRATOR_FIELDS - {"orchestrator", "vocabulary", "error_name"}) & set(data)
+    assert EMAIL not in json.dumps(data)
+
+
+def test_the_exception_comes_from_the_described_traceback_first(
+    fakeflow: tuple[HealerConfig, FakeWorld], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, world = fakeflow
+    adapter = FakeAdapter(cfg, world=world)
+    other_log = LogBundle(text="KeyError: 'wrong'\n", source="fake:step-log", confidence="heuristic")
+    monkeypatch.setattr(adapter, "logs", lambda ref, detail, **_: other_log)
+    ctx = gather_context(cfg, flow_incident(), adapter)
+    assert (ctx.exception_type, ctx.repo_frames[-1]["file"]) == ("ValueError", "etl/orders.py")
+    assert ctx.log_excerpt == "KeyError: 'wrong'"
+    assert ctx.to_prompt_dict()["log_confidence"] == "heuristic"
+
+
+def test_a_failing_describe_adds_no_note(
+    fakeflow: tuple[HealerConfig, FakeWorld],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg, world = fakeflow
+    adapter = FakeAdapter(cfg, world=world)
+
+    def broken(ref: Any, native: Any) -> Any:
+        raise RuntimeError(f"describe exploded for {EMAIL}")
+
+    monkeypatch.setattr(adapter, "describe", broken)
+    with caplog.at_level("WARNING", logger="dag_healer.agent.context"):
+        ctx = gather_context(cfg, flow_incident(), adapter)
+    assert not [note for note in ctx.notes if "describ" in note.lower()]
+    assert ctx.exception_type == "ValueError"  # the log still carries the traceback
+    assert ctx.error_name is None
+    assert "describing the failed attempt failed" in caplog.text and EMAIL not in caplog.text
+
+
+def test_notes_speak_the_orchestrator_words(fakeflow: tuple[HealerConfig, FakeWorld]) -> None:
+    cfg, world = fakeflow
+    ctx = gather_context(cfg, flow_incident("unknown_flow", "load"), FakeAdapter(cfg, world=world))
+    assert ctx.notes == [
+        f"Fakeflow has no log for attempt 1 of load in run {FLOW_RUN}.",
+        "No Python traceback was found in the log or the error text.",
+        "The file defining flow unknown_flow was not found in the repository.",
+        "The flow source is not available.",
+        "Step load was not found by the static scan of flow unknown_flow.",
+        f"No data contract for flow unknown_flow (unknown_flow.yaml not found in {cfg.contracts.dir}).",
+    ]
+    assert (ctx.log_source, ctx.log_confidence) == ("none", "none")
+    assert "log_confidence" not in ctx.to_prompt_dict()
+
+
+def test_the_ports_are_asked_in_order_about_the_incident_attempt(
+    fakeflow: tuple[HealerConfig, FakeWorld], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, world = fakeflow
+    adapter = FakeAdapter(cfg, world=world)
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def spy(owner: Any, name: str) -> None:
+        original = getattr(owner, name)
+
+        def recording(*args: Any, **kwargs: Any) -> Any:
+            calls.append((name, args, kwargs))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, recording)
+
+    for owner, names in (
+        (adapter, ("describe", "logs", "pipeline_source")),
+        (adapter.code, ("scan", "path_mappings", "pipeline_file")),
+        (adapter.links, ("links",)),
+    ):
+        for name in names:
+            spy(owner, name)
+    native = {"seq": 1, "contact": EMAIL}
+    ctx = gather_context(cfg, flow_incident(native_ref=native), adapter)
+
+    assert [call[0] for call in calls] == [
+        "describe", "logs", "scan", "path_mappings", "pipeline_source", "pipeline_file", "links",
+    ]  # fmt: skip
+    ref = AttemptRef("fake", "orders_flow", FLOW_RUN, "transform", -1, 1)
+    assert calls[0][1] == (ref, native)  # the adapter gets the RAW native_ref ...
+    assert ctx.native == {"seq": 1, "contact": "[email]"}  # ... the context keeps it masked
+    assert calls[1][1][0] == ref and calls[1][1][1].error_name == "ValueError"  # logs see the detail
+    assert calls[3][1] == (cfg.repo_root, TRANSFORM)  # the mappings of the scanned step
+    assert calls[4][1:] == (("orders_flow",), {"ref": ref, "native": native})  # no text: the file is read
+    assert calls[6][1] == (ref, native)
+
+
+def test_a_reported_definition_outside_the_working_tree_is_noted_for_any_locator(
+    fakeflow: tuple[HealerConfig, FakeWorld], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, world = fakeflow
+    adapter = FakeAdapter(cfg, world=world)
+    deployed = world.path_mappings[0].runtime_prefix
+    report = PipelineSource(path=f"{deployed}/gone_flow.py")
+    monkeypatch.setattr(adapter, "pipeline_source", lambda pipeline_id, **_: report)
+    monkeypatch.setattr(adapter.code, "pipeline_file", lambda repo_root, pipeline_id, source: None)
+    ctx = gather_context(cfg, flow_incident(), adapter)
+    note = "Fakeflow reports the flow file etl/gone_flow.py, which is not in the repository working tree."
+    assert note in ctx.notes
+    assert ctx.dag_file == "flows/orders_flow.py"  # the static scan
+
+
+def test_the_definition_text_comes_from_the_orchestrator_when_the_file_is_unreadable(
+    fakeflow: tuple[HealerConfig, FakeWorld],
+) -> None:
+    cfg, world = fakeflow
+    world.add_pipeline(
+        "ghost_flow", file="flows/ghost_flow.py", steps={"transform": TRANSFORM}, source="STEPS = {}\n"
+    )
+    ctx = gather_context(cfg, flow_incident("ghost_flow"), FakeAdapter(cfg, world=world))
+    assert (ctx.dag_file, ctx.dag_source, ctx.task) == ("flows/ghost_flow.py", "STEPS = {}\n", TRANSFORM)
+    assert "Source file flows/ghost_flow.py is not in the repository working tree." in ctx.notes
+    assert "The flow source is not available." not in ctx.notes
+
+
+def test_a_malformed_log_bundle_never_stops_the_gathering(
+    fakeflow: tuple[HealerConfig, FakeWorld], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, world = fakeflow
+    adapter = FakeAdapter(cfg, world=world)
+    monkeypatch.setattr(adapter, "logs", lambda ref, detail, **_: LogBundle(text="", source="x", notes=42))  # type: ignore[arg-type]
+    ctx = gather_context(cfg, flow_incident(), adapter)
+    assert ctx.notes[0].startswith("Fetching the step log from Fakeflow failed: TypeError:")
+    assert ctx.exception_type == "ValueError"  # from the described traceback
+    single = LogBundle(text="", source="none", confidence="none", notes="the log was rotated")  # type: ignore[arg-type]
+    monkeypatch.setattr(adapter, "logs", lambda ref, detail, **_: single)
+    assert gather_context(cfg, flow_incident(), adapter).notes[0] == "the log was rotated"

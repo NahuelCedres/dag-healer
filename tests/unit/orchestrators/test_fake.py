@@ -16,7 +16,7 @@ import shutil
 import sys
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -288,7 +288,7 @@ class FakeHarness:
 
 
 class TestFakeConformance(OrchestratorConformance):
-    """The packaged suite against Fakeflow (check 14 runs its setup, then waits for step 6)."""
+    """The packaged suite against Fakeflow (check 14 plays the demo's three incidents end to end)."""
 
     @pytest.fixture
     def harness(self, healer_env: Path) -> FakeHarness:
@@ -386,6 +386,47 @@ def test_poll_pages_with_a_cursor_and_filters_unmonitored_flows(
     assert other not in [f.ref for f in adapter.poll(cursor=None, is_monitored=lambda _p: True).failures]
 
 
+def test_poll_honours_the_reset_floor_on_every_poll() -> None:
+    world = FakeWorld(clock=lambda: T0)
+    world.add_pipeline("flow", file="flows/flow.py", steps={"s": TaskInfo("s", "python")})
+    old = world.fail("flow", "r-old", "s", text="boom", at=T0 - timedelta(hours=2))
+    new = world.fail("flow", "r-new", "s", text="boom", at=T0)
+    adapter = FakeAdapter(world=world)
+    floor = (T0 - timedelta(hours=1)).isoformat()  # what dag-healer store reset writes
+
+    def listed(cursor: dict[str, Any], now: datetime | None = None) -> list[AttemptRef]:
+        return [f.ref for f in adapter.poll(cursor=cursor, is_monitored=lambda _p: True, now=now).failures]
+
+    reset = {"watermark": floor, "not_before": floor}
+    page = adapter.poll(cursor=reset, is_monitored=lambda _p: True, now=T0)
+    assert [f.ref for f in page.failures] == [new] and page.cursor == {"seq": 2, "not_before": floor}
+    assert listed({"seq": 0, "not_before": floor}) == [new]  # the floor holds next to the position
+    assert listed({"not_before": "soon"}) == [old, new]  # an invalid floor is ignored
+    assert adapter.poll(cursor={"seq": 0}, is_monitored=lambda _p: True).cursor == {"seq": 2}
+    # an attempt without times counts as ending when the poll starts (default: the world's clock)
+    attempt = world.attempt(new)
+    assert attempt is not None
+    attempt.started_at = attempt.ended_at = None
+    assert listed({"not_before": floor}) == [new]
+    assert listed({"not_before": floor}, now=T0 - timedelta(hours=3)) == []
+
+
+def test_a_poll_that_lists_nothing_keeps_the_reset_floor() -> None:
+    world = FakeWorld(clock=lambda: T0)
+    world.add_pipeline("flow", file="flows/flow.py", steps={"s": TaskInfo("s", "python")})
+    world.fail("flow", "r-old", "s", text="boom", at=T0 - timedelta(hours=2))
+    adapter = FakeAdapter(world=world)
+    floor = (T0 - timedelta(hours=1)).isoformat()
+    cursor: Any = {"watermark": floor, "not_before": floor}  # what dag-healer store reset writes
+    for _poll in range(3):
+        page = adapter.poll(cursor=cursor, is_monitored=lambda _p: True, now=T0)
+        assert page.failures == () and page.cursor == {"seq": 0, "not_before": floor}
+        cursor = page.cursor
+    new = world.fail("flow", "r-new", "s", text="boom", at=T0)
+    page = adapter.poll(cursor=cursor, is_monitored=lambda _p: True, now=T0)
+    assert [f.ref for f in page.failures] == [new] and page.cursor == {"seq": 2, "not_before": floor}
+
+
 def test_confirm_applies_the_phase5_rules(
     orders: tuple[Path, FakeWorld, AttemptRef, AttemptRef, FakeAdapter],
 ) -> None:
@@ -402,8 +443,14 @@ def test_confirm_applies_the_phase5_rules(
     unknown = adapter.confirm(_hint(adapter, seeded.next_attempt().next_attempt()), trigger="final_failure")
     assert unknown.verdict == "discarded" and "knows only 1" in unknown.reason
     world.set_state(seeded, AttemptState.RUNNING)
-    running = adapter.confirm(_hint(adapter, seeded), trigger="every_failure")
-    assert running.verdict == "discarded" and "running" in running.reason
+    for trigger in ("every_failure", "final_failure"):  # not ended yet: checked again later
+        running = adapter.confirm(_hint(adapter, seeded), trigger=trigger)  # type: ignore[arg-type]
+        assert (running.verdict, running.reason, running.state, running.failures) == (
+            "retry_later",
+            "the attempt is running, not failed yet",
+            AttemptState.RUNNING,
+            (),
+        )
     foreign = adapter.confirm(
         _hint(adapter, AttemptRef("elsewhere", "orders_flow", RUN, "transform")), trigger="final_failure"
     )

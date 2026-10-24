@@ -19,8 +19,9 @@ from dag_healer.agent import repair
 from dag_healer.agent.context import IncidentContext
 from dag_healer.agent.llm import LLMRefusal, LLMUnavailable, RepairSessionResult
 from dag_healer.agent.repair import RepairResult, RepairTools, branch_name, run_repair
-from dag_healer.agent.tests_gen import SYSTEM_PROMPT, TOOL_NAMES
+from dag_healer.agent.tests_gen import SYSTEM_PROMPT, TOOL_NAMES, system_prompt
 from dag_healer.config import HealerConfig, config_from_mapping
+from dag_healer.orchestrators.fake import FAKE_VOCABULARY
 from dag_healer.pr.github import GitHubError
 from dag_healer.repo.git import Workspace, run_git
 from dag_healer.repo.pytest_runner import PytestResult
@@ -713,6 +714,9 @@ def test_run_repair_end_to_end_on_the_example_repo(
         "task_id": "transform",
         "exception_type": "ValueError",
         "incident_id": INCIDENT_ID,
+        "orchestrator": "airflow",
+        "pipeline_id": "customers_sync",
+        "step_id": "transform",
     }
     assert provider.calls[1]["scenario"]["phase"] == "fix"
     assert all(call["system"] == SYSTEM_PROMPT for call in provider.calls)
@@ -1101,3 +1105,94 @@ def test_result_to_dict_is_json_safe() -> None:
     result = RepairResult(status="repair_failed", notes=["n"], error="e")
     assert json.loads(json.dumps(result.to_dict()))["status"] == "repair_failed"
     assert result.ok is False
+
+
+# =========================================================================== orchestrators
+
+
+def fakeflow_ctx(**overrides: Any) -> IncidentContext:
+    """``calc_ctx`` as gathered through the Fakeflow adapter (``orchestrators.fake``)."""
+    values: dict[str, Any] = {
+        "orchestrator": "fake",
+        "orchestrator_name": "Fakeflow",
+        "vocabulary": FAKE_VOCABULARY.as_dict(),
+    }
+    values.update(overrides)
+    return calc_ctx(**values)
+
+
+def test_extra_env_reaches_every_pytest_run(
+    calc_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_run_pytest = repair.run_pytest
+    calls: list[dict[str, Any]] = []
+
+    def recording_run_pytest(workdir: Path, targets: list[str] | None = None, **kwargs: Any) -> PytestResult:
+        calls.append(kwargs)
+        return real_run_pytest(workdir, targets, **kwargs)
+
+    monkeypatch.setattr(repair, "run_pytest", recording_run_pytest)
+    sandbox: dict[str, str | None] = {"FAKEFLOW_TOKEN": None, "AIRFLOW__CORE__LOAD_EXAMPLES": "False"}
+    provider = ScriptedProvider(
+        {"test": [[WRITE_CALC_TEST, RUN_CALC_TEST]], "fix": [[FIX_CALC, ("run_tests", {})]]}
+    )
+    result = run_calc(make_cfg(calc_repo), provider, tmp_path / "work", extra_env=sandbox)
+    assert result.status == "repaired", result.error
+    tool_runs = [call for call in calls if "python" in call]  # the agent's run_tests tool
+    own_runs = [call for call in calls if "python" not in call]  # the repair's own checks
+    assert (len(tool_runs), len(own_runs)) == (2, 2)
+    assert all(call["extra_env"] == sandbox for call in calls)
+
+
+def test_a_fakeflow_repair_speaks_the_fakeflow_words(
+    calc_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_render = repair.render_pr_markdown
+    rendered: list[dict[str, Any]] = []
+
+    def recording_render(**kwargs: Any) -> str:
+        rendered.append(kwargs)
+        return real_render(**kwargs)
+
+    monkeypatch.setattr(repair, "render_pr_markdown", recording_render)
+    ctx = fakeflow_ctx()
+    provider = ScriptedProvider({"test": [[WRITE_CALC_TEST]], "fix": [[FIX_CALC]]})
+    result = run_repair(
+        make_cfg(calc_repo), calc_incident(orchestrator="fake"), ctx, provider, workspace_root=tmp_path / "w"
+    )
+    assert result.status == "repaired", result.error
+    # both sessions get the Fakeflow system prompt and the neutral scenario keys
+    assert system_prompt(ctx) != SYSTEM_PROMPT and "Fakeflow deployment" in system_prompt(ctx)
+    assert [call["system"] for call in provider.calls] == [system_prompt(ctx)] * 2
+    assert provider.calls[0]["scenario"] == {
+        "phase": "test",
+        "dag_id": "calc_dag",
+        "task_id": "compute",
+        "exception_type": "ValueError",
+        "incident_id": INCIDENT_ID,
+        "orchestrator": "fake",
+        "pipeline_id": "calc_dag",
+        "step_id": "compute",
+    }
+    assert all("A Fakeflow step of this repository failed" in call["prompt"] for call in provider.calls)
+    # PR.md and the commit message
+    assert rendered and all(call["vocabulary"] == FAKE_VOCABULARY.as_dict() for call in rendered)
+    assert result.pr_md_path is not None
+    assert "Failure reported by Fakeflow (masked):" in Path(result.pr_md_path).read_text(encoding="utf-8")
+    message = run_git(["log", "-1", "--format=%B", str(result.branch)], calc_repo).stdout
+    run = "manual__2026-10-17T10:00:00+00:00"
+    assert f"Incident: {INCIDENT_ID} (flow calc_dag, step compute, run {run})" in message
+
+
+@pytest.mark.parametrize(("ctx_factory", "step"), [(calc_ctx, "task"), (fakeflow_ctx, "step")])
+def test_the_repair_feedback_names_the_step(
+    calc_repo: Path, tmp_path: Path, ctx_factory: Callable[..., IncidentContext], step: str
+) -> None:
+    passing = ("write_file", {"path": CALC_TEST_PATH, "content": CALC_PASSING_TEST})
+    provider = ScriptedProvider({"test": [[passing], [WRITE_CALC_TEST]], "fix": [[FIX_CALC]]})
+    # the reproducing test fails with ValueError, the incident reported an OverflowError
+    ctx = ctx_factory(exception_type="OverflowError")
+    result = run_repair(make_cfg(calc_repo), calc_incident(), ctx, provider, workspace_root=tmp_path / "w")
+    assert result.status == "repaired", result.error
+    assert f"Assert the correct behaviour for the input that broke the {step}." in provider.calls[1]["prompt"]
+    assert any(f"check that it fails for the same reason as the {step}." in note for note in result.notes)

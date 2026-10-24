@@ -65,11 +65,17 @@ class FailureHint:
 
 @dataclass(frozen=True)
 class Confirmation:
-    """Result of checking a hint against the orchestrator API."""
+    """Result of checking a hint against the orchestrator API.
+
+    ``retry_later`` keeps the hint for the next check. With ``state`` ``RUNNING`` it means the
+    attempt has not ended yet (a hint can arrive before the orchestrator records the end of
+    the attempt), which is no error; without it the orchestrator could not be asked.
+    """
 
     verdict: Literal["confirmed", "discarded", "retry_later"]
     reason: str  # shown in the pending-event row and logs (masked)
     failures: tuple[Failure, ...] = ()  # confirmed + localised; usually one
+    state: AttemptState | None = None  # the attempt's state, when the orchestrator reported one
 
 
 @dataclass(frozen=True)

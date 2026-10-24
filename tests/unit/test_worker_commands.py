@@ -1,13 +1,14 @@
 """Tests for dag_healer.worker.commands: the human actions the worker applies.
 
 Each test uses a SQLite store under a temporary directory and hand-made incidents; the
-Airflow API is a tiny in-memory stand-in. The full resolve -> resume -> repair/report flow
-on the example repository is covered by test_worker_pipeline.py.
+Airflow API is a tiny in-memory stand-in (wrapped in the Airflow adapter), and the neutral
+cases run on the fake orchestrator ("Fakeflow"). The full resolve -> resume -> repair/report
+flow on the example repository is covered by test_worker_pipeline.py.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,11 @@ from dag_healer.contracts.io import (
     save_contract,
 )
 from dag_healer.contracts.schema import ColumnRule, Contract, DatasetContract, DatasetLocator
+from dag_healer.core.errors import NotSupported
+from dag_healer.core.ids import AttemptRef
+from dag_healer.core.specs import TaskInfo
+from dag_healer.core.vocab import RemediationKind
+from dag_healer.orchestrators.fake import FakeAdapter, FakeWorld
 from dag_healer.store import dispose_engines, session_scope
 from dag_healer.store import repo as store_repo
 from dag_healer.store.models import Command, Incident
@@ -65,7 +71,13 @@ def cfg(tmp_path: Path, healer_env: Path) -> HealerConfig:
 
 
 def incident(
-    cfg: HealerConfig, status: str, *, dag_id: str = "etl", map_index: int = -1, **fields: Any
+    cfg: HealerConfig,
+    status: str,
+    *,
+    dag_id: str = "etl",
+    map_index: int = -1,
+    source: str = "rest",
+    **fields: Any,
 ) -> str:
     with session_scope(cfg.database_url) as session:
         row, _created = store_repo.create_incident(
@@ -75,7 +87,7 @@ def incident(
             task_id="load",
             map_index=map_index,
             try_number=1,
-            source="rest",
+            source=source,
             error_summary="KeyError: 'amount'",
             **fields,
         )
@@ -85,12 +97,32 @@ def incident(
 
 
 def command(
-    cfg: HealerConfig, kind: str, *, dag_id: str = "etl", incident_id: str | None = None, **payload: Any
+    cfg: HealerConfig,
+    kind: str,
+    *,
+    dag_id: str = "etl",
+    incident_id: str | None = None,
+    orchestrator: str = "airflow",
+    **payload: Any,
 ) -> int:
     with session_scope(cfg.database_url) as session:
         return store_repo.enqueue_command(
-            session, kind=kind, dag_id=dag_id, incident_id=incident_id, payload=payload, actor="alice"
+            session,
+            kind=kind,
+            dag_id=dag_id,
+            incident_id=incident_id,
+            payload=payload,
+            actor="alice",
+            orchestrator=orchestrator,
         ).id
+
+
+def fakeflow() -> FakeAdapter:
+    """Fakeflow with one failed attempt: step ``load`` of flow ``etl`` in run ``RUN``."""
+    world = FakeWorld()
+    world.add_pipeline("etl", file="dags/etl.py", steps={"load": TaskInfo("load", "python")})
+    world.fail("etl", RUN, "load", text="KeyError: 'amount'")
+    return FakeAdapter(world=world)
 
 
 def load(cfg: HealerConfig, incident_id: str) -> dict[str, Any]:
@@ -222,6 +254,74 @@ def test_retry_task_without_client_or_with_an_api_error_fails(cfg: HealerConfig)
     assert "bob@example.com" not in message
 
 
+def test_retry_task_runs_through_the_adapter_remediator_with_its_words(cfg: HealerConfig) -> None:
+    adapter = fakeflow()
+    incident_id = incident(
+        cfg, "repaired", source="poll", orchestrator="fake", category="code", pr_md_path="/x/PR.md"
+    )
+    command_id = command(cfg, "retry_task", incident_id=incident_id, orchestrator="fake", note="after deploy")
+    command(cfg, "retry_task", incident_id=incident(cfg, "reported", dag_id="other"), dag_id="other")
+
+    (outcome,) = apply_commands(cfg, None, None, adapter=adapter)  # the airflow command is not this worker's
+
+    assert (outcome.status, outcome.command_id) == ("applied", command_id)
+    assert outcome.message == (
+        f"alice retried step load in run {RUN} (attempt 2); Fakeflow will run it again. The proposed fix "
+        "is not merged yet, so the step runs the current code. Note: after deploy"
+    )
+    assert outcome.data == {"run_id": RUN, "task_id": "load", "map_index": -1}  # no "cleared" count
+    (done,) = adapter.world.remediations
+    assert (done.kind, done.ref, done.actor) == (
+        RemediationKind.RETRY_STEP,
+        AttemptRef("fake", "etl", RUN, "load"),
+        "alice",
+    )
+    assert done.idempotency_key == f"healer-{command_id}-{incident_id[:16]}"
+    event = last_event(load(cfg, incident_id), "command")
+    assert event["data"] == {
+        "command_id": command_id,
+        "kind": "retry_task",
+        "status": "applied",
+        "run_id": RUN,
+        "task_id": "load",
+        "map_index": -1,
+    }
+
+
+class NoRetry(FakeAdapter):
+    """Fakeflow that offers no remediation for any incident."""
+
+    def available(self, ref: AttemptRef, native: Mapping[str, Any]) -> tuple[RemediationKind, ...]:
+        return ()
+
+
+class RefusingRetry(FakeAdapter):
+    """Fakeflow whose remediation turns out not to be possible."""
+
+    def remediate(self, ref: AttemptRef, native: Mapping[str, Any], kind: RemediationKind, **_: Any) -> Any:
+        raise NotSupported("the run is older than the redrive window")
+
+
+def test_retry_task_fails_clearly_when_the_orchestrator_cannot_retry(cfg: HealerConfig) -> None:
+    incident_id = incident(cfg, "reported", source="poll", orchestrator="fake", category="data")
+    without = FakeAdapter()
+    without.remediator = None
+    cases = [
+        (without, "Fakeflow offers no way to run a failed step again."),
+        (NoRetry(), "Retry step is not available for this incident."),
+        (
+            RefusingRetry(),
+            "Retry step is not available for this incident: the run is older than the redrive window",
+        ),
+    ]
+    for adapter, expected in cases:
+        command_id = command(cfg, "retry_task", incident_id=incident_id, orchestrator="fake")
+        (outcome,) = apply_commands(cfg, None, None, adapter=adapter)
+        assert outcome.status == "failed"
+        assert command_row(cfg, command_id)["error"] == expected
+    assert load(cfg, incident_id)["status"] == "reported"
+
+
 # --------------------------------------------------------------------------- approve_contract
 
 
@@ -262,6 +362,20 @@ def test_approve_contract_writes_the_yaml_and_caches_the_state(cfg: HealerConfig
     command(cfg, "approve_contract", source_hash=reviewed)
     (outcome,) = apply_commands(cfg, None, None)
     assert outcome.status == "applied" and "already approved" in outcome.message
+
+
+def test_approve_contract_caches_the_state_under_the_command_instance(cfg: HealerConfig) -> None:
+    path = write_contract(cfg)
+    command_id = command(cfg, "approve_contract", orchestrator="fake")
+
+    (outcome,) = apply_commands(cfg, None, None, adapter=fakeflow())
+
+    assert (outcome.status, outcome.command_id) == ("applied", command_id)
+    assert load_contract(path).status == "approved"
+    with session_scope(cfg.database_url) as session:
+        state = store_repo.get_contract_state(session, "etl", orchestrator="fake")
+        assert state is not None and state.approved_by == "alice"
+        assert store_repo.get_contract_state(session, "etl") is None  # not the airflow instance's
 
 
 def test_approve_contract_refuses_a_file_edited_after_the_review(cfg: HealerConfig) -> None:
