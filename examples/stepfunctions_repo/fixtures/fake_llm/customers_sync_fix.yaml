@@ -1,0 +1,39 @@
+# Fake LLM script: CODE scenario (customers_sync), phase "fix".
+# Minimal fix in src/etl/customers.py::parse_signup_date: accept ISO-8601 timestamps
+# (including a trailing "Z") as well as plain dates, and still return a date.
+# Each replacement targets a single line so it works whatever the file's line endings are.
+name: customers_sync_fix
+match:
+  dag_id: customers_sync
+  task_id: TransformCustomers
+  exception_type: ValueError
+  phase: fix
+steps:
+  - tool: read_file
+    input: {path: src/etl/customers.py}
+  - tool: replace_in_file
+    input:
+      path: src/etl/customers.py
+      old: '    """Parse the signup date sent by the CRM export (always YYYY-MM-DD)."""'
+      new: '    """Parse the signup date sent by the CRM export (YYYY-MM-DD or an ISO-8601 timestamp)."""'
+  - tool: replace_in_file
+    input:
+      path: src/etl/customers.py
+      old: '    return datetime.strptime(value.strip(), "%Y-%m-%d").date()'
+      # "|4-": keep the 4-space function-body indentation, no trailing newline.
+      new: |4-
+              value = value.strip()
+              if value.endswith("Z"):  # fromisoformat() only accepts "Z" from Python 3.11
+                  value = value[:-1] + "+00:00"
+              return datetime.fromisoformat(value).date()
+  - tool: run_tests
+    input:
+      paths: [tests/test_customers_signup_date.py]
+  - tool: run_tests
+    input: {}
+final_text: >-
+  parse_signup_date hardcoded the "%Y-%m-%d" format, so the ISO-8601 timestamps that the CRM
+  export now sends (for example 2026-10-02T14:03:00Z) raised ValueError in the TransformCustomers
+  Lambda step. It now parses the value with datetime.fromisoformat (mapping a trailing "Z" to
+  "+00:00") and still returns a date; plain dates keep working. The regression test and the whole
+  suite pass.

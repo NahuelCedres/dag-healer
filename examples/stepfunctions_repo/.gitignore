@@ -1,0 +1,5 @@
+# sam build output and local runs of the jobs
+.aws-sam/
+data/
+__pycache__/
+*.pyc

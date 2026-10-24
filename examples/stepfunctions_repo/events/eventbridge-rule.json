@@ -1,0 +1,12 @@
+{
+  "source": ["aws.states"],
+  "detail-type": ["Step Functions Execution Status Change"],
+  "detail": {
+    "status": ["FAILED", "TIMED_OUT"],
+    "stateMachineArn": [
+      "arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123",
+      "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+      "arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789"
+    ]
+  }
+}

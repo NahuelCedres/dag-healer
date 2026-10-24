@@ -1,0 +1,66 @@
+# dag-healer configuration of the sfn-etl stack (AWS Step Functions).
+#
+# Replace the example account (123456789012), the deployed state machine names and the bucket
+# with yours (see README.md, "Point dag-healer at the stack"). Secrets are ${ENV_VAR} references.
+version: 1
+
+repo:
+  path: "."
+  base_branch: main
+  dags_dir: "statemachine"         # the ASL definitions
+  tests_dir: null                  # a minimal tests/ folder is created when a fix needs one
+  test_command: "python -m pytest -q"
+  allowed_paths: ["functions/", "src/"]   # the repair may only edit the Lambda code
+  pytest_timeout: 600
+
+orchestrator:
+  type: stepfunctions
+  instance: sfn-etl-euw1           # stored on every incident; one instance = one account and region
+  options:
+    region: eu-west-1
+    profile: null                  # a named profile for local runs; null: the default boto3 chain
+    template: template.yaml        # SAM template that maps Task states to Lambda code
+    pipelines:                     # pipeline id -> state machine (the stack outputs give the ARNs)
+      sales_daily_etl:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123
+        logical_id: SalesDailyEtlStateMachine
+      customers_sync:
+        state_machine: customers-sync   # the template names it: no generated suffix
+        logical_id: CustomersSyncStateMachine
+      inventory_report:
+        state_machine: arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789
+        logical_id: InventoryReportStateMachine
+    statuses: [FAILED, TIMED_OUT]
+    queue_url: "${HEALER_SFN_QUEUE_URL}"   # the HealerEventsQueueUrl output of the stack
+    log_lookup: true               # add the Lambda's CloudWatch log excerpt to the evidence
+    retry_strategy: redrive        # redrive | disabled
+    rerun: false
+
+monitor:
+  dags: ["*"]
+  modes: [poll, queue]             # poll: ListExecutions; queue: the EventBridge -> SQS rule
+  poll_interval_seconds: 60
+  trigger: final_failure
+
+contracts:
+  dir: healer/contracts
+
+# The input each failing state reads; replace acme-landing with the LandingBucket output.
+datasets:
+  sales_daily_etl:
+    TransformSales: {"type": "csv", "path": "s3://acme-landing/incoming/sales.csv"}
+  customers_sync:
+    TransformCustomers: {"type": "csv", "path": "s3://acme-landing/incoming/customers.csv"}
+  inventory_report:
+    BuildReport: {"type": "csv", "path": "s3://acme-landing/incoming/inventory.csv"}
+
+github:
+  repo: "${GITHUB_REPO}"           # owner/name; without repo and token fixes are written as PR.md
+  pr_base: main
+  token: "${GITHUB_TOKEN}"
+
+llm:
+  provider: "${HEALER_LLM_PROVIDER:-fake}"   # fake: replays fixtures/fake_llm; anthropic: real diagnoses
+
+store:
+  url: "${HEALER_DATABASE_URL}"    # null: SQLite under $HEALER_HOME (single process only)

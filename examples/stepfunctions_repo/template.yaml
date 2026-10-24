@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  sfn-etl: the sales, customers and inventory batch jobs as AWS Step Functions state machines
+  whose steps are Python Lambda functions, plus the EventBridge rule and SQS queue dag-healer
+  reads failed executions from.
+
+Parameters:
+  LandingBucketName:
+    Type: String
+    Description: >-
+      Name of the landing bucket to create: the upstream teams drop their exports in incoming/
+      and the jobs write their outputs to processed/.
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Handler: app.handler
+    Timeout: 120
+    MemorySize: 1024
+    Architectures:
+      - x86_64
+    Layers:
+      - !Ref EtlLayer
+    Environment:
+      Variables:
+        LANDING_BUCKET: !Ref LandingBucket
+        LOG_LEVEL: INFO
+
+Resources:
+  LandingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref LandingBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Shared code of the three functions: src/etl (+ pandas from src/requirements.txt) under /opt/python.
+  EtlLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: sfn-etl-shared
+      Description: The etl package (src/etl) and its dependencies
+      ContentUri: src/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.11
+
+  SalesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: sales_daily_etl steps (extract, transform, load)
+      CodeUri: functions/sales/
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref LandingBucket
+
+  CustomersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: customers-sync steps (extract, transform, load)
+      CodeUri: functions/customers/
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref LandingBucket
+
+  InventoryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /sfn-etl/inventory
+      RetentionInDays: 14
+
+  InventoryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: inventory_report steps (get inventory, build the report per warehouse, publish)
+      CodeUri: functions/inventory/
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref InventoryLogGroup
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref LandingBucket
+
+  SalesDailyEtlStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      DefinitionUri: statemachine/sales_daily_etl.asl.json
+      DefinitionSubstitutions:
+        SalesFunctionArn: !GetAtt SalesFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SalesFunction
+
+  CustomersSyncStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: customers-sync
+      Type: STANDARD
+      DefinitionUri: statemachine/customers_sync.asl.json
+      DefinitionSubstitutions:
+        CustomersFunctionArn: !Sub "${CustomersFunction.Arn}"
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CustomersFunction
+
+  InventoryReportStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      DefinitionUri: statemachine/inventory_report.asl.json
+      DefinitionSubstitutions:
+        InventoryFunctionArn: !GetAtt InventoryFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref InventoryFunction
+
+  # Failed and timed out executions of the three state machines -> SQS (dag-healer monitor mode "queue").
+  HealerEventsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: healer-sfn-events-dlq
+      MessageRetentionPeriod: 1209600
+
+  HealerEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: healer-sfn-events
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt HealerEventsDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  HealerEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Failed executions of the sfn-etl state machines, for dag-healer
+      EventPattern:
+        source:
+          - aws.states
+        detail-type:
+          - Step Functions Execution Status Change
+        detail:
+          status:
+            - FAILED
+            - TIMED_OUT
+          stateMachineArn:
+            - !Ref SalesDailyEtlStateMachine
+            - !Ref CustomersSyncStateMachine
+            - !Ref InventoryReportStateMachine
+      Targets:
+        - Id: healer-sfn-events
+          Arn: !GetAtt HealerEventsQueue.Arn
+
+  HealerEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref HealerEventsQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowTheHealerEventsRule
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt HealerEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt HealerEventsRule.Arn
+
+Outputs:
+  LandingBucket:
+    Description: Upload the daily exports to s3://<bucket>/incoming/
+    Value: !Ref LandingBucket
+  SalesDailyEtlStateMachineArn:
+    Value: !Ref SalesDailyEtlStateMachine
+  CustomersSyncStateMachineArn:
+    Value: !Ref CustomersSyncStateMachine
+  InventoryReportStateMachineArn:
+    Value: !Ref InventoryReportStateMachine
+  HealerEventsQueueUrl:
+    Description: orchestrator.options.queue_url of healer.yaml
+    Value: !Ref HealerEventsQueue
