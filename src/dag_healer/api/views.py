@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 
 #: Actions a human may request, by incident status.
 ALLOWED_ACTIONS_BY_STATUS: dict[str, tuple[str, ...]] = {
-    WAITING_HUMAN: ("resolve_data", "resolve_code", "ignore"),
+    WAITING_HUMAN: ("resolve_data", "resolve_code", "retry_task", "ignore"),
     REPAIR_FAILED: ("retry_repair", "resolve_data", "ignore"),
     ERROR: ("retry_repair", "resolve_data", "ignore"),
     REPORTED: ("resolve_code", "retry_task", "ignore"),

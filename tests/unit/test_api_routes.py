@@ -554,7 +554,7 @@ def test_incident_detail_actions_by_permission_and_status(api: Api) -> None:
     failed = api.get(f"/dags/customers_sync/incidents/{api.ids['code_retry']}").json()
     assert failed["allowed_actions"] == ["retry_repair", "resolve_data", "ignore"]
     amb = api.get(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}").json()
-    assert amb["allowed_actions"] == ["resolve_data", "resolve_code", "ignore"]
+    assert amb["allowed_actions"] == ["resolve_data", "resolve_code", "retry_task", "ignore"]
     assert amb["links"]["task_instance"].endswith("/tasks/build_report/mapped/3/plugin/healer-ti")
     ignored = api.get(f"/dags/deleted_dag/incidents/{api.ids['deleted']}").json()
     assert ignored["allowed_actions"] == []
@@ -730,8 +730,13 @@ def test_retry_repair_and_retry_task(api: Api) -> None:
     assert (
         api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-repair").status_code == 409
     )
-    assert api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-task").status_code == 409
-    first, second = _commands(api)
+    refused = api.post(f"/dags/customers_sync/incidents/{api.ids['code_retry']}/retry-task")
+    assert refused.status_code == 409
+    detail = "Action 'retry_task' is not allowed while the incident is 'repair_failed'"
+    assert refused.json() == {"detail": detail}
+    waiting = api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-task")
+    assert waiting.status_code == 202  # the task can run again before anyone decides
+    first, second, third = _commands(api)
     assert (first.kind, first.actor, first.incident_id) == ("retry_repair", "limited", api.ids["code_retry"])
     assert second.kind == "retry_task"
     assert second.payload == {
@@ -740,6 +745,7 @@ def test_retry_repair_and_retry_task(api: Api) -> None:
         "task_id": "transform",
         "map_index": -1,
     }
+    assert (third.kind, third.incident_id) == ("retry_task", api.ids["ambiguous"])
 
 
 def test_approve_contract(api: Api) -> None:
@@ -871,7 +877,7 @@ def test_rate_limiter_window() -> None:
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
-        ("waiting_human", ["resolve_data", "resolve_code", "ignore"]),
+        ("waiting_human", ["resolve_data", "resolve_code", "retry_task", "ignore"]),
         ("repair_failed", ["retry_repair", "resolve_data", "ignore"]),
         ("error", ["retry_repair", "resolve_data", "ignore"]),
         ("reported", ["resolve_code", "retry_task", "ignore"]),

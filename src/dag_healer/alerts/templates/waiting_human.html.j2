@@ -14,6 +14,7 @@
 <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
   <li style="margin:0 0 4px 0;"><strong>Resolve as data</strong>: report it as a data issue and alert the data owners (no code change).</li>
   <li style="margin:0 0 4px 0;"><strong>Resolve as code</strong>: dag-healer writes a failing test and proposes a minimal fix.</li>
+  <li style="margin:0 0 4px 0;"><strong>{{ words.retry_action }}</strong>: run the failed {{ words.step }} again once an external cause is fixed (the incident stays open).</li>
   <li style="margin:0 0 4px 0;"><strong>Ignore</strong>: close the incident without further action.</li>
 </ul>
 {{ m.button(links.task_instance, "Decide in the Healer incident tab", accent) }}

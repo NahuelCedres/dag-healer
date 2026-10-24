@@ -238,6 +238,21 @@ def test_retry_task_clears_the_task_instance_and_keeps_the_status(cfg: HealerCon
     assert load(cfg, mapped_id)["status"] == "reported"
 
 
+def test_retry_task_keeps_an_incident_waiting_for_a_human(cfg: HealerConfig) -> None:
+    incident_id = incident(cfg, "waiting_human", category="ambiguous")
+    command(cfg, "retry_task", incident_id=incident_id)
+    client = ClearingClient()
+
+    (outcome,) = apply_commands(cfg, None, client)
+
+    assert outcome.status == "applied"
+    assert client.calls == [("etl", RUN, ["load"], True)]
+    data = load(cfg, incident_id)
+    assert data["status"] == "waiting_human"
+    message = last_event(data, "command")["message"]
+    assert "Airflow will run it again" in message and "not merged yet" not in message
+
+
 def test_retry_task_without_client_or_with_an_api_error_fails(cfg: HealerConfig) -> None:
     incident_id = incident(cfg, "reported", category="data")
     first = command(cfg, "retry_task", incident_id=incident_id)
