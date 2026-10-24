@@ -106,7 +106,9 @@ def test_load_template_reads_json_templates() -> None:
         ("- just\n- a list\n", "not a SAM/CloudFormation template"),
         ("", "not a SAM/CloudFormation template"),
         ("plain text", "not a SAM/CloudFormation template"),
-        ("[" * 50_000, "invalid template"),
+        # An explicit id: pytest keeps the test id in the PYTEST_CURRENT_TEST environment
+        # variable, which Windows limits to 32767 characters.
+        pytest.param("[" * 50_000, "invalid template", id="50000 nested brackets"),
     ],
 )
 def test_load_template_refuses_invalid_templates(tmp_path: Path, text: str, problem: str) -> None:

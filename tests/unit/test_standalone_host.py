@@ -193,8 +193,9 @@ def static_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The API's static directory, replaced by one holding a stand-in standalone bundle."""
     static = tmp_path / "static"
     (static / "standalone").mkdir(parents=True)
-    (static / "standalone" / "index.js").write_text(BUNDLE, encoding="utf-8")
-    (static / "icon.svg").write_text(ICON, encoding="utf-8")
+    # newline="\n": the files keep these bytes on Windows too, so the answers can be compared.
+    (static / "standalone" / "index.js").write_text(BUNDLE, encoding="utf-8", newline="\n")
+    (static / "icon.svg").write_text(ICON, encoding="utf-8", newline="\n")
     monkeypatch.setattr(app_module, "STATIC_DIR", static)
     return static
 
