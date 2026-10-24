@@ -1,0 +1,34 @@
+{
+  "version": "0",
+  "id": "b8a5c8f2-91d3-4c6e-a1f0-7e2d3c4b5a69",
+  "detail-type": "Step Functions Execution Status Change",
+  "source": "aws.states",
+  "account": "123456789012",
+  "time": "2026-10-01T07:00:01Z",
+  "region": "eu-west-1",
+  "resources": [
+    "arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-01"
+  ],
+  "detail": {
+    "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-01",
+    "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789",
+    "name": "inventory-2026-10-01",
+    "status": "TIMED_OUT",
+    "startDate": 1790834400000,
+    "stopDate": 1790838000215,
+    "input": "{\"date\": \"2026-10-01\", \"warehouses\": [\"WH-1\", \"WH-2\", \"WH-3\"]}",
+    "output": null,
+    "stateMachineVersionArn": null,
+    "stateMachineAliasArn": null,
+    "redriveCount": 0,
+    "redriveDate": null,
+    "redriveStatus": "REDRIVABLE",
+    "redriveStatusReason": "Execution is TIMED_OUT and can be redriven",
+    "inputDetails": {
+      "included": true
+    },
+    "outputDetails": null,
+    "error": "States.Timeout",
+    "cause": null
+  }
+}

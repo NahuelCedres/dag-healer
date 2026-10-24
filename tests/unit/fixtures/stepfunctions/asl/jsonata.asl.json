@@ -1,0 +1,49 @@
+{
+  "Comment": "JSONata state machine: Arguments templates, {% %} expressions and a JSONPath state",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Score",
+  "States": {
+    "Score": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:score",
+        "Payload": "{% $states.input %}"
+      },
+      "Next": "Pick"
+    },
+    "Pick": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {"FunctionName": "{% $states.input.function %}"},
+      "Next": "Legacy"
+    },
+    "Legacy": {
+      "Type": "Task",
+      "QueryLanguage": "JSONPath",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {"FunctionName": "legacy-scorer"},
+      "Next": "Each"
+    },
+    "Each": {
+      "Type": "Map",
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:listObjectsV2",
+        "Arguments": {"Bucket": "acme-landing", "Prefix": "{% $states.input.prefix %}"}
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {"Mode": "distributed", "ExecutionType": "EXPRESS"},
+        "StartAt": "Load",
+        "States": {
+          "Load": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+            "Arguments": {"Bucket": "{% $states.input.bucket %}", "Key": "incoming/data.parquet"},
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

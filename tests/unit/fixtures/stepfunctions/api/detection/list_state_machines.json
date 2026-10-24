@@ -1,0 +1,28 @@
+{
+  "stateMachines": [
+    {
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+      "name": "customers-sync",
+      "type": "STANDARD",
+      "creationDate": "2026-09-01T10:00:00.000Z"
+    },
+    {
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:InventoryReportStateMachine-XyZ789",
+      "name": "InventoryReportStateMachine-XyZ789",
+      "type": "STANDARD",
+      "creationDate": "2026-09-01T10:00:00.000Z"
+    },
+    {
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:clickstream-express",
+      "name": "clickstream-express",
+      "type": "EXPRESS",
+      "creationDate": "2026-08-15T08:30:00.000Z"
+    },
+    {
+      "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:SalesDailyEtlStateMachine-AbC123",
+      "name": "SalesDailyEtlStateMachine-AbC123",
+      "type": "STANDARD",
+      "creationDate": "2026-09-01T10:00:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "events": [
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920820150,
+      "message": "START RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f Version: $LATEST\n",
+      "ingestionTime": 1790920820400,
+      "eventId": "386717909208201500001"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920820300,
+      "message": "[INFO]\t2026-10-02T06:00:20.300Z\t6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\tReading s3://acme-landing/incoming/sales.csv\n",
+      "ingestionTime": 1790920820550,
+      "eventId": "386717909208203000002"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920820900,
+      "message": "columns: date,store,sku,amt,unit_price\n",
+      "ingestionTime": 1790920821150,
+      "eventId": "386717909208209000003"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920841300,
+      "message": "[ERROR] KeyError: 'amount'\rTraceback (most recent call last):\r  File \"/var/task/app.py\", line 14, in handler\r    return STEPS[event[\"step\"]](event)\r  File \"/opt/python/etl/sales.py\", line 31, in transform_sales\r    df[\"total\"] = df[\"amount\"] * df[\"unit_price\"]\r  File \"/opt/python/pandas/core/frame.py\", line 4102, in __getitem__\r    indexer = self.columns.get_loc(key)\r  File \"/opt/python/pandas/core/indexes/base.py\", line 3812, in get_loc\r    raise KeyError(key) from err\n",
+      "ingestionTime": 1790920841550,
+      "eventId": "386717909208413000004"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920841350,
+      "message": "END RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\n",
+      "ingestionTime": 1790920841600,
+      "eventId": "386717909208413500005"
+    },
+    {
+      "logStreamName": "2026/10/02/[$LATEST]0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "timestamp": 1790920841350,
+      "message": "REPORT RequestId: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\tDuration: 21200.12 ms\tBilled Duration: 21201 ms\tMemory Size: 512 MB\tMax Memory Used: 180 MB\n",
+      "ingestionTime": 1790920841600,
+      "eventId": "386717909208413500006"
+    }
+  ],
+  "searchedLogStreams": []
+}

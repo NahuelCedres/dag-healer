@@ -1,0 +1,25 @@
+{
+  "Comment": "orders_etl: a two-step Lambda pipeline of the offline loader tests",
+  "StartAt": "LoadOrders",
+  "States": {
+    "LoadOrders": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${OrdersFunctionArn}",
+        "Payload": {"step": "load", "execution.$": "$$.Execution.Id"}
+      },
+      "ResultPath": null,
+      "Next": "PublishOrders"
+    },
+    "PublishOrders": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${OrdersFunctionArn}",
+        "Payload": {"step": "publish", "execution.$": "$$.Execution.Id"}
+      },
+      "End": true
+    }
+  }
+}

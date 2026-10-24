@@ -1,8 +1,10 @@
 """Load datasets described by :class:`~dag_healer.contracts.schema.DatasetLocator`.
 
-Only local files are supported in v1 (``csv``, ``parquet`` and ``json``); the locator
-indirection is the extension point for SQL/S3 sources later. Relative paths are resolved
-against the repository root; absolute paths are used as-is.
+v1 reads local files and S3 objects (``csv``, ``parquet`` and ``json``); the locator
+indirection is the extension point for SQL sources later. A path ``s3://bucket/key`` is read
+from S3 by :func:`dag_healer.storage.s3.load_s3_dataset` (the ``aws`` extra; capped downloads,
+see that module). Other paths are local: relative ones are resolved against the repository
+root, absolute ones are used as-is.
 """
 
 from __future__ import annotations
@@ -40,9 +42,22 @@ def _as_locator(locator: DatasetLocator | Mapping[str, Any]) -> DatasetLocator:
         raise DatasetError(f"invalid dataset locator {locator!r}: {exc}") from exc
 
 
+def _is_remote(path: str) -> bool:
+    """True for a locator path of a remote store (``s3://``), which has no local path."""
+    from dag_healer.storage.s3 import is_s3_uri
+
+    return is_s3_uri(path)
+
+
 def resolve_dataset_path(locator: DatasetLocator | Mapping[str, Any], repo_root: str | Path) -> Path:
-    """Return the absolute path of the dataset described by ``locator``."""
-    path = Path(_as_locator(locator).path)
+    """Return the absolute path of the dataset described by ``locator``.
+
+    Raises :class:`DatasetError` for an ``s3://`` locator: an S3 object has no local path.
+    """
+    resolved = _as_locator(locator)
+    if _is_remote(resolved.path):
+        raise DatasetError(f"dataset {resolved.path} is an S3 object, not a local file")
+    path = Path(resolved.path)
     if path.is_absolute():
         return path
     return Path(repo_root) / path
@@ -70,9 +85,13 @@ def load_dataset(locator: DatasetLocator | Mapping[str, Any], repo_root: str | P
     (``.jsonl``/``.ndjson`` files default to ``lines=True``). Raises :class:`DatasetError`
     when the file does not exist or cannot be parsed; the message names the file and the
     reason, with emails/phone numbers/long digit runs redacted (reader errors can quote
-    cell values).
+    cell values). An ``s3://`` locator is read from S3 (``repo_root`` is not used).
     """
     resolved = _as_locator(locator)
+    if _is_remote(resolved.path):
+        from dag_healer.storage.s3 import load_s3_dataset
+
+        return load_s3_dataset(resolved)
     path = resolve_dataset_path(resolved, repo_root)
     if not path.exists():
         raise DatasetError(f"dataset file not found: {resolved.path} (resolved to {path})")

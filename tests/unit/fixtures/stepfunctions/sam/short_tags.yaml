@@ -1,0 +1,45 @@
+# Every CloudFormation short tag, in the places templates use them.
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+  NotProd: !Not [!Condition IsProd]
+  Both: !And [!Condition IsProd, !Condition NotProd]
+  Either: !Or [!Condition IsProd, !Condition NotProd]
+
+Mappings:
+  Sizes:
+    dev: {Memory: 512}
+    prod: {Memory: 2048}
+
+Resources:
+  Fn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/fn/
+      Handler: app.handler
+      Runtime: python3.12
+      MemorySize: !FindInMap [Sizes, !Ref Stage, Memory]
+      Role: !GetAtt [FnRole, Arn]
+      Description: !Sub "fn of ${Stage}"
+      Tags:
+        Name: !Join ["-", [!Ref "AWS::StackName", fn]]
+        Zone: !Select [0, !GetAZs ""]
+        Parts: !Split [",", "a,b"]
+        Data: !Base64 hello
+        Shared: !ImportValue shared-output
+        Mode: !If [IsProd, big, small]
+        Network: !Cidr ["10.0.0.0/16", 4, 8]
+        Label: !Sub
+          - "${Prefix}-${Stage}"
+          - Prefix: etl
+        Count: !Length [1, 2]
+        Created: 2026-10-02
+        Arn: !GetAtt Fn.Arn
+        Nested: !GetAtt Stack.Outputs.Name

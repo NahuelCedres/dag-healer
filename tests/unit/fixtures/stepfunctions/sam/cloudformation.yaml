@@ -1,0 +1,84 @@
+# Functions without local code, inline definitions with intrinsic functions, and plain
+# AWS::StepFunctions::StateMachine resources.
+Resources:
+  Ingest:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: acme-ingest
+      CodeUri: src/ingest
+      Handler: handlers/ingest.run
+      Runtime: python3.11
+
+  Report:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: "def handler(event, context): return event"
+      Handler: index.handler
+      Runtime: python3.11
+
+  Render:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/render:latest
+
+  Archived:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: {Bucket: acme-artifacts, Key: archived.zip}
+      Handler: app.handler
+      Runtime: python3.11
+
+  Zipped:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/zipped.zip
+      Handler: app.handler
+      Runtime: nodejs20.x
+
+  Ingestion:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: Ingest
+        States:
+          Ingest:
+            Type: Task
+            Resource: !GetAtt Ingest.Arn
+            Next: Notify
+          Notify:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: !Ref Ingest
+              Payload:
+                text: !Sub "ingested by ${Ingest}"
+            End: true
+
+  Mapped:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      Definition:
+        StartAt: Go
+        States:
+          Go: {Type: Task, Resource: "${IngestArn}", End: true}
+      DefinitionSubstitutions:
+        IngestArn: !GetAtt Ingest.Arn
+
+  Plain:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: plain
+      DefinitionString: >-
+        {"StartAt": "Run", "States": {"Run": {"Type": "Task",
+        "Resource": "arn:aws:lambda:eu-west-1:123456789012:function:acme-ingest", "End": true}}}
+
+  Remote:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionS3Location: {Bucket: acme-artifacts, Key: remote.asl.json}
+
+  Broken:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString: "{not a definition"

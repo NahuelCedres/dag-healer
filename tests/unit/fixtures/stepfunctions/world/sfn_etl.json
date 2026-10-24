@@ -1,0 +1,1004 @@
+{
+  "region": "eu-west-1",
+  "account": "123456789012",
+  "now": "2026-10-02T07:00:00Z",
+  "state_machines": [
+    {
+      "name": "SalesDailyEtlStateMachine-AbC123",
+      "type": "STANDARD",
+      "definition": {
+        "Comment": "sales_daily_etl: POS export -> daily revenue summary per currency for finance (owner: data-eng)",
+        "StartAt": "ExtractSales",
+        "States": {
+          "ExtractSales": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F",
+              "Payload": {
+                "step": "extract",
+                "execution.$": "$$.Execution.Id"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "TransformSales"
+          },
+          "TransformSales": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F",
+              "Payload": {
+                "step": "transform",
+                "execution.$": "$$.Execution.Id",
+                "args": {
+                  "report_currency": "USD"
+                }
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "LoadSales"
+          },
+          "LoadSales": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F",
+              "Payload": {
+                "step": "load",
+                "execution.$": "$$.Execution.Id"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "role_arn": "arn:aws:iam::123456789012:role/sfn-etl-SalesDailyEtlStateMachineRole-1QW2ER3TY4UI"
+    },
+    {
+      "name": "customers-sync",
+      "type": "STANDARD",
+      "definition": {
+        "Comment": "customers_sync: CRM export -> customers dim (owner: crm-team). Input: {\"run_date\", \"requested_by\"}",
+        "StartAt": "ExtractCustomers",
+        "States": {
+          "ExtractCustomers": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+              "Payload": {
+                "step": "extract",
+                "execution.$": "$$.Execution.Id",
+                "requested_by.$": "$.requested_by"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "TransformCustomers"
+          },
+          "TransformCustomers": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+              "Payload": {
+                "step": "transform",
+                "execution.$": "$$.Execution.Id",
+                "requested_by.$": "$.requested_by"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "LoadCustomers"
+          },
+          "LoadCustomers": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+              "Payload": {
+                "step": "load",
+                "execution.$": "$$.Execution.Id",
+                "requested_by.$": "$.requested_by",
+                "args": {
+                  "target": "customers_dim"
+                }
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "role_arn": "arn:aws:iam::123456789012:role/sfn-etl-CustomersSyncStateMachineRole-5OP6AS7DF8GH"
+    },
+    {
+      "name": "InventoryReportStateMachine-XyZ789",
+      "type": "STANDARD",
+      "definition": {
+        "Comment": "inventory_report: stock per SKU across the warehouses, flags SKUs below the low stock threshold (owner: ops). Input: {\"run_date\", \"warehouses\"}",
+        "StartAt": "GetInventory",
+        "States": {
+          "GetInventory": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+              "Payload": {
+                "step": "get_inventory",
+                "execution.$": "$$.Execution.Id"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "PerWarehouse"
+          },
+          "PerWarehouse": {
+            "Type": "Map",
+            "ItemsPath": "$.warehouses",
+            "ItemSelector": {
+              "warehouse.$": "$$.Map.Item.Value",
+              "execution.$": "$$.Execution.Id"
+            },
+            "MaxConcurrency": 1,
+            "ItemProcessor": {
+              "ProcessorConfig": {
+                "Mode": "INLINE"
+              },
+              "StartAt": "BuildReport",
+              "States": {
+                "BuildReport": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+                  "Parameters": {
+                    "step": "build_report",
+                    "warehouse.$": "$.warehouse",
+                    "execution.$": "$.execution",
+                    "args": {
+                      "low_stock_threshold": 25
+                    }
+                  },
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "End": true
+                }
+              }
+            },
+            "ResultPath": null,
+            "Next": "PublishReport"
+          },
+          "PublishReport": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+              "Payload": {
+                "step": "publish_report",
+                "execution.$": "$$.Execution.Id"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "role_arn": "arn:aws:iam::123456789012:role/sfn-etl-InventoryReportStateMachineRole-9JK0LZ1XC2VB"
+    }
+  ],
+  "functions": [
+    {
+      "name": "sfn-etl-SalesFunction-1A2B3C4D5E6F",
+      "handler": "app.handler",
+      "runtime": "python3.11",
+      "log_group": null,
+      "log_format": "Text"
+    },
+    {
+      "name": "sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+      "handler": "app.handler",
+      "runtime": "python3.11",
+      "log_group": null,
+      "log_format": "Text"
+    },
+    {
+      "name": "sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+      "handler": "app.handler",
+      "runtime": "python3.11",
+      "log_group": "/sfn-etl/inventory",
+      "log_format": "JSON"
+    }
+  ],
+  "executions": [
+    {
+      "state_machine": "SalesDailyEtlStateMachine-AbC123",
+      "name": "sales-2026-10-02",
+      "status": "FAILED",
+      "start_date": "2026-10-02T06:00:05.112Z",
+      "stop_date": "2026-10-02T06:00:08.187Z",
+      "redrive_count": 0,
+      "error": "KeyError",
+      "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"668df81c-874a-45c3-a054-3b3befbcbc80\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 26, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 27, in transform_sales\\n    df[\\\"amount\\\"] = pd.to_numeric(df[\\\"amount\\\"], errors=\\\"coerce\\\")\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}",
+      "input": "{\"run_date\":\"2026-10-02\"}",
+      "history": [
+        {
+          "timestamp": "2026-10-02T06:00:05.112Z",
+          "type": "ExecutionStarted",
+          "id": 1,
+          "previousEventId": 0,
+          "executionStartedEventDetails": {
+            "input": "{\"run_date\":\"2026-10-02\"}",
+            "inputDetails": {
+              "truncated": false
+            },
+            "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-SalesDailyEtlStateMachineRole-1QW2ER3TY4UI"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:05.141Z",
+          "type": "TaskStateEntered",
+          "id": 2,
+          "previousEventId": 0,
+          "stateEnteredEventDetails": {
+            "name": "ExtractSales",
+            "input": "{\"run_date\":\"2026-10-02\"}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:05.141Z",
+          "type": "TaskScheduled",
+          "id": 3,
+          "previousEventId": 2,
+          "taskScheduledEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "region": "eu-west-1",
+            "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-02\"}}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:05.185Z",
+          "type": "TaskStarted",
+          "id": 4,
+          "previousEventId": 3,
+          "taskStartedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.456Z",
+          "type": "TaskSucceeded",
+          "id": 5,
+          "previousEventId": 4,
+          "taskSucceededEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "output": "{\"ExecutedVersion\":\"$LATEST\",\"Payload\":{\"step\":\"extract\",\"rows\":30},\"SdkHttpMetadata\":{\"AllHttpHeaders\":{\"Connection\":[\"keep-alive\"],\"Content-Length\":[\"28\"],\"Content-Type\":[\"application/json\"],\"Date\":[\"Fri, 02 Oct 2026 06:00:07 GMT\"],\"X-Amz-Executed-Version\":[\"$LATEST\"],\"x-amzn-Remapped-Content-Length\":[\"0\"],\"x-amzn-RequestId\":[\"37916417-c88a-42d4-ac66-d6346d9e029e\"],\"X-Amzn-Trace-Id\":[\"Root=1-6abf4867-2785eed2f710614ad67f5d7a;Sampled=0\"]},\"HttpHeaders\":{\"Connection\":\"keep-alive\",\"Content-Length\":\"28\",\"Content-Type\":\"application/json\",\"Date\":\"Fri, 02 Oct 2026 06:00:07 GMT\",\"X-Amz-Executed-Version\":\"$LATEST\",\"x-amzn-Remapped-Content-Length\":\"0\",\"x-amzn-RequestId\":\"37916417-c88a-42d4-ac66-d6346d9e029e\",\"X-Amzn-Trace-Id\":\"Root=1-6abf4867-2785eed2f710614ad67f5d7a;Sampled=0\"},\"HttpStatusCode\":200},\"SdkResponseMetadata\":{\"RequestId\":\"37916417-c88a-42d4-ac66-d6346d9e029e\"},\"StatusCode\":200}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.457Z",
+          "type": "TaskStateExited",
+          "id": 6,
+          "previousEventId": 5,
+          "stateExitedEventDetails": {
+            "name": "ExtractSales",
+            "output": "{\"run_date\":\"2026-10-02\"}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.475Z",
+          "type": "TaskStateEntered",
+          "id": 7,
+          "previousEventId": 6,
+          "stateEnteredEventDetails": {
+            "name": "TransformSales",
+            "input": "{\"run_date\":\"2026-10-02\"}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.475Z",
+          "type": "TaskScheduled",
+          "id": 8,
+          "previousEventId": 7,
+          "taskScheduledEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "region": "eu-west-1",
+            "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-02\",\"args\":{\"report_currency\":\"USD\"}}}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.516Z",
+          "type": "TaskStarted",
+          "id": 9,
+          "previousEventId": 8,
+          "taskStartedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:08.165Z",
+          "type": "TaskFailed",
+          "id": 10,
+          "previousEventId": 9,
+          "taskFailedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "error": "KeyError",
+            "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"668df81c-874a-45c3-a054-3b3befbcbc80\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 26, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 27, in transform_sales\\n    df[\\\"amount\\\"] = pd.to_numeric(df[\\\"amount\\\"], errors=\\\"coerce\\\")\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:08.187Z",
+          "type": "ExecutionFailed",
+          "id": 11,
+          "previousEventId": 10,
+          "executionFailedEventDetails": {
+            "error": "KeyError",
+            "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"668df81c-874a-45c3-a054-3b3befbcbc80\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 26, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 27, in transform_sales\\n    df[\\\"amount\\\"] = pd.to_numeric(df[\\\"amount\\\"], errors=\\\"coerce\\\")\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+          }
+        }
+      ]
+    },
+    {
+      "state_machine": "customers-sync",
+      "name": "customers-2026-10-02",
+      "status": "FAILED",
+      "start_date": "2026-10-02T06:00:07.348Z",
+      "stop_date": "2026-10-02T06:00:10.284Z",
+      "redrive_count": 0,
+      "error": "ValueError",
+      "cause": "{\"errorMessage\": \"unconverted data remains: T08:30:00Z\", \"errorType\": \"ValueError\", \"requestId\": \"adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 27, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 37, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].apply(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 5575, in apply\\n    ).apply()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1749, in apply\\n    return self.apply_standard()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1807, in apply_standard\\n    mapped = obj._map_values(mapper=curried)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 1076, in _map_values\\n    return arr.map(mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/arrays/base.py\\\", line 3006, in map\\n    result = map_array(self, mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/algorithms.py\\\", line 2007, in map_array\\n    return lib.map_infer(values, mapper)\\n\", \"  File \\\"pandas/_libs/lib.pyx\\\", line 3390, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 20, in parse_signup_date\\n    return datetime.strptime(value.strip(), \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 567, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 352, in _strptime\\n    raise ValueError(\\\"unconverted data remains: %s\\\" %\\n\"]}",
+      "input": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+      "history": [
+        {
+          "timestamp": "2026-10-02T06:00:07.348Z",
+          "type": "ExecutionStarted",
+          "id": 1,
+          "previousEventId": 0,
+          "executionStartedEventDetails": {
+            "input": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+            "inputDetails": {
+              "truncated": false
+            },
+            "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-CustomersSyncStateMachineRole-5OP6AS7DF8GH"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.379Z",
+          "type": "TaskStateEntered",
+          "id": 2,
+          "previousEventId": 0,
+          "stateEnteredEventDetails": {
+            "name": "ExtractCustomers",
+            "input": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.379Z",
+          "type": "TaskScheduled",
+          "id": 3,
+          "previousEventId": 2,
+          "taskScheduledEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "region": "eu-west-1",
+            "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"extract\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.418Z",
+          "type": "TaskStarted",
+          "id": 4,
+          "previousEventId": 3,
+          "taskStartedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.626Z",
+          "type": "TaskSucceeded",
+          "id": 5,
+          "previousEventId": 4,
+          "taskSucceededEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "output": "{\"ExecutedVersion\":\"$LATEST\",\"Payload\":{\"step\":\"extract\",\"rows\":29},\"SdkHttpMetadata\":{\"AllHttpHeaders\":{\"Connection\":[\"keep-alive\"],\"Content-Length\":[\"28\"],\"Content-Type\":[\"application/json\"],\"Date\":[\"Fri, 02 Oct 2026 06:00:09 GMT\"],\"X-Amz-Executed-Version\":[\"$LATEST\"],\"x-amzn-Remapped-Content-Length\":[\"0\"],\"x-amzn-RequestId\":[\"e6981074-9db2-4b32-af2c-08c13558b219\"],\"X-Amzn-Trace-Id\":[\"Root=1-6abf4869-c8516349cb259c43bcccdd5e;Sampled=0\"]},\"HttpHeaders\":{\"Connection\":\"keep-alive\",\"Content-Length\":\"28\",\"Content-Type\":\"application/json\",\"Date\":\"Fri, 02 Oct 2026 06:00:09 GMT\",\"X-Amz-Executed-Version\":\"$LATEST\",\"x-amzn-Remapped-Content-Length\":\"0\",\"x-amzn-RequestId\":\"e6981074-9db2-4b32-af2c-08c13558b219\",\"X-Amzn-Trace-Id\":\"Root=1-6abf4869-c8516349cb259c43bcccdd5e;Sampled=0\"},\"HttpStatusCode\":200},\"SdkResponseMetadata\":{\"RequestId\":\"e6981074-9db2-4b32-af2c-08c13558b219\"},\"StatusCode\":200}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.627Z",
+          "type": "TaskStateExited",
+          "id": 6,
+          "previousEventId": 5,
+          "stateExitedEventDetails": {
+            "name": "ExtractCustomers",
+            "output": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.644Z",
+          "type": "TaskStateEntered",
+          "id": 7,
+          "previousEventId": 6,
+          "stateEnteredEventDetails": {
+            "name": "TransformCustomers",
+            "input": "{\"run_date\":\"2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.644Z",
+          "type": "TaskScheduled",
+          "id": 8,
+          "previousEventId": 7,
+          "taskScheduledEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "region": "eu-west-1",
+            "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"transform\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\",\"requested_by\":\"alice.pii@example.com\"}}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.687Z",
+          "type": "TaskStarted",
+          "id": 9,
+          "previousEventId": 8,
+          "taskStartedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:10.265Z",
+          "type": "TaskFailed",
+          "id": 10,
+          "previousEventId": 9,
+          "taskFailedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "error": "ValueError",
+            "cause": "{\"errorMessage\": \"unconverted data remains: T08:30:00Z\", \"errorType\": \"ValueError\", \"requestId\": \"adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 27, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 37, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].apply(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 5575, in apply\\n    ).apply()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1749, in apply\\n    return self.apply_standard()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1807, in apply_standard\\n    mapped = obj._map_values(mapper=curried)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 1076, in _map_values\\n    return arr.map(mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/arrays/base.py\\\", line 3006, in map\\n    result = map_array(self, mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/algorithms.py\\\", line 2007, in map_array\\n    return lib.map_infer(values, mapper)\\n\", \"  File \\\"pandas/_libs/lib.pyx\\\", line 3390, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 20, in parse_signup_date\\n    return datetime.strptime(value.strip(), \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 567, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 352, in _strptime\\n    raise ValueError(\\\"unconverted data remains: %s\\\" %\\n\"]}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:10.284Z",
+          "type": "ExecutionFailed",
+          "id": 11,
+          "previousEventId": 10,
+          "executionFailedEventDetails": {
+            "error": "ValueError",
+            "cause": "{\"errorMessage\": \"unconverted data remains: T08:30:00Z\", \"errorType\": \"ValueError\", \"requestId\": \"adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 27, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 37, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].apply(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 5575, in apply\\n    ).apply()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1749, in apply\\n    return self.apply_standard()\\n\", \"  File \\\"/opt/python/pandas/core/apply.py\\\", line 1807, in apply_standard\\n    mapped = obj._map_values(mapper=curried)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 1076, in _map_values\\n    return arr.map(mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/arrays/base.py\\\", line 3006, in map\\n    result = map_array(self, mapper, na_action=na_action)\\n\", \"  File \\\"/opt/python/pandas/core/algorithms.py\\\", line 2007, in map_array\\n    return lib.map_infer(values, mapper)\\n\", \"  File \\\"pandas/_libs/lib.pyx\\\", line 3390, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 20, in parse_signup_date\\n    return datetime.strptime(value.strip(), \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 567, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 352, in _strptime\\n    raise ValueError(\\\"unconverted data remains: %s\\\" %\\n\"]}"
+          }
+        }
+      ]
+    },
+    {
+      "state_machine": "InventoryReportStateMachine-XyZ789",
+      "name": "inventory-2026-10-02",
+      "status": "FAILED",
+      "start_date": "2026-10-02T06:00:09.871Z",
+      "stop_date": "2026-10-02T06:00:12.857Z",
+      "redrive_count": 0,
+      "error": "KeyError",
+      "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"bd72208c-ee2b-4e19-a0d6-265f092ae468\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 28, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 29, in buildReport\\n    df[\\\"qty\\\"] = df[\\\"qty\\\"].fillna(0).astype(int)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}",
+      "input": "{\"run_date\":\"2026-10-02\",\"warehouses\":[\"Reno\",\"Dallas\",\"Newark\"]}",
+      "history": [
+        {
+          "timestamp": "2026-10-02T06:00:09.871Z",
+          "type": "ExecutionStarted",
+          "id": 1,
+          "previousEventId": 0,
+          "executionStartedEventDetails": {
+            "input": "{\"run_date\":\"2026-10-02\",\"warehouses\":[\"Reno\",\"Dallas\",\"Newark\"]}",
+            "inputDetails": {
+              "truncated": false
+            },
+            "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-InventoryReportStateMachineRole-9JK0LZ1XC2VB"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.898Z",
+          "type": "TaskStateEntered",
+          "id": 2,
+          "previousEventId": 0,
+          "stateEnteredEventDetails": {
+            "name": "GetInventory",
+            "input": "{\"run_date\":\"2026-10-02\",\"warehouses\":[\"Reno\",\"Dallas\",\"Newark\"]}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.898Z",
+          "type": "TaskScheduled",
+          "id": 3,
+          "previousEventId": 2,
+          "taskScheduledEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "region": "eu-west-1",
+            "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"get_inventory\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-02\"}}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.944Z",
+          "type": "TaskStarted",
+          "id": 4,
+          "previousEventId": 3,
+          "taskStartedEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.186Z",
+          "type": "TaskSucceeded",
+          "id": 5,
+          "previousEventId": 4,
+          "taskSucceededEventDetails": {
+            "resourceType": "lambda",
+            "resource": "invoke",
+            "output": "{\"ExecutedVersion\":\"$LATEST\",\"Payload\":{\"step\":\"get_inventory\",\"rows\":30},\"SdkHttpMetadata\":{\"AllHttpHeaders\":{\"Connection\":[\"keep-alive\"],\"Content-Length\":[\"34\"],\"Content-Type\":[\"application/json\"],\"Date\":[\"Fri, 02 Oct 2026 06:00:12 GMT\"],\"X-Amz-Executed-Version\":[\"$LATEST\"],\"x-amzn-Remapped-Content-Length\":[\"0\"],\"x-amzn-RequestId\":[\"b5025da7-3557-477f-a309-c0aab7f1ab14\"],\"X-Amzn-Trace-Id\":[\"Root=1-6abf486c-71109e904e9378b218da1610;Sampled=0\"]},\"HttpHeaders\":{\"Connection\":\"keep-alive\",\"Content-Length\":\"34\",\"Content-Type\":\"application/json\",\"Date\":\"Fri, 02 Oct 2026 06:00:12 GMT\",\"X-Amz-Executed-Version\":\"$LATEST\",\"x-amzn-Remapped-Content-Length\":\"0\",\"x-amzn-RequestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\",\"X-Amzn-Trace-Id\":\"Root=1-6abf486c-71109e904e9378b218da1610;Sampled=0\"},\"HttpStatusCode\":200},\"SdkResponseMetadata\":{\"RequestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\"},\"StatusCode\":200}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.187Z",
+          "type": "TaskStateExited",
+          "id": 6,
+          "previousEventId": 5,
+          "stateExitedEventDetails": {
+            "name": "GetInventory",
+            "output": "{\"run_date\":\"2026-10-02\",\"warehouses\":[\"Reno\",\"Dallas\",\"Newark\"]}",
+            "outputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.208Z",
+          "type": "MapStateEntered",
+          "id": 7,
+          "previousEventId": 6,
+          "stateEnteredEventDetails": {
+            "name": "PerWarehouse",
+            "input": "{\"run_date\":\"2026-10-02\",\"warehouses\":[\"Reno\",\"Dallas\",\"Newark\"]}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.212Z",
+          "type": "MapStateStarted",
+          "id": 8,
+          "previousEventId": 7,
+          "mapStateStartedEventDetails": {
+            "length": 3
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.218Z",
+          "type": "MapIterationStarted",
+          "id": 9,
+          "previousEventId": 8,
+          "mapIterationStartedEventDetails": {
+            "name": "PerWarehouse",
+            "index": 0
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.220Z",
+          "type": "TaskStateEntered",
+          "id": 10,
+          "previousEventId": 9,
+          "stateEnteredEventDetails": {
+            "name": "BuildReport",
+            "input": "{\"warehouse\":\"Reno\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-02\"}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.220Z",
+          "type": "LambdaFunctionScheduled",
+          "id": 11,
+          "previousEventId": 10,
+          "lambdaFunctionScheduledEventDetails": {
+            "resource": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+            "input": "{\"step\":\"build_report\",\"warehouse\":\"Reno\",\"execution\":\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-02\",\"args\":{\"low_stock_threshold\":25}}",
+            "inputDetails": {
+              "truncated": false
+            }
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.257Z",
+          "type": "LambdaFunctionStarted",
+          "id": 12,
+          "previousEventId": 11
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.821Z",
+          "type": "LambdaFunctionFailed",
+          "id": 13,
+          "previousEventId": 12,
+          "lambdaFunctionFailedEventDetails": {
+            "error": "KeyError",
+            "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"bd72208c-ee2b-4e19-a0d6-265f092ae468\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 28, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 29, in buildReport\\n    df[\\\"qty\\\"] = df[\\\"qty\\\"].fillna(0).astype(int)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.830Z",
+          "type": "MapIterationFailed",
+          "id": 14,
+          "previousEventId": 13,
+          "mapIterationFailedEventDetails": {
+            "name": "PerWarehouse",
+            "index": 0
+          }
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.833Z",
+          "type": "MapStateFailed",
+          "id": 15,
+          "previousEventId": 14
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.857Z",
+          "type": "ExecutionFailed",
+          "id": 16,
+          "previousEventId": 15,
+          "executionFailedEventDetails": {
+            "error": "KeyError",
+            "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"bd72208c-ee2b-4e19-a0d6-265f092ae468\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 28, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 29, in buildReport\\n    df[\\\"qty\\\"] = df[\\\"qty\\\"].fillna(0).astype(int)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+          }
+        }
+      ]
+    }
+  ],
+  "log_events": [
+    {
+      "group": "/aws/lambda/sfn-etl-SalesFunction-1A2B3C4D5E6F",
+      "stream": "2026/10/02/[$LATEST]b87e7faeb961015e791cb861e0f038dd",
+      "events": [
+        {
+          "timestamp": "2026-10-02T06:00:05.196Z",
+          "message": "INIT_START Runtime Version: python:3.11.v65\tRuntime Version ARN: arn:aws:lambda:eu-west-1::runtime:d92c6a81b2ff50096bcda80885427d1f59a25b5f483f7055523504925d16ab23\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:06.648Z",
+          "message": "START RequestId: 37916417-c88a-42d4-ac66-d6346d9e029e Version: $LATEST\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:06.804Z",
+          "message": "[INFO]\t2026-10-02T06:00:06.804Z\t37916417-c88a-42d4-ac66-d6346d9e029e\treceived event {\"step\": \"extract\", \"execution\": \"arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-02\"}\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:06.961Z",
+          "message": "[INFO]\t2026-10-02T06:00:06.961Z\t37916417-c88a-42d4-ac66-d6346d9e029e\treading s3://acme-landing/incoming/sales.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.117Z",
+          "message": "extracted 30 rows from data/incoming/sales.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.273Z",
+          "message": "[INFO]\t2026-10-02T06:00:07.273Z\t37916417-c88a-42d4-ac66-d6346d9e029e\twrote 30 rows to s3://acme-landing/processed/sales_staging.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.429Z",
+          "message": "END RequestId: 37916417-c88a-42d4-ac66-d6346d9e029e\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.429Z",
+          "message": "REPORT RequestId: 37916417-c88a-42d4-ac66-d6346d9e029e\tDuration: 781.62 ms\tBilled Duration: 782 ms\tMemory Size: 1024 MB\tMax Memory Used: 176 MB\tInit Duration: 1452.37 ms\t\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.527Z",
+          "message": "START RequestId: 668df81c-874a-45c3-a054-3b3befbcbc80 Version: $LATEST\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.681Z",
+          "message": "[INFO]\t2026-10-02T06:00:07.681Z\t668df81c-874a-45c3-a054-3b3befbcbc80\treceived event {\"step\": \"transform\", \"execution\": \"arn:aws:states:eu-west-1:123456789012:execution:SalesDailyEtlStateMachine-AbC123:sales-2026-10-02\", \"args\": {\"report_currency\": \"USD\"}}\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.834Z",
+          "message": "[INFO]\t2026-10-02T06:00:07.834Z\t668df81c-874a-45c3-a054-3b3befbcbc80\treading s3://acme-landing/processed/sales_staging.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:07.987Z",
+          "message": "[ERROR] KeyError: 'amount'\nTraceback (most recent call last):\n  File \"/var/task/app.py\", line 26, in handler\n    rows = STEPS[step](**event.get(\"args\", {}))\n  File \"/opt/python/etl/sales.py\", line 27, in transform_sales\n    df[\"amount\"] = pd.to_numeric(df[\"amount\"], errors=\"coerce\")\n  File \"/opt/python/pandas/core/frame.py\", line 4330, in __getitem__\n    indexer = self.columns.get_loc(key)\n  File \"/opt/python/pandas/core/indexes/base.py\", line 3823, in get_loc\n    raise KeyError(key) from err\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:08.140Z",
+          "message": "END RequestId: 668df81c-874a-45c3-a054-3b3befbcbc80\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:08.140Z",
+          "message": "REPORT RequestId: 668df81c-874a-45c3-a054-3b3befbcbc80\tDuration: 612.08 ms\tBilled Duration: 613 ms\tMemory Size: 1024 MB\tMax Memory Used: 181 MB\t\n"
+        }
+      ]
+    },
+    {
+      "group": "/aws/lambda/sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+      "stream": "2026/10/02/[$LATEST]0bfad71f12c3dc6a175f4fa15fca0694",
+      "events": [
+        {
+          "timestamp": "2026-10-02T06:00:07.429Z",
+          "message": "INIT_START Runtime Version: python:3.11.v65\tRuntime Version ARN: arn:aws:lambda:eu-west-1::runtime:d92c6a81b2ff50096bcda80885427d1f59a25b5f483f7055523504925d16ab23\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:08.907Z",
+          "message": "START RequestId: e6981074-9db2-4b32-af2c-08c13558b219 Version: $LATEST\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.081Z",
+          "message": "[INFO]\t2026-10-02T06:00:09.081Z\te6981074-9db2-4b32-af2c-08c13558b219\treceived event {\"step\": \"extract\", \"execution\": \"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\", \"requested_by\": \"alice.pii@example.com\"}\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.255Z",
+          "message": "[INFO]\t2026-10-02T06:00:09.255Z\te6981074-9db2-4b32-af2c-08c13558b219\treading s3://acme-landing/incoming/customers.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.428Z",
+          "message": "[INFO]\t2026-10-02T06:00:09.428Z\te6981074-9db2-4b32-af2c-08c13558b219\twrote 29 rows to s3://acme-landing/processed/customers_raw.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.602Z",
+          "message": "END RequestId: e6981074-9db2-4b32-af2c-08c13558b219\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.602Z",
+          "message": "REPORT RequestId: e6981074-9db2-4b32-af2c-08c13558b219\tDuration: 694.45 ms\tBilled Duration: 695 ms\tMemory Size: 1024 MB\tMax Memory Used: 174 MB\tInit Duration: 1478.91 ms\t\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.698Z",
+          "message": "START RequestId: adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65 Version: $LATEST\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.833Z",
+          "message": "[INFO]\t2026-10-02T06:00:09.833Z\tadcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\treceived event {\"step\": \"transform\", \"execution\": \"arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02\", \"requested_by\": \"alice.pii@example.com\"}\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:09.967Z",
+          "message": "[INFO]\t2026-10-02T06:00:09.967Z\tadcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\treading s3://acme-landing/processed/customers_raw.csv\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:10.102Z",
+          "message": "[ERROR] ValueError: unconverted data remains: T08:30:00Z\nTraceback (most recent call last):\n  File \"/var/task/app.py\", line 27, in handler\n    rows = STEPS[step](**event.get(\"args\", {}))\n  File \"/opt/python/etl/customers.py\", line 37, in transform_customers\n    df[\"signup_date\"] = df[\"signup_date\"].apply(parse_signup_date)\n  File \"/opt/python/pandas/core/series.py\", line 5575, in apply\n    ).apply()\n  File \"/opt/python/pandas/core/apply.py\", line 1749, in apply\n    return self.apply_standard()\n  File \"/opt/python/pandas/core/apply.py\", line 1807, in apply_standard\n    mapped = obj._map_values(mapper=curried)\n  File \"/opt/python/pandas/core/base.py\", line 1076, in _map_values\n    return arr.map(mapper, na_action=na_action)\n  File \"/opt/python/pandas/core/arrays/base.py\", line 3006, in map\n    result = map_array(self, mapper, na_action=na_action)\n  File \"/opt/python/pandas/core/algorithms.py\", line 2007, in map_array\n    return lib.map_infer(values, mapper)\n  File \"pandas/_libs/lib.pyx\", line 3390, in pandas._libs.lib.map_infer\n  File \"/opt/python/etl/customers.py\", line 20, in parse_signup_date\n    return datetime.strptime(value.strip(), \"%Y-%m-%d\").date()\n  File \"/var/lang/lib/python3.11/_strptime.py\", line 567, in _strptime_datetime\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\n  File \"/var/lang/lib/python3.11/_strptime.py\", line 352, in _strptime\n    raise ValueError(\"unconverted data remains: %s\" %\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:10.237Z",
+          "message": "END RequestId: adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\n"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:10.237Z",
+          "message": "REPORT RequestId: adcf22d3-7b9b-4102-a3b6-2f4ef51e0d65\tDuration: 538.73 ms\tBilled Duration: 539 ms\tMemory Size: 1024 MB\tMax Memory Used: 179 MB\t\n"
+        }
+      ]
+    },
+    {
+      "group": "/sfn-etl/inventory",
+      "stream": "2026/10/02/sfn-etl-InventoryFunction-3M4N5O6P7Q8R[$LATEST]49ecf838809daa804c0bb06a0f555eb8",
+      "events": [
+        {
+          "timestamp": "2026-10-02T06:00:09.955Z",
+          "message": "{\"time\":\"2026-10-02T06:00:09.955Z\",\"type\":\"platform.initStart\",\"record\":{\"initializationType\":\"on-demand\",\"phase\":\"init\",\"runtimeVersion\":\"python:3.11.v65\",\"runtimeVersionArn\":\"arn:aws:lambda:eu-west-1::runtime:d92c6a81b2ff50096bcda80885427d1f59a25b5f483f7055523504925d16ab23\"}}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:11.458Z",
+          "message": "{\"time\":\"2026-10-02T06:00:11.458Z\",\"type\":\"platform.start\",\"record\":{\"requestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\",\"version\":\"$LATEST\"}}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:11.634Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:11.634Z\",\"level\":\"INFO\",\"message\":\"received event {\\\"step\\\": \\\"get_inventory\\\", \\\"execution\\\": \\\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-02\\\"}\",\"logger\":\"root\",\"requestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\"}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:11.809Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:11.809Z\",\"level\":\"INFO\",\"message\":\"reading s3://acme-landing/incoming/inventory.csv\",\"logger\":\"etl\",\"requestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\"}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:11.985Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:11.985Z\",\"level\":\"INFO\",\"message\":\"inventory rows: 30, warehouses: ['Dallas', 'Newark', 'Reno']\",\"logger\":\"etl.inventory\",\"requestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\"}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.160Z",
+          "message": "{\"time\":\"2026-10-02T06:00:12.160Z\",\"type\":\"platform.report\",\"record\":{\"requestId\":\"b5025da7-3557-477f-a309-c0aab7f1ab14\",\"metrics\":{\"durationMs\":702.19,\"billedDurationMs\":703,\"memorySizeMB\":1024,\"maxMemoryUsedMB\":177,\"initDurationMs\":1503.66},\"status\":\"success\"}}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.268Z",
+          "message": "{\"time\":\"2026-10-02T06:00:12.268Z\",\"type\":\"platform.start\",\"record\":{\"requestId\":\"bd72208c-ee2b-4e19-a0d6-265f092ae468\",\"version\":\"$LATEST\"}}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.399Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:12.399Z\",\"level\":\"INFO\",\"message\":\"received event {\\\"step\\\": \\\"build_report\\\", \\\"warehouse\\\": \\\"Reno\\\", \\\"execution\\\": \\\"arn:aws:states:eu-west-1:123456789012:execution:InventoryReportStateMachine-XyZ789:inventory-2026-10-02\\\", \\\"args\\\": {\\\"low_stock_threshold\\\": 25}}\",\"logger\":\"root\",\"requestId\":\"bd72208c-ee2b-4e19-a0d6-265f092ae468\"}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.529Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:12.529Z\",\"level\":\"INFO\",\"message\":\"reading s3://acme-landing/incoming/inventory.csv\",\"logger\":\"etl\",\"requestId\":\"bd72208c-ee2b-4e19-a0d6-265f092ae468\"}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.660Z",
+          "message": "{\"timestamp\":\"2026-10-02T06:00:12Z\",\"log_level\":\"ERROR\",\"errorMessage\":\"'qty'\",\"errorType\":\"KeyError\",\"requestId\":\"bd72208c-ee2b-4e19-a0d6-265f092ae468\",\"stackTrace\":[\"  File \\\"/var/task/app.py\\\", line 28, in handler\\n    rows = STEPS[step](**event.get(\\\"args\\\", {}))\\n\",\"  File \\\"/opt/python/etl/inventory.py\\\", line 29, in buildReport\\n    df[\\\"qty\\\"] = df[\\\"qty\\\"].fillna(0).astype(int)\\n\",\"  File \\\"/opt/python/pandas/core/frame.py\\\", line 4330, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\",\"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3823, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+        },
+        {
+          "timestamp": "2026-10-02T06:00:12.790Z",
+          "message": "{\"time\":\"2026-10-02T06:00:12.790Z\",\"type\":\"platform.report\",\"record\":{\"requestId\":\"bd72208c-ee2b-4e19-a0d6-265f092ae468\",\"metrics\":{\"durationMs\":521.84,\"billedDurationMs\":522,\"memorySizeMB\":1024,\"maxMemoryUsedMB\":183},\"status\":\"error\"}}"
+        }
+      ]
+    }
+  ],
+  "objects": [
+    {
+      "bucket": "acme-landing",
+      "key": "incoming/sales.csv",
+      "file": "sfn_etl/s3/acme-landing/incoming/sales.csv"
+    },
+    {
+      "bucket": "acme-landing",
+      "key": "incoming/customers.csv",
+      "file": "sfn_etl/s3/acme-landing/incoming/customers.csv"
+    },
+    {
+      "bucket": "acme-landing",
+      "key": "incoming/inventory.csv",
+      "file": "sfn_etl/s3/acme-landing/incoming/inventory.csv"
+    }
+  ],
+  "queues": [
+    {
+      "url": "https://sqs.eu-west-1.amazonaws.com/123456789012/healer-sfn-events",
+      "messages": [
+        {
+          "body_file": "sfn_etl/sqs/customers-sync-failed.json"
+        }
+      ]
+    }
+  ]
+}

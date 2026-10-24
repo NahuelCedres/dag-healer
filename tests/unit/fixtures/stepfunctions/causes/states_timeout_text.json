@@ -1,0 +1,9 @@
+{
+  "description": "a Task timeout: the cause is plain text, not a Lambda payload [U wording]",
+  "error": "States.Timeout",
+  "cause": "Task timed out after 300 seconds (TimeoutSeconds of state TransformSales).",
+  "expected": {
+    "parsed": false,
+    "summary": "States.Timeout: Task timed out after 300 seconds (TimeoutSeconds of state TransformSales)."
+  }
+}

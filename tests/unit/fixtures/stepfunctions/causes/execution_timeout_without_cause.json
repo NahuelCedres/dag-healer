@@ -1,0 +1,9 @@
+{
+  "description": "an execution timeout without any cause",
+  "error": "States.Timeout",
+  "cause": null,
+  "expected": {
+    "parsed": false,
+    "summary": "States.Timeout"
+  }
+}

@@ -1,0 +1,163 @@
+{
+  "Comment": "Every state type, Map and Parallel nesting, and the Task integrations of the ASL",
+  "StartAt": "Fetch",
+  "States": {
+    "Fetch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:eu-west-1:123456789012:function:fetch:live",
+        "Payload.$": "$"
+      },
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException"], "MaxAttempts": 2},
+        "not a retrier"
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Failed"}],
+      "Next": "Fan"
+    },
+    "Fan": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Clean",
+          "States": {
+            "Clean": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:123456789012:function:clean",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "PerItem",
+          "States": {
+            "PerItem": {
+              "Type": "Map",
+              "ItemsPath": "$.items",
+              "Iterator": {
+                "StartAt": "Score",
+                "States": {
+                  "Score": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                    "Parameters": {
+                      "FunctionName": "score",
+                      "Payload": {"token.$": "$$.Task.Token"}
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Next": "Distribute"
+    },
+    "Distribute": {
+      "Type": "Map",
+      "Label": "Enrich",
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:getObject",
+        "ReaderConfig": {"InputType": "CSV", "CSVHeaderLocation": "FIRST_ROW"},
+        "Parameters": {"Bucket": "acme-landing", "Key": "incoming/orders.csv"}
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": "STANDARD"},
+        "StartAt": "Enrich",
+        "States": {
+          "Enrich": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {"FunctionName.$": "$.function", "Payload.$": "$"},
+            "End": true
+          }
+        }
+      },
+      "ResultWriter": {
+        "Resource": "arn:aws:states:::s3:putObject",
+        "Parameters": {"Bucket": "acme-results", "Prefix": "orders/"}
+      },
+      "Next": "Route"
+    },
+    "Route": {
+      "Type": "Choice",
+      "Choices": [{"Variable": "$.ok", "BooleanEquals": true, "Next": "Publish"}],
+      "Default": "Pause"
+    },
+    "Pause": {"Type": "Wait", "Seconds": 5, "Next": "Flags"},
+    "Flags": {
+      "Type": "Pass",
+      "Parameters": {"Bucket": "acme-landing", "Key": "lookup/flags.json"},
+      "Next": "Publish"
+    },
+    "Publish": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "publish",
+        "Arguments": {
+          "--input": "s3://acme-results/orders/manifest.json",
+          "--output.$": "$.output",
+          "--log": "s3://acme-logs/publish/"
+        }
+      },
+      "Next": "Archive"
+    },
+    "Archive": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+      "Parameters": {
+        "Bucket": "acme-archive",
+        "Key.$": "$.key",
+        "CopySource": "acme-results/orders/manifest.json"
+      },
+      "Next": "Notify"
+    },
+    "Notify": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:lambda:invoke",
+      "Parameters": {"FunctionName": "notify", "Payload": {"text": "done"}},
+      "Next": "Container"
+    },
+    "Container": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {"Cluster": "etl", "TaskDefinition": "report"},
+      "Next": "Batch"
+    },
+    "Batch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {"JobName": "rebuild", "JobQueue": "etl", "JobDefinition": "rebuild"},
+      "Next": "Call"
+    },
+    "Call": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {"ApiEndpoint": "https://example.com/hook", "Method": "POST"},
+      "Next": "Approve"
+    },
+    "Approve": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:eu-west-1:123456789012:activity:approve",
+      "Next": "Child"
+    },
+    "Child": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Parameters": {"StateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:child"},
+      "Next": "Topic"
+    },
+    "Topic": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {"TopicArn": "arn:aws:sns:eu-west-1:123456789012:etl", "Message": "done"},
+      "Next": "Done"
+    },
+    "Done": {"Type": "Succeed"},
+    "Failed": {"Type": "Fail", "Error": "FetchFailed", "Cause": "the fetch step failed"}
+  }
+}

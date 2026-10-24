@@ -1,0 +1,36 @@
+{
+  "version": "0",
+  "id": "5e4d3c2b-1a09-4f8e-b7d6-c5b4a3928170",
+  "detail-type": "Step Functions Execution Status Change",
+  "source": "aws.states",
+  "account": "123456789012",
+  "time": "2026-10-01T06:00:05Z",
+  "region": "eu-west-1",
+  "resources": [
+    "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-01"
+  ],
+  "detail": {
+    "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-01",
+    "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+    "name": "customers-2026-10-01",
+    "status": "SUCCEEDED",
+    "startDate": 1790834400000,
+    "stopDate": 1790834404871,
+    "input": "{\"date\": \"2026-10-01\", \"notify\": \"alice.pii@example.com\"}",
+    "output": "{\"rows\": 3, \"notify\": \"alice.pii@example.com\"}",
+    "stateMachineVersionArn": null,
+    "stateMachineAliasArn": null,
+    "redriveCount": 0,
+    "redriveDate": null,
+    "redriveStatus": "NOT_REDRIVABLE",
+    "redriveStatusReason": "Execution is SUCCEEDED and cannot be redriven",
+    "inputDetails": {
+      "included": true
+    },
+    "outputDetails": {
+      "included": true
+    },
+    "error": null,
+    "cause": null
+  }
+}

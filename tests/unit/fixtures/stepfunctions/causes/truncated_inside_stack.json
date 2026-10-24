@@ -1,0 +1,31 @@
+{
+  "description": "a cause cut (32 KB limit) inside the third stackTrace element",
+  "error": "KeyError",
+  "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f\", \"stackTrace\": [[\"/var/task/app.py\", 14, \"handler\", \"return STEPS[event[\\\"step\\\"]](event)\"], [\"/opt/python/etl/sales.py\", 31, \"transform_sales\", \"df[\\\"total\\\"] = df[\\\"amount\\\"] * df[\\\"unit_price\\\"]\"], [\"/opt/python/pandas/c",
+  "expected": {
+    "error_type": "KeyError",
+    "error_message": "'amount'",
+    "request_id": "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    "shape": "lambda",
+    "truncated": true,
+    "frames": [
+      [
+        "/var/task/app.py",
+        14,
+        "handler",
+        "return STEPS[event[\"step\"]](event)"
+      ],
+      [
+        "/opt/python/etl/sales.py",
+        31,
+        "transform_sales",
+        "df[\"total\"] = df[\"amount\"] * df[\"unit_price\"]"
+      ]
+    ],
+    "exception": [
+      "KeyError",
+      "'amount'"
+    ],
+    "summary": "KeyError: 'amount'"
+  }
+}

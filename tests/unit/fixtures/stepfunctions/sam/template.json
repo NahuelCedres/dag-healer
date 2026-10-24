@@ -1,0 +1,32 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "A JSON CloudFormation template: a plain Lambda function and a state machine whose definition is a Fn::Sub string",
+  "Resources": {
+    "ScoreFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": "lambdas/score",
+        "Handler": "score.main.handler",
+        "Runtime": "python3.11",
+        "Layers": [{"Ref": "Shared"}, "arn:aws:lambda:eu-west-1:123456789012:layer:extern:3"],
+        "LoggingConfig": {"LogGroup": "/acme/score"}
+      }
+    },
+    "Shared": {
+      "Type": "AWS::Lambda::LayerVersion",
+      "Properties": {"Content": "layers/shared"}
+    },
+    "Scoring": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "scoring",
+        "DefinitionString": {
+          "Fn::Sub": [
+            "{\"StartAt\": \"Score\", \"States\": {\"Score\": {\"Type\": \"Task\", \"Resource\": \"${Target}\", \"Next\": \"Rank\"}, \"Rank\": {\"Type\": \"Task\", \"Resource\": \"arn:aws:states:::lambda:invoke\", \"Parameters\": {\"FunctionName\": \"${ScoreFunction.Arn}\"}, \"End\": true}}}",
+            {"Target": {"Fn::GetAtt": ["ScoreFunction", "Arn"]}}
+          ]
+        }
+      }
+    }
+  }
+}

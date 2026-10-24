@@ -1,0 +1,16 @@
+{
+  "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02",
+  "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+  "name": "customers-2026-10-02",
+  "status": "FAILED",
+  "startDate": "2026-10-02T06:00:00.000Z",
+  "stopDate": "2026-10-02T06:00:03.700Z",
+  "input": "{\"date\": \"2026-10-02\", \"notify\": \"alice.pii@example.com\"}",
+  "inputDetails": {
+    "included": true
+  },
+  "error": "ValueError",
+  "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"requestId\": \"3d9c1f0a-8b2e-4c7d-9e6f-5a4b3c2d1e0f\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 31, in transform_customers\\n    frame[\\\"signup\\\"] = frame[\\\"signup\\\"].map(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4540, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}",
+  "redriveCount": 0,
+  "redriveStatus": "REDRIVABLE"
+}

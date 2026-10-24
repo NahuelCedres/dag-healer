@@ -1,0 +1,18 @@
+{
+  "description": "the package cannot load: an empty stackTrace",
+  "error": "Runtime.ImportModuleError",
+  "cause": "{\"errorMessage\": \"Unable to import module 'app': No module named 'pandas'\", \"errorType\": \"Runtime.ImportModuleError\", \"requestId\": \"3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b\", \"stackTrace\": []}",
+  "expected": {
+    "error_type": "Runtime.ImportModuleError",
+    "error_message": "Unable to import module 'app': No module named 'pandas'",
+    "request_id": "3b9e7a51-0c2d-4e6f-9a8b-7c6d5e4f3a2b",
+    "shape": "lambda-no-trace",
+    "truncated": false,
+    "frames": [],
+    "exception": [
+      "Runtime.ImportModuleError",
+      "Unable to import module 'app': No module named 'pandas'"
+    ],
+    "summary": "Runtime.ImportModuleError: Unable to import module 'app': No module named 'pandas'"
+  }
+}

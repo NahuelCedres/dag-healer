@@ -1,0 +1,155 @@
+{
+  "description": "customers_sync: TransformCustomers raises the ValueError of the latent parse_signup_date bug; no retrier matches. Read with includeExecutionData=true: inputs, outputs and the Lambda parameters carry alice.pii@example.com, which must never reach a localisation.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "input": "{\"date\": \"2026-10-02\", \"notify\": \"alice.pii@example.com\"}",
+        "inputDetails": {
+          "truncated": false
+        },
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ExtractCustomers",
+        "input": "{\"date\": \"2026-10-02\", \"notify\": \"alice.pii@example.com\"}",
+        "inputDetails": {
+          "truncated": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"extract\",\"date\":\"2026-10-02\",\"notify\":\"alice.pii@example.com\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.060Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "output": "{\"rows\": 3, \"notify\": \"alice.pii@example.com\", \"file\": \"incoming/customers.csv\"}",
+        "outputDetails": {
+          "truncated": false
+        }
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.100Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "ExtractCustomers",
+        "output": "{\"rows\": 3, \"notify\": \"alice.pii@example.com\", \"file\": \"incoming/customers.csv\"}",
+        "outputDetails": {
+          "truncated": false
+        }
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.140Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformCustomers",
+        "input": "{\"rows\": 3, \"notify\": \"alice.pii@example.com\", \"file\": \"incoming/customers.csv\"}",
+        "inputDetails": {
+          "truncated": false
+        }
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.200Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"transform\",\"notify\":\"alice.pii@example.com\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:03.660Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "ValueError",
+        "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"requestId\": \"3d9c1f0a-8b2e-4c7d-9e6f-5a4b3c2d1e0f\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 31, in transform_customers\\n    frame[\\\"signup\\\"] = frame[\\\"signup\\\"].map(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4540, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:03.700Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "ValueError",
+        "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"requestId\": \"3d9c1f0a-8b2e-4c7d-9e6f-5a4b3c2d1e0f\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 31, in transform_customers\\n    frame[\\\"signup\\\"] = frame[\\\"signup\\\"].map(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4540, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "TransformCustomers",
+    "map_index": -1,
+    "error": "ValueError",
+    "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"requestId\": \"3d9c1f0a-8b2e-4c7d-9e6f-5a4b3c2d1e0f\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 31, in transform_customers\\n    frame[\\\"signup\\\"] = frame[\\\"signup\\\"].map(parse_signup_date)\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4540, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}",
+    "event_type": "TaskFailed",
+    "failed_event_id": 10,
+    "entered_event_id": 7,
+    "retry_attempts": 0,
+    "resource": "invoke",
+    "resource_type": "lambda",
+    "function_name": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L",
+    "step_path": null,
+    "started_at": "2026-10-02T06:00:02.260Z",
+    "failed_at": "2026-10-02T06:00:03.660Z",
+    "terminal": true,
+    "notes": []
+  }
+}

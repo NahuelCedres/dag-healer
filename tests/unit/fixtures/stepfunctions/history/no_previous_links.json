@@ -1,0 +1,165 @@
+{
+  "description": "A degraded history where every previousEventId is 0: the nearest open Task entry names the state (TransformSales), the throttled first try counts as a retry and the KeyError ends it.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.160Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.200Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.240Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.360Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:02.660Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "Lambda.TooManyRequestsException",
+        "cause": "Rate Exceeded. (Service: Lambda, Status Code: 429, Request ID: 8c7b6a59-4837-4261-9f0e-1d2c3b4a5968)"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:04.660Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:04.720Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:06.420Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:06.460Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "TransformSales",
+    "error": "KeyError",
+    "event_type": "TaskFailed",
+    "failed_event_id": 13,
+    "entered_event_id": 7,
+    "retry_attempts": 1,
+    "function_name": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F",
+    "started_at": "2026-10-02T06:00:04.720Z",
+    "terminal": true,
+    "notes": [
+      "The failing state was found without previousEventId links (nearest open state)."
+    ]
+  }
+}

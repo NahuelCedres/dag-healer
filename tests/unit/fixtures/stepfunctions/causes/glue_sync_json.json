@@ -1,0 +1,9 @@
+{
+  "description": "a .sync integration cause: JSON, but not a Lambda payload",
+  "error": "States.TaskFailed",
+  "cause": "{\"JobName\":\"sales-compaction\",\"JobRunState\":\"FAILED\",\"ErrorMessage\":\"Out of memory\"}",
+  "expected": {
+    "parsed": false,
+    "summary": "States.TaskFailed: {\"JobName\":\"sales-compaction\",\"JobRunState\":\"FAILED\",\"ErrorMessage\":\"Out of memory\"}"
+  }
+}

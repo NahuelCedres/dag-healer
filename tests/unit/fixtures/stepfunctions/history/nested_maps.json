@@ -1,0 +1,430 @@
+{
+  "description": "Nested inline Maps: PerRegion iteration 1 runs the inner Map PerWarehouse, whose iteration 2 fails in BuildReport (region 0 succeeded before). map_index is the innermost iteration and step_path names both levels.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerRegion"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 2
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.085Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerRegion",
+        "index": 0
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.090Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerRegion",
+        "index": 1
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:00.130Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:00.170Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 1
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:00.210Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:00.250Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:00.310Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"EU-1\"}}"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:00.370Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:00:01.570Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:00:01.610Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 13,
+      "timestamp": "2026-10-02T06:00:01.650Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 15,
+      "previousEventId": 14,
+      "timestamp": "2026-10-02T06:00:01.690Z",
+      "type": "MapStateSucceeded"
+    },
+    {
+      "id": 16,
+      "previousEventId": 15,
+      "timestamp": "2026-10-02T06:00:01.730Z",
+      "type": "MapStateExited",
+      "stateExitedEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 17,
+      "previousEventId": 16,
+      "timestamp": "2026-10-02T06:00:01.770Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerRegion",
+        "index": 0
+      }
+    },
+    {
+      "id": 18,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:01.810Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 19,
+      "previousEventId": 18,
+      "timestamp": "2026-10-02T06:00:01.850Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 3
+      }
+    },
+    {
+      "id": 20,
+      "previousEventId": 19,
+      "timestamp": "2026-10-02T06:00:01.855Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 21,
+      "previousEventId": 19,
+      "timestamp": "2026-10-02T06:00:01.860Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 22,
+      "previousEventId": 19,
+      "timestamp": "2026-10-02T06:00:01.865Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 2
+      }
+    },
+    {
+      "id": 23,
+      "previousEventId": 20,
+      "timestamp": "2026-10-02T06:00:01.905Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 24,
+      "previousEventId": 21,
+      "timestamp": "2026-10-02T06:00:01.945Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 25,
+      "previousEventId": 22,
+      "timestamp": "2026-10-02T06:00:01.985Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 26,
+      "previousEventId": 23,
+      "timestamp": "2026-10-02T06:00:01.995Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"US-1\"}}"
+      }
+    },
+    {
+      "id": 27,
+      "previousEventId": 24,
+      "timestamp": "2026-10-02T06:00:02.005Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"US-2\"}}"
+      }
+    },
+    {
+      "id": 28,
+      "previousEventId": 25,
+      "timestamp": "2026-10-02T06:00:02.015Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R\",\"Payload\":{\"step\":\"build\",\"warehouse\":\"US-3\"}}"
+      }
+    },
+    {
+      "id": 29,
+      "previousEventId": 26,
+      "timestamp": "2026-10-02T06:00:02.025Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 30,
+      "previousEventId": 27,
+      "timestamp": "2026-10-02T06:00:02.035Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 31,
+      "previousEventId": 28,
+      "timestamp": "2026-10-02T06:00:02.045Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 32,
+      "previousEventId": 29,
+      "timestamp": "2026-10-02T06:00:03.145Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 33,
+      "previousEventId": 32,
+      "timestamp": "2026-10-02T06:00:03.185Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 34,
+      "previousEventId": 33,
+      "timestamp": "2026-10-02T06:00:03.225Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 35,
+      "previousEventId": 30,
+      "timestamp": "2026-10-02T06:00:03.265Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 36,
+      "previousEventId": 35,
+      "timestamp": "2026-10-02T06:00:03.305Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 37,
+      "previousEventId": 36,
+      "timestamp": "2026-10-02T06:00:03.345Z",
+      "type": "MapIterationSucceeded",
+      "mapIterationSucceededEventDetails": {
+        "name": "PerWarehouse",
+        "index": 1
+      }
+    },
+    {
+      "id": 38,
+      "previousEventId": 31,
+      "timestamp": "2026-10-02T06:00:03.405Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    },
+    {
+      "id": 39,
+      "previousEventId": 38,
+      "timestamp": "2026-10-02T06:00:03.445Z",
+      "type": "MapIterationFailed",
+      "mapIterationFailedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 2
+      }
+    },
+    {
+      "id": 40,
+      "previousEventId": 39,
+      "timestamp": "2026-10-02T06:00:03.455Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 41,
+      "previousEventId": 40,
+      "timestamp": "2026-10-02T06:00:03.495Z",
+      "type": "MapIterationFailed",
+      "mapIterationFailedEventDetails": {
+        "name": "PerRegion",
+        "index": 1
+      }
+    },
+    {
+      "id": 42,
+      "previousEventId": 41,
+      "timestamp": "2026-10-02T06:00:03.505Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 43,
+      "previousEventId": 42,
+      "timestamp": "2026-10-02T06:00:03.545Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "BuildReport",
+    "map_index": 2,
+    "error": "KeyError",
+    "event_type": "TaskFailed",
+    "failed_event_id": 38,
+    "entered_event_id": 25,
+    "retry_attempts": 0,
+    "step_path": "PerRegion[1]/PerWarehouse[2]/BuildReport",
+    "terminal": true,
+    "notes": []
+  }
+}

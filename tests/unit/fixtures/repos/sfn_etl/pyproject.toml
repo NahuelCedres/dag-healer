@@ -1,0 +1,11 @@
+[project]
+name = "sfn-etl"
+version = "0.1.0"
+description = "The sales, customers and inventory batch jobs on AWS Step Functions and Lambda"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.1"]
+
+[tool.pytest.ini_options]
+# In Lambda the shared code is the EtlLayer (/opt/python/etl): the functions and the tests
+# import it as `etl`.
+pythonpath = ["src"]

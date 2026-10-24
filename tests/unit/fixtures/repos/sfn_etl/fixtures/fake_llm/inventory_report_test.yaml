@@ -1,0 +1,61 @@
+# Fake LLM script: AMBIGUOUS scenario (inventory_report) once a human resolves it as
+# "code" (the upstream rename of qty -> quantity is intended), phase "test".
+# The test feeds buildReport the new schema through monkeypatch (no data files are
+# read or written) and fails before the fix with KeyError: 'qty'.
+name: inventory_report_test
+match:
+  dag_id: inventory_report
+  task_id: BuildReport
+  exception_type: KeyError
+  phase: test
+steps:
+  - tool: read_file
+    input: {path: src/etl/inventory.py}
+  - tool: write_file
+    input:
+      path: tests/test_inventory_build_report.py
+      content: |
+        """Regression test for inventory_report: the export renamed qty to quantity."""
+
+        import pandas as pd
+
+        from etl import inventory
+
+
+        def _run_build_report(monkeypatch, frame):
+            written = {}
+            monkeypatch.setattr(inventory, "_load", lambda: frame.copy())
+            monkeypatch.setattr(inventory.common, "write_output", lambda df, name: written.setdefault(name, df))
+            rows = inventory.buildReport()
+            return rows, written["inventory_by_sku"].set_index("sku")
+
+
+        def test_build_report_accepts_the_quantity_column(monkeypatch):
+            frame = pd.DataFrame(
+                {
+                    "sku": ["SKU-1", "SKU-1", "SKU-2"],
+                    "warehouse": ["Reno", "Dallas", "Reno"],
+                    "warehouse_code": ["RNO-1", "DFW-2", "RNO-1"],
+                    "quantity": [5, 10, 200],
+                }
+            )
+            rows, stock = _run_build_report(monkeypatch, frame)
+            assert rows == 2
+            assert stock.loc["SKU-1", "qty"] == 15
+            assert bool(stock.loc["SKU-1", "low_stock"]) is True
+            assert stock.loc["SKU-2", "qty"] == 200
+            assert bool(stock.loc["SKU-2", "low_stock"]) is False
+
+
+        def test_build_report_still_accepts_the_qty_column(monkeypatch):
+            frame = pd.DataFrame({"sku": ["SKU-1", "SKU-2"], "warehouse": ["Reno", "Reno"], "qty": [3, 50]})
+            rows, stock = _run_build_report(monkeypatch, frame)
+            assert rows == 2
+            assert stock.loc["SKU-1", "qty"] == 3
+  - tool: run_tests
+    input:
+      paths: [tests/test_inventory_build_report.py]
+final_text: >-
+  Added tests/test_inventory_build_report.py. test_build_report_accepts_the_quantity_column
+  reproduces the failure of the BuildReport state of inventory_report: the inventory export now
+  names the stock column quantity (and adds warehouse_code), and buildReport still reads qty.

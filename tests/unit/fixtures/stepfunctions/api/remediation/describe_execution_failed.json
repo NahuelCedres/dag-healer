@@ -1,0 +1,14 @@
+{
+  "executionArn": "arn:aws:states:eu-west-1:123456789012:execution:customers-sync:customers-2026-10-02",
+  "stateMachineArn": "arn:aws:states:eu-west-1:123456789012:stateMachine:customers-sync",
+  "name": "customers-2026-10-02",
+  "status": "FAILED",
+  "startDate": "2026-10-02T06:00:00.000Z",
+  "stopDate": "2026-10-02T06:00:41.512Z",
+  "input": "{\"step\": \"transform\", \"file\": \"incoming/customers.csv\", \"notify\": \"alice.pii@example.com\"}",
+  "inputDetails": {"included": true},
+  "error": "ValueError",
+  "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"requestId\": \"5f0c7d1e-2b44-4c1a-9a63-0e8a3c2b9d41\", \"stackTrace\": []}",
+  "redriveCount": 0,
+  "redriveStatus": "REDRIVABLE"
+}

@@ -1,0 +1,68 @@
+{
+  "description": "GetExecutionHistory of orders-2026-10-02 (includeExecutionData=true): LoadOrders fails with a KeyError",
+  "events": [
+    {
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "id": 1,
+      "previousEventId": 0,
+      "executionStartedEventDetails": {
+        "input": "{\"run_date\":\"2026-10-02\",\"contact\":\"orders.owner@example.com\"}",
+        "inputDetails": {"truncated": false},
+        "roleArn": "arn:aws:iam::123456789012:role/service-role/StepFunctions-orders-etl-role"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.031Z",
+      "type": "TaskStateEntered",
+      "id": 2,
+      "previousEventId": 0,
+      "stateEnteredEventDetails": {
+        "name": "LoadOrders",
+        "input": "{\"run_date\":\"2026-10-02\",\"contact\":\"orders.owner@example.com\"}",
+        "inputDetails": {"truncated": false}
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.031Z",
+      "type": "TaskScheduled",
+      "id": 3,
+      "previousEventId": 2,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:orders-fn\",\"Payload\":{\"step\":\"load\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.074Z",
+      "type": "TaskStarted",
+      "id": 4,
+      "previousEventId": 3,
+      "taskStartedEventDetails": {"resourceType": "lambda", "resource": "invoke"}
+    },
+    {
+      "timestamp": "2026-10-02T06:00:01.512Z",
+      "type": "TaskFailed",
+      "id": 5,
+      "previousEventId": 4,
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 12, in handler\\n    return load(event)\\n\"]}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:01.530Z",
+      "type": "ExecutionFailed",
+      "id": 6,
+      "previousEventId": 5,
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"5b0c2f7e-1d3a-4c55-9f0e-2a7d1c9e8b61\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 12, in handler\\n    return load(event)\\n\"]}"
+      }
+    }
+  ]
+}

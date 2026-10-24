@@ -1,0 +1,279 @@
+{
+  "description": "sales_daily_etl failed (KeyError, no retry), was redriven once (ExecutionRedriven, redriveCount 1) and failed again: a Lambda.ServiceException retried once, then the same KeyError. Only the latest segment counts (attempt 2, retry counters reset); redrive_count 0 localises the first.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.340Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.400Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.460Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:04.160Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:04.200Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    },
+    {
+      "id": 12,
+      "previousEventId": 11,
+      "timestamp": "2026-10-02T06:30:04.200Z",
+      "type": "ExecutionRedriven",
+      "executionRedrivenEventDetails": {
+        "redriveCount": 1
+      }
+    },
+    {
+      "id": 13,
+      "previousEventId": 12,
+      "timestamp": "2026-10-02T06:30:04.240Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 14,
+      "previousEventId": 13,
+      "timestamp": "2026-10-02T06:30:04.300Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 15,
+      "previousEventId": 14,
+      "timestamp": "2026-10-02T06:30:04.360Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 16,
+      "previousEventId": 15,
+      "timestamp": "2026-10-02T06:30:04.660Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "Lambda.ServiceException",
+        "cause": "An error occurred (ServiceException) when calling the Invoke operation (reached max retries: 0): Service Unavailable (Service: Lambda, Status Code: 503, Request ID: 2f1e0d9c-8b7a-4c6d-5e4f-3a2b1c0d9e8f)"
+      }
+    },
+    {
+      "id": 17,
+      "previousEventId": 16,
+      "timestamp": "2026-10-02T06:30:06.660Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 18,
+      "previousEventId": 17,
+      "timestamp": "2026-10-02T06:30:06.720Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 19,
+      "previousEventId": 18,
+      "timestamp": "2026-10-02T06:30:08.370Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"0b7c2d9e-4f1a-4a3b-8c5d-6e7f8a9b0c1d\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    },
+    {
+      "id": 20,
+      "previousEventId": 19,
+      "timestamp": "2026-10-02T06:30:08.410Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"0b7c2d9e-4f1a-4a3b-8c5d-6e7f8a9b0c1d\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "TransformSales",
+    "map_index": -1,
+    "redrive_count": 1,
+    "error": "KeyError",
+    "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"0b7c2d9e-4f1a-4a3b-8c5d-6e7f8a9b0c1d\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}",
+    "event_type": "TaskFailed",
+    "failed_event_id": 19,
+    "entered_event_id": 13,
+    "retry_attempts": 1,
+    "started_at": "2026-10-02T06:30:06.720Z",
+    "failed_at": "2026-10-02T06:30:08.370Z",
+    "terminal": true,
+    "notes": []
+  },
+  "variants": [
+    {
+      "redrive_count": 1,
+      "expected": {
+        "step_id": "TransformSales",
+        "map_index": -1,
+        "redrive_count": 1,
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"0b7c2d9e-4f1a-4a3b-8c5d-6e7f8a9b0c1d\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}",
+        "event_type": "TaskFailed",
+        "failed_event_id": 19,
+        "entered_event_id": 13,
+        "retry_attempts": 1,
+        "started_at": "2026-10-02T06:30:06.720Z",
+        "failed_at": "2026-10-02T06:30:08.370Z",
+        "terminal": true,
+        "notes": []
+      }
+    },
+    {
+      "redrive_count": 0,
+      "expected": {
+        "step_id": "TransformSales",
+        "redrive_count": 0,
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'amount'\", \"errorType\": \"KeyError\", \"requestId\": \"6f3e8a52-1c4b-4d5e-9a7f-2b8c9d0e1f23\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/sales.py\\\", line 23, in transform_sales\\n    frame[\\\"amount\\\"] = frame[\\\"amount\\\"].astype(float)\\n\", \"  File \\\"/opt/python/pandas/core/frame.py\\\", line 3893, in __getitem__\\n    indexer = self.columns.get_loc(key)\\n\", \"  File \\\"/opt/python/pandas/core/indexes/base.py\\\", line 3797, in get_loc\\n    raise KeyError(key) from err\\n\"]}",
+        "event_type": "TaskFailed",
+        "failed_event_id": 10,
+        "entered_event_id": 7,
+        "retry_attempts": 0,
+        "terminal_event_type": "ExecutionFailed",
+        "failed_at": "2026-10-02T06:00:04.160Z",
+        "terminal": true,
+        "notes": []
+      }
+    },
+    {
+      "redrive_count": 2,
+      "expected": {
+        "step_id": "__run__",
+        "redrive_count": 2,
+        "error": null,
+        "event_type": null,
+        "failed_event_id": null,
+        "terminal": false,
+        "notes": [
+          "The history holds no event of redrive 2."
+        ]
+      }
+    }
+  ]
+}

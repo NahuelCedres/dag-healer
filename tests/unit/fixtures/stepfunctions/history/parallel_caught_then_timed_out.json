@@ -1,0 +1,115 @@
+{
+  "description": "PublishCatalog fails inside the Parallel state PublishOutputs, whose Catch handles it (ParallelStateExited); the execution later times out in a Wait state: the caught branch failure does not count, the failure is run-level.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "ParallelStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PublishOutputs"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "ParallelStateStarted"
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.120Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PublishCatalog"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:00.180Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-PublishFunction-9S8T7U6V5W4X\",\"Payload\":{\"target\":\"catalog\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:00.240Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:01.140Z",
+      "type": "TaskFailed",
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "TypeError",
+        "cause": "{\"errorMessage\": \"Object of type Decimal is not JSON serializable\", \"errorType\": \"TypeError\", \"requestId\": \"5c4b3a29-1807-4f6e-9d5c-4b3a29180706\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 21, in handler\\n    body = json.dumps(catalog)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/__init__.py\\\", line 231, in dumps\\n    return _default_encoder.encode(obj)\\n\", \"  File \\\"/var/lang/lib/python3.11/json/encoder.py\\\", line 180, in default\\n    raise TypeError(f'Object of type {o.__class__.__name__} '\\n\"]}"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:01.150Z",
+      "type": "ParallelStateFailed"
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:01.190Z",
+      "type": "ParallelStateExited",
+      "stateExitedEventDetails": {
+        "name": "PublishOutputs"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:01.230Z",
+      "type": "WaitStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "WaitForRetryWindow"
+      }
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:01:01.230Z",
+      "type": "ExecutionTimedOut",
+      "executionTimedOutEventDetails": {
+        "error": "States.Timeout"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "__run__",
+    "error": "States.Timeout",
+    "event_type": "ExecutionTimedOut",
+    "failed_event_id": 11,
+    "terminal": true,
+    "notes": [
+      "No step failure in this redrive segment: a run-level failure."
+    ]
+  }
+}

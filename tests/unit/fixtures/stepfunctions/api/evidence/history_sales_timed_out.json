@@ -1,0 +1,53 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-10-02T06:05:00.000Z",
+      "type": "ExecutionTimedOut",
+      "id": 5,
+      "previousEventId": 4,
+      "executionTimedOutEventDetails": {
+        "error": "States.Timeout"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.120Z",
+      "type": "TaskStarted",
+      "id": 4,
+      "previousEventId": 3,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.060Z",
+      "type": "TaskScheduled",
+      "id": 3,
+      "previousEventId": 2,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"run_date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.050Z",
+      "type": "TaskStateEntered",
+      "id": 2,
+      "previousEventId": 0,
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "id": 1,
+      "previousEventId": 0,
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-1QWERTY"
+      }
+    }
+  ]
+}

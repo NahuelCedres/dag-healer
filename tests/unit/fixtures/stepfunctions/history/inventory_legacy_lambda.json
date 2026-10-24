@@ -1,0 +1,121 @@
+{
+  "description": "inventory_report: the inline Map PerWarehouse (MaxConcurrency 1) runs BuildReport, a Task whose Resource is the function ARN (legacy LambdaFunction* events); iteration 0 raises KeyError 'qty' and the Map fails the execution.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "MapStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "PerWarehouse"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.080Z",
+      "type": "MapStateStarted",
+      "mapStateStartedEventDetails": {
+        "length": 3
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.120Z",
+      "type": "MapIterationStarted",
+      "mapIterationStartedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "BuildReport"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:00.220Z",
+      "type": "LambdaFunctionScheduled",
+      "lambdaFunctionScheduledEventDetails": {
+        "resource": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+        "timeoutInSeconds": 60
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:00.280Z",
+      "type": "LambdaFunctionStarted"
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:01.580Z",
+      "type": "LambdaFunctionFailed",
+      "lambdaFunctionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:01.620Z",
+      "type": "MapIterationFailed",
+      "mapIterationFailedEventDetails": {
+        "name": "PerWarehouse",
+        "index": 0
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:01.630Z",
+      "type": "MapStateFailed"
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:01.670Z",
+      "type": "ExecutionFailed",
+      "executionFailedEventDetails": {
+        "error": "KeyError",
+        "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "BuildReport",
+    "map_index": 0,
+    "error": "KeyError",
+    "cause": "{\"errorMessage\": \"'qty'\", \"errorType\": \"KeyError\", \"requestId\": \"9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/inventory.py\\\", line 19, in build_report\\n    totals = frame.groupby(\\\"sku\\\")[\\\"qty\\\"].sum()\\n\", \"  File \\\"/opt/python/pandas/core/groupby/generic.py\\\", line 1951, in __getitem__\\n    return super().__getitem__(key)\\n\", \"  File \\\"/opt/python/pandas/core/base.py\\\", line 244, in __getitem__\\n    raise KeyError(f\\\"Column not found: {key}\\\")\\n\"]}",
+    "event_type": "LambdaFunctionFailed",
+    "failed_event_id": 8,
+    "entered_event_id": 5,
+    "retry_attempts": 0,
+    "resource": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+    "resource_type": "lambda",
+    "function_name": "arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-InventoryFunction-3M4N5O6P7Q8R",
+    "step_path": "PerWarehouse[0]/BuildReport",
+    "started_at": "2026-10-02T06:00:00.280Z",
+    "failed_at": "2026-10-02T06:00:01.580Z",
+    "terminal": true,
+    "notes": []
+  }
+}

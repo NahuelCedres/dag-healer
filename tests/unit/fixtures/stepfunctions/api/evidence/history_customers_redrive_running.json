@@ -1,0 +1,156 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-10-02T06:30:00.100Z",
+      "type": "TaskStarted",
+      "id": 15,
+      "previousEventId": 14,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:30:00.030Z",
+      "type": "TaskScheduled",
+      "id": 14,
+      "previousEventId": 13,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"transform\",\"run_date\":\"2026-10-02\",\"notify\":\"alice.pii@example.com\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:30:00.020Z",
+      "type": "TaskStateEntered",
+      "id": 13,
+      "previousEventId": 12,
+      "stateEnteredEventDetails": {
+        "name": "TransformCustomers"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:30:00.000Z",
+      "type": "ExecutionRedriven",
+      "id": 12,
+      "previousEventId": 0,
+      "executionRedrivenEventDetails": {
+        "redriveCount": 1
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:33.310Z",
+      "type": "ExecutionFailed",
+      "id": 11,
+      "previousEventId": 10,
+      "executionFailedEventDetails": {
+        "error": "ValueError",
+        "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 27, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].map(parse_signup_date)\\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4691, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"lib.pyx\\\", line 2972, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:33.200Z",
+      "type": "TaskFailed",
+      "id": 10,
+      "previousEventId": 9,
+      "taskFailedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "error": "ValueError",
+        "cause": "{\"errorMessage\": \"time data '2026-10-02T14:03:00Z' does not match format '%Y-%m-%d'\", \"errorType\": \"ValueError\", \"stackTrace\": [\"  File \\\"/var/task/app.py\\\", line 14, in handler\\n    return STEPS[event[\\\"step\\\"]](event)\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 27, in transform_customers\\n    df[\\\"signup_date\\\"] = df[\\\"signup_date\\\"].map(parse_signup_date)\\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/opt/python/pandas/core/series.py\\\", line 4691, in map\\n    new_values = self._map_values(arg, na_action=na_action)\\n\", \"  File \\\"lib.pyx\\\", line 2972, in pandas._libs.lib.map_infer\\n\", \"  File \\\"/opt/python/etl/customers.py\\\", line 12, in parse_signup_date\\n    return datetime.strptime(value, \\\"%Y-%m-%d\\\").date()\\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 568, in _strptime_datetime\\n    tt, fraction, gmtoff_fraction = _strptime(data_string, format)\\n\", \"  File \\\"/var/lang/lib/python3.11/_strptime.py\\\", line 349, in _strptime\\n    raise ValueError(\\\"time data %r does not match format %r\\\" %\\n\"]}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:15.100Z",
+      "type": "TaskStarted",
+      "id": 9,
+      "previousEventId": 8,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:15.030Z",
+      "type": "TaskScheduled",
+      "id": 8,
+      "previousEventId": 7,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"transform\",\"run_date\":\"2026-10-02\",\"notify\":\"alice.pii@example.com\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:15.020Z",
+      "type": "TaskStateEntered",
+      "id": 7,
+      "previousEventId": 6,
+      "stateEnteredEventDetails": {
+        "name": "TransformCustomers"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:15.010Z",
+      "type": "TaskStateExited",
+      "id": 6,
+      "previousEventId": 5,
+      "stateExitedEventDetails": {
+        "name": "ExtractCustomers"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:15.000Z",
+      "type": "TaskSucceeded",
+      "id": 5,
+      "previousEventId": 4,
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.110Z",
+      "type": "TaskStarted",
+      "id": 4,
+      "previousEventId": 3,
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.050Z",
+      "type": "TaskScheduled",
+      "id": 3,
+      "previousEventId": 2,
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-CustomersFunction-7G8H9I0J1K2L\",\"Payload\":{\"step\":\"extract\",\"run_date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "id": 2,
+      "previousEventId": 1,
+      "stateEnteredEventDetails": {
+        "name": "ExtractCustomers"
+      }
+    },
+    {
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "id": 1,
+      "previousEventId": 0,
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-1QWERTY"
+      }
+    }
+  ]
+}

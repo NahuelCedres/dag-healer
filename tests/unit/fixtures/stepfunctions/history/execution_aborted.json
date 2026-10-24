@@ -1,0 +1,123 @@
+{
+  "description": "StopExecution while TransformSales runs: TaskStateAborted, then ExecutionAborted with the error and cause given to StopExecution; a run-level failure.",
+  "events": [
+    {
+      "id": 1,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.000Z",
+      "type": "ExecutionStarted",
+      "executionStartedEventDetails": {
+        "roleArn": "arn:aws:iam::123456789012:role/sfn-etl-StatesExecutionRole-QW12ER34TY56"
+      }
+    },
+    {
+      "id": 2,
+      "previousEventId": 0,
+      "timestamp": "2026-10-02T06:00:00.040Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 3,
+      "previousEventId": 2,
+      "timestamp": "2026-10-02T06:00:00.100Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"extract\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 4,
+      "previousEventId": 3,
+      "timestamp": "2026-10-02T06:00:00.160Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 5,
+      "previousEventId": 4,
+      "timestamp": "2026-10-02T06:00:02.260Z",
+      "type": "TaskSucceeded",
+      "taskSucceededEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 6,
+      "previousEventId": 5,
+      "timestamp": "2026-10-02T06:00:02.300Z",
+      "type": "TaskStateExited",
+      "stateExitedEventDetails": {
+        "name": "ExtractSales"
+      }
+    },
+    {
+      "id": 7,
+      "previousEventId": 6,
+      "timestamp": "2026-10-02T06:00:02.340Z",
+      "type": "TaskStateEntered",
+      "stateEnteredEventDetails": {
+        "name": "TransformSales"
+      }
+    },
+    {
+      "id": 8,
+      "previousEventId": 7,
+      "timestamp": "2026-10-02T06:00:02.400Z",
+      "type": "TaskScheduled",
+      "taskScheduledEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke",
+        "region": "eu-west-1",
+        "parameters": "{\"FunctionName\":\"arn:aws:lambda:eu-west-1:123456789012:function:sfn-etl-SalesFunction-1A2B3C4D5E6F\",\"Payload\":{\"step\":\"transform\",\"date\":\"2026-10-02\"}}"
+      }
+    },
+    {
+      "id": 9,
+      "previousEventId": 8,
+      "timestamp": "2026-10-02T06:00:02.460Z",
+      "type": "TaskStarted",
+      "taskStartedEventDetails": {
+        "resourceType": "lambda",
+        "resource": "invoke"
+      }
+    },
+    {
+      "id": 10,
+      "previousEventId": 9,
+      "timestamp": "2026-10-02T06:00:14.460Z",
+      "type": "TaskStateAborted"
+    },
+    {
+      "id": 11,
+      "previousEventId": 10,
+      "timestamp": "2026-10-02T06:00:14.500Z",
+      "type": "ExecutionAborted",
+      "executionAbortedEventDetails": {
+        "error": "ManualStop",
+        "cause": "Stopped by the on-call engineer: wrong input date"
+      }
+    }
+  ],
+  "expected": {
+    "step_id": "__run__",
+    "error": "ManualStop",
+    "cause": "Stopped by the on-call engineer: wrong input date",
+    "event_type": "ExecutionAborted",
+    "failed_event_id": 11,
+    "terminal_event_type": "ExecutionAborted",
+    "terminal": true,
+    "notes": [
+      "No step failure in this redrive segment: a run-level failure."
+    ]
+  }
+}

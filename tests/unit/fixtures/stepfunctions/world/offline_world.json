@@ -1,0 +1,57 @@
+{
+  "description": "A small offline AWS account for the scenario-file loader tests (every section, inline and file references)",
+  "region": "eu-west-1",
+  "account": "123456789012",
+  "now": "2026-10-02T07:00:00Z",
+  "state_machines": [
+    {
+      "name": "orders-etl",
+      "type": "STANDARD",
+      "definition_file": "offline_orders.asl.json",
+      "substitutions": {"OrdersFunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:orders-fn"},
+      "logging": {"level": "ERROR", "includeExecutionData": false}
+    },
+    {
+      "name": "orders-express",
+      "type": "EXPRESS",
+      "definition": {"StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}}
+    }
+  ],
+  "functions": [
+    {"name": "orders-fn", "handler": "app.handler", "runtime": "python3.12", "log_group": "/offline/orders", "log_format": "JSON", "layers": ["orders-libs"]}
+  ],
+  "executions": [
+    {
+      "state_machine": "orders-etl",
+      "name": "orders-2026-10-02",
+      "status": "FAILED",
+      "start_date": "2026-10-02T06:00:00.000Z",
+      "history_file": "offline_orders_history.json"
+    },
+    {
+      "state_machine": "orders-etl",
+      "name": "orders-2026-10-01",
+      "status": "SUCCEEDED",
+      "start_date": "2026-10-01T06:00:00Z",
+      "stop_date": "2026-10-01T06:00:03Z",
+      "input": {"run_date": "2026-10-01"}
+    }
+  ],
+  "log_events": [
+    {"group": "/offline/orders", "stream": "2026/10/02/orders-fn[$LATEST]0a1b2c3d", "events_file": "offline_orders_logs.json"}
+  ],
+  "objects": [
+    {"bucket": "offline-landing", "key": "incoming/orders.csv", "file": "../s3/orders.csv"},
+    {"bucket": "offline-landing", "key": "notes/readme.txt", "body": "orders land here every morning\n"}
+  ],
+  "queues": [
+    {
+      "url": "https://sqs.eu-west-1.amazonaws.com/123456789012/offline-events",
+      "attributes": {
+        "VisibilityTimeout": 60,
+        "RedrivePolicy": {"deadLetterTargetArn": "arn:aws:sqs:eu-west-1:123456789012:offline-events-dlq", "maxReceiveCount": 5}
+      },
+      "messages": [{"body_file": "offline_message.json"}, {"body": "{\"ping\": true}"}]
+    }
+  ]
+}
