@@ -36,21 +36,27 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
    - The contract is checked against what the failed run read: the file, its size, modification time, row count, columns and a masked sample.
    - If the input changed after the failure, dag-healer does not decide: the incident goes to a person, with that reason.
    - Per-run locators come later: dated paths and partitions.
-3. **Less noise.**
+3. **Known-good runs.** Besides the contract, dag-healer knows what a correct run looks like.
+   - After each successful run it records the same snapshot of the inputs, with the code version: the commit, or a Lambda's code hash.
+   - A pipeline leaves shadow mode only once it has its minimum of known-good runs: 2 by default, set per pipeline in its ETL Information. One is enough for a very simple ETL, such as the average length of stay per ward. Collecting goes on afterwards, so the comparison improves over time.
+   - Each incident compares the failed run with the known-good runs and says how many back the comparison. An input that differs from them while the contract passes makes the verdict more cautious and suggests a stricter contract. An input like theirs points at the code or the infrastructure, and a code change since the last good run is the first suspect.
+   - A fix must also pass with the known-good runs' masked samples, so it does not break what worked.
+   - A person can mark an older run, or a reference file, as good for a pipeline that always fails.
+4. **Less noise.**
    - Repeats of a failure fold into the open incident.
    - A failure can be muted for a while, with a reason.
    - The triage queue is visible.
    - Later: a storm mode that sends one summary instead of many alerts, and groups of pipelines that failed for the same cause, with one decision for all.
-4. **Infrastructure errors are recognized as such.** These include expired credentials, missing permissions, throttling and quotas, for example HTTP 401, 403 and 429. dag-healer suggests the action ("rotate the token", "retry in 15 minutes") instead of changing code.
-5. **Shadow mode, set per pipeline.**
+5. **Infrastructure errors are recognized as such.** These include expired credentials, missing permissions, throttling and quotas, for example HTTP 401, 403 and 429. dag-healer suggests the action ("rotate the token", "retry in 15 minutes") instead of changing code.
+6. **Shadow mode, set per pipeline.**
    - dag-healer classifies and proposes fixes with no side effects: no alerts to other teams, no pull requests, no retries.
    - The decision log compares what it would have done with what on-call decided.
-   - Each pipeline moves to active mode once the two agree.
-6. **Contract approval through a pull request.** When a person decides that the input changed on purpose, the contract change and the code fix go in the same pull request.
-7. **Alerts reach the people who can act.**
+   - Each pipeline moves to active mode once it has its known-good runs and the two agree.
+7. **Contract approval through a pull request.** When a person decides that the input changed on purpose, the contract change and the code fix go in the same pull request.
+8. **Alerts reach the people who can act.**
    - Owners are listed per pipeline.
    - A producer team inside the organization gets a direct message in its own terms.
-   - An external producer, such as a client or a vendor, is never contacted. On-call and the person who owns that relationship get a draft to forward instead.
+   - An external producer, such as a client hospital or a vendor, is never contacted. On-call and the person who owns that relationship get a draft to forward instead.
    - Email and Slack come first.
 
 ## Next: context
@@ -59,7 +65,7 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
   - Two kinds of Markdown file in the repository:
     - `healer/organization.md` holds what the whole organization knows: what the business does, its systems and their owners, a glossary, and the rules for every pipeline.
     - `healer/etl/<pipeline>.md` holds what one pipeline needs.
-  - Each file has a front matter with its owner and review date, and its rules have stable IDs such as `ORG-1` or `SALES-1`.
+  - Each file has a front matter with its owner and review date, and its rules have stable IDs such as `ORG-1` or `LAB-1`, for example "LAB-1: a finalized lab result always has a value; a preliminary one may be empty".
   - dag-healer reads them from the default branch, refuses files that contain secrets, and caps their size.
 - **Cited, never obeyed blindly.**
   - Incidents and pull requests list the rules applied, and dag-healer checks that every cited ID exists.
