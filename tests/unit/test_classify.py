@@ -13,13 +13,26 @@ from dag_healer.agent.classify import (
     build_classify_prompt,
     classify_incident,
     context_payload,
+    system_prompt,
 )
+from dag_healer.agent.context import prompt_words
 from dag_healer.agent.fake import FakeProvider, extract_signals
 from dag_healer.agent.llm import Classification, LLMRefusal, LLMUnavailable
-from dag_healer.agent.policy import RULE_A, RULE_B, RULE_C, RULE_D, compute_signals, policy_hint
+from dag_healer.agent.policy import (
+    RULE_A,
+    RULE_B,
+    RULE_C,
+    RULE_D,
+    RULE_DEFINITION,
+    RULE_INFRA,
+    compute_signals,
+    policy_hint,
+)
 from dag_healer.agent.prompts import load_prompt
-from dag_healer.config import HealerConfig
+from dag_healer.agent.tests_gen import render_template
+from dag_healer.config import HealerConfig, config_from_mapping
 from dag_healer.contracts.schema import Violation
+from dag_healer.orchestrators.fake import FAKE_TAXONOMY, FAKE_VOCABULARY
 
 try:  # the real context dataclass, when the context piece is installed
     from dag_healer.agent.context import IncidentContext
@@ -244,7 +257,9 @@ def test_prompt_carries_the_context_and_a_signals_block(cfg: HealerConfig) -> No
     provider = RecordingProvider(Classification(category="code", confidence=0.9, diagnosis="bug"))
     classify_incident(cfg, customers(), provider)
     call = provider.calls[0]
-    assert call["system"] == load_prompt("classify.md")
+    assert call["system"] == render_template(load_prompt("classify.md"), prompt_words(None))
+    assert "{{" not in call["system"]
+    assert call["prompt"].startswith("Classify the failed Airflow task described below.\n\n<incident>\n")
     assert "<incident>" in call["prompt"]
     assert call["prompt"].rstrip().endswith("</signals>")
     signals = extract_signals(call["prompt"])
@@ -391,3 +406,143 @@ def test_works_with_tracebacks_parsed_by_the_context_module(cfg: HealerConfig) -
     assert frames
     outcome = classify_incident(cfg, ctx, FakeProvider(cfg))
     assert (outcome.category, outcome.decision.rule) == ("code", RULE_B)
+
+
+# --------------------------------------------------------------------------- orchestrator words and taxonomy
+
+#: The keys of the ``<signals>`` block before the orchestrator ports, in their order.
+PHASE5_SIGNALS_BLOCK_KEYS = [
+    "contract_status", "violation_rules", "violation_columns", "draft_violation_rules",
+    "exception_type", "error_kind", "repo_frames_present", "top_repo_frame",
+    "missing_column_in_error", "columns_in_error", "violation_details", "exception_message",
+    "infra_marker", "dag_id", "task_id", "min_confidence", "policy_hint",
+]  # fmt: skip
+
+
+def fakeflow(ctx: Any, *, error_name: str | None = None) -> Any:
+    """``ctx`` as gathered through the Fakeflow adapter (``orchestrators.fake``)."""
+    ctx.orchestrator, ctx.orchestrator_name = "fake", "Fakeflow"
+    ctx.vocabulary = FAKE_VOCABULARY.as_dict()
+    ctx.error_name = error_name
+    return ctx
+
+
+def code_answer() -> RecordingProvider:
+    return RecordingProvider(Classification(category="code", confidence=0.99, diagnosis="bug"))
+
+
+def test_the_airflow_system_prompt_is_the_phase5_text() -> None:
+    text = system_prompt()
+    assert text == system_prompt(customers())
+    assert text.startswith(
+        "You are dag-healer's incident analyst. dag-healer is installed in an existing Apache Airflow "
+        "deployment and watches the DAGs of one repository. When a task fails, you receive"
+    )
+    for phrase in (
+        "A human decides from the Airflow UI.",
+        "JSON with the failed task (DAG, run, task, try)",
+        "an excerpt of the task log, the source of the DAG file",
+        "zombie tasks",
+    ):
+        assert phrase in text, phrase
+    assert "{{" not in text
+
+
+def test_a_fakeflow_context_gets_the_fakeflow_words(cfg: HealerConfig) -> None:
+    provider = code_answer()
+    classify_incident(cfg, fakeflow(customers()), provider, taxonomy=FAKE_TAXONOMY)
+    system, prompt = provider.calls[0]["system"], provider.calls[0]["prompt"]
+    assert system.startswith(
+        "You are dag-healer's incident analyst. dag-healer is installed in an existing Fakeflow "
+        "deployment and watches the flows of one repository. When a step fails, you receive"
+    )
+    for phrase in (
+        "A human decides from the Fakeflow UI.",
+        "JSON with the failed step (flow, run, step, attempt)",
+        "an excerpt of the step log, the source of the flow file",
+        "zombie steps",
+    ):
+        assert phrase in system, phrase
+    assert "Airflow" not in system and "{{" not in system
+    head, rest = prompt.split("<incident>\n", 1)
+    assert head == "Classify the failed Fakeflow step described below.\n\n"
+    incident_json, signals_part = rest.split("\n</incident>", 1)
+    incident = json.loads(incident_json)
+    assert (incident["orchestrator"], incident["vocabulary"]) == ("fake", FAKE_VOCABULARY.as_dict())
+    assert "Airflow" not in signals_part
+
+
+def test_the_signals_block_keeps_its_phase5_keys_for_airflow(cfg: HealerConfig) -> None:
+    for factory in (sales, customers, inventory):
+        provider = code_answer()
+        classify_incident(cfg, factory(), provider)
+        assert list(extract_signals(provider.calls[0]["prompt"])) == PHASE5_SIGNALS_BLOCK_KEYS
+
+
+def test_the_policy_diagnosis_names_the_step(cfg: HealerConfig) -> None:
+    airflow = classify_incident(cfg, customers(), None)
+    assert "The task failed with ValueError: unconverted data remains" in airflow.diagnosis
+    fake = classify_incident(cfg, fakeflow(customers()), None, taxonomy=FAKE_TAXONOMY)
+    assert "The step failed with ValueError: unconverted data remains" in fake.diagnosis
+
+
+def test_the_policy_reasons_name_the_step(cfg: HealerConfig) -> None:
+    for factory, rule in ((sales, RULE_A), (inventory, RULE_C)):
+        airflow_provider, fake_provider = code_answer(), code_answer()
+        airflow = classify_incident(cfg, factory(), airflow_provider)
+        fake = classify_incident(cfg, fakeflow(factory()), fake_provider, taxonomy=FAKE_TAXONOMY)
+        assert airflow.decision.rule == fake.decision.rule == rule
+        assert "and the task failed with a data-shaped error" in airflow.decision.reason
+        assert fake.decision.reason == airflow.decision.reason.replace("the task", "the step")
+        fake_hint = extract_signals(fake_provider.calls[0]["prompt"])["policy_hint"]
+        assert "the step failed" in fake_hint["reason"] and "task" not in fake_hint["reason"]
+        airflow_hint = extract_signals(airflow_provider.calls[0]["prompt"])["policy_hint"]
+        assert "the task failed" in airflow_hint["reason"]
+
+
+def test_the_taxonomy_keyword_reaches_the_policy(cfg: HealerConfig) -> None:
+    provider = code_answer()
+    ctx = fakeflow(customers(), error_name="FakeflowDefinitionError")
+    outcome = classify_incident(cfg, ctx, provider, taxonomy=FAKE_TAXONOMY)
+    assert (outcome.category, outcome.decision.rule) == ("ambiguous", RULE_DEFINITION)
+    assert outcome.decision.needs_llm_confirmation is False
+    signals = extract_signals(provider.calls[0]["prompt"])
+    assert list(signals) == [
+        *PHASE5_SIGNALS_BLOCK_KEYS[:13],
+        "native_error_name",
+        "native_error_kind",
+        *PHASE5_SIGNALS_BLOCK_KEYS[13:],
+    ]
+    assert (signals["native_error_name"], signals["native_error_kind"]) == (
+        "FakeflowDefinitionError",
+        "definition",
+    )
+    assert (
+        signals["policy_hint"]["rule"] == RULE_DEFINITION and signals["policy_hint"]["llm_decides"] is False
+    )
+    assert outcome.to_dict()["signals"]["native_error_kind"] == "definition"
+    # the configured (Airflow) orchestrator does not know the name: gate (b) and the LLM decide
+    airflow = classify_incident(
+        cfg, fakeflow(customers(), error_name="FakeflowDefinitionError"), code_answer()
+    )
+    assert (airflow.category, airflow.decision.rule) == ("code", RULE_B)
+
+
+def test_without_the_keyword_the_configured_orchestrator_gives_the_taxonomy(tmp_path: Any) -> None:
+    def config(**orchestrator: str) -> HealerConfig:
+        return config_from_mapping({"repo": {"path": str(tmp_path)}, "orchestrator": orchestrator})
+
+    lost = classify_incident(
+        config(type="fake"), fakeflow(customers(), error_name="FakeflowWorkerLost"), None
+    )
+    assert (lost.category, lost.decision.rule) == ("ambiguous", RULE_INFRA)
+    assert "FakeflowWorkerLost" in lost.decision.reason
+
+    timeout = customers()
+    timeout.error_name = "AirflowTaskTimeout"
+    assert classify_incident(config(type="airflow"), timeout, None).decision.rule == RULE_INFRA
+
+    # an orchestrator that cannot be loaded gives no taxonomy: the generic policy decides
+    broken = config(type="no_such_package.adapter:FACTORY", instance="broken")
+    unknown = classify_incident(broken, fakeflow(customers(), error_name="FakeflowWorkerLost"), None)
+    assert (unknown.category, unknown.decision.rule) == ("ambiguous", RULE_B)

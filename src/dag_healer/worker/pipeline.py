@@ -1,15 +1,21 @@
 """The incident pipeline of the dag-healer worker: reconcile failures, then triage each incident.
 
 Three entry points, all called by :func:`dag_healer.worker.loop.run_worker` (and usable on
-their own, for example from tests or a one-shot CLI run):
+their own, for example from tests or a one-shot CLI run). They reach the orchestrator only
+through the ports of its adapter (:class:`~dag_healer.core.ports.OrchestratorAdapter`); a
+phase-5 Airflow REST client passed as ``client`` is wrapped by
+:func:`dag_healer.orchestrators.compat.as_adapter`, and no adapter at all means offline:
 
-* :func:`reconcile` finds failures. With ``"rest"`` in ``monitor.modes`` it lists the failed
-  task instances updated since a watermark kept in ``<healer_home>/state.json`` and creates
-  the missing incidents (source ``rest``). With ``"listener"`` / ``"callback"`` it confirms
-  each ``pending_check`` event pushed by the task runners through the Airflow REST API
-  (``state == "failed"``; with ``monitor.trigger: final_failure`` a try that will be retried
-  is discarded) before creating its incident. The REST API is the source of truth, events are
-  only a hint (forged events are discarded).
+* :func:`reconcile` finds failures of the adapter's orchestrator instance. With a poll mode
+  in ``monitor.modes`` (``rest``/``poll``) it lists the failures the adapter's feed reports
+  after the poll cursor kept in ``healer_kv`` (``cursor:<instance>``; a phase-5
+  ``<healer_home>/state.json`` is imported once) and creates the missing incidents. With
+  ``queue`` it drains the adapter's hint queue into pending events. Then it confirms each
+  ``pending_check`` event of the instance (pushed by the Airflow listener/callback, drained
+  from the queue...) through the orchestrator API (``adapter.push.confirm``; with
+  ``monitor.trigger: final_failure`` an attempt that will be retried is discarded) before
+  creating its incident. The orchestrator API is the source of truth, events are only a hint
+  (forged events are discarded).
 * :func:`apply_commands` applies the human actions queued by the API/CLI (see
   :mod:`dag_healer.worker.commands`).
 * :func:`process_incident` runs one claimed incident through the states of the plan::
@@ -27,7 +33,7 @@ their own, for example from tests or a one-shot CLI run):
 Everything persisted or logged goes through :mod:`dag_healer.masking` first: error texts are
 masked by the context gathering, samples are masked before they are stored.
 
-Long operations (Airflow calls, the LLM, repairs, SMTP) never run inside a database
+Long operations (orchestrator calls, the LLM, repairs, SMTP) never run inside a database
 transaction: each step opens a short session from ``session_factory`` (a callable returning
 a context manager that commits on success, :func:`dag_healer.store.db.session_scope` by
 default), so the API and the UI see every transition as it happens.
@@ -36,6 +42,7 @@ default), so the API and the UI see every transition as it happens.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -51,13 +58,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
+from dag_healer import links
+from dag_healer.core.errors import OrchestratorError
+from dag_healer.core.failures import AttemptState, Confirmation, FailureHint
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR, AttemptRef
+from dag_healer.core.vocab import Vocabulary
+from dag_healer.ingest import MAX_ERROR_CHARS, TRUNCATION_MARKER
 from dag_healer.masking import mask_text, to_json_safe
+from dag_healer.orchestrators.compat import as_adapter
+from dag_healer.orchestrators.registry import DEFAULT_TYPE, orchestrator_settings
 from dag_healer.store import repo as store_repo
 from dag_healer.store.db import session_scope
 from dag_healer.store.models import (
     CLASSIFIED,
+    DEFAULT_CHANNEL,
     ERROR,
     NEW,
     PENDING_CONFIRMED,
@@ -81,9 +98,9 @@ if TYPE_CHECKING:
     from dag_healer.agent.classify import ClassificationOutcome
     from dag_healer.agent.context import IncidentContext
     from dag_healer.agent.llm import LLMProvider
-    from dag_healer.airflow.client import AirflowClient, TaskInstanceInfo
     from dag_healer.alerts import AlertOutcome
     from dag_healer.config import HealerConfig
+    from dag_healer.core.ports import FailureFeed, OrchestratorAdapter
     from dag_healer.worker.commands import CommandOutcome
 
 logger = logging.getLogger(__name__)
@@ -98,17 +115,24 @@ WORKER_ACTOR = "dag-healer"
 TRIAGE_EVENT = "triage"
 #: Incidents left in a working status longer than this (crashed worker) are queued again.
 STALE_CLAIM_AFTER = timedelta(minutes=30)
-#: Without a watermark the first REST poll looks this far back.
+#: Without a watermark the first Airflow REST poll looks this far back (the Airflow adapter's
+#: poll window; kept here for the phase-5 callers).
 INITIAL_LOOKBACK = timedelta(hours=24)
-#: Minimum overlap between two REST polls (the API gives no ``updated_at`` per row and the
-#: clocks of the worker and Airflow may differ).
+#: Minimum overlap between two Airflow REST polls (the API gives no ``updated_at`` per row and
+#: the clocks of the worker and Airflow may differ).
 MIN_POLL_OVERLAP = timedelta(seconds=60)
 #: Pending events that still cannot be confirmed after this long are discarded.
 PENDING_MAX_AGE = timedelta(hours=24)
+#: The phase-5 worker state file and its keys (imported once into the poll cursor).
 STATE_FILE = "state.json"
 WATERMARK_KEY = "rest_watermark"
 #: Failures updated before this moment are never listed (set by ``dag-healer store reset``).
 NOT_BEFORE_KEY = "rest_not_before"
+#: Keys of the poll cursor (``healer_kv`` key ``cursor:<instance>``) the core reads and writes:
+#: when the last successful poll started, and the floor written by ``dag-healer store reset``
+#: (every built-in feed honours it). The rest of a cursor belongs to the adapter's feed.
+CURSOR_WATERMARK = "watermark"
+CURSOR_NOT_BEFORE = "not_before"
 
 MAX_ERROR_SUMMARY_CHARS = 8000
 MAX_PYTEST_OUTPUT_CHARS = 40_000
@@ -116,7 +140,15 @@ MAX_EVENT_TEXT_CHARS = 2000
 MAX_EVENT_NOTES = 20
 HUMAN_RULE = "human_resolution"
 
+#: Sources of pushed events without an adapter (the phase-5 Airflow listener and callback).
 EVENT_SOURCES: tuple[str, ...] = ("listener", "callback")
+#: Incident sources that come from pushed hints (an adapter's push sources are among these).
+PUSH_SOURCES: tuple[str, ...] = ("listener", "callback", "push", "eventbridge", "sqs")
+#: ``payload["via"]`` of a pending event drained from the adapter's hint queue.
+VIA_QUEUE = "queue"
+#: How the store rejects the pending event of one hint (an empty id, a value that does not fit
+#: its column...): the queued message is dropped, not delivered again.
+_REJECTED_BY_STORE = (ValueError, TypeError, DataError, IntegrityError)
 FORCED_CATEGORIES: tuple[str, ...] = ("data", "code")
 
 
@@ -164,6 +196,60 @@ def _error_text(exc: BaseException) -> str:
     return _clip(f"{type(exc).__name__}: {message}" if message else type(exc).__name__, 500)
 
 
+def _cause(exc: BaseException) -> BaseException:
+    """The error an adapter translated (``raise OrchestratorError(...) from exc``), else ``exc``.
+
+    Texts keep naming the orchestrator's own error (``AirflowAPIError: Airflow API error 503:
+    ...``), as in phase 5, rather than the core class that carries it.
+    """
+    if isinstance(exc, OrchestratorError) and exc.__cause__ is not None:
+        return exc.__cause__
+    return exc
+
+
+def _cause_text(exc: BaseException) -> str:
+    """:func:`_error_text` of :func:`_cause` (masked and bounded)."""
+    return _error_text(_cause(exc))
+
+
+def _vocabulary(adapter: OrchestratorAdapter | None) -> dict[str, str]:
+    """The words of ``adapter`` over the Airflow defaults (:meth:`Vocabulary.as_dict` keys)."""
+    words = Vocabulary().as_dict()
+    if adapter is not None:
+        try:
+            own = adapter.vocabulary.as_dict()
+        except Exception:  # a broken vocabulary keeps the default words
+            own = {}
+        words.update({key: str(word) for key, word in own.items() if key in words and word})
+    return words
+
+
+def _instance(cfg: HealerConfig, adapter: OrchestratorAdapter | None) -> str:
+    """The orchestrator instance the worker serves: the adapter's, else the configured one."""
+    if adapter is not None:
+        return adapter.instance
+    try:
+        return orchestrator_settings(cfg).instance
+    except Exception:  # an unreadable orchestrator section: the phase-5 instance
+        return DEFAULT_ORCHESTRATOR
+
+
+def _wants(cfg: HealerConfig, kind: str) -> bool:
+    """``monitor.wants(kind)``; a kind the configuration does not know is not wanted."""
+    try:
+        return bool(cfg.monitor.wants(kind))
+    except ValueError:
+        return False
+
+
+def _masked_tail(text: str, limit: int = MAX_ERROR_CHARS) -> str:
+    """``text`` masked, then cut to its last ``limit`` characters (where Python puts the error)."""
+    masked = mask_text(text or "")
+    if len(masked) <= limit:
+        return masked
+    return TRUNCATION_MARKER + masked[-(limit - len(TRUNCATION_MARKER)) :]
+
+
 def transition(
     session: Session,
     incident: Incident,
@@ -200,13 +286,20 @@ def log_claim(incident: Incident, previous: str) -> None:
     )
 
 
-def triaged_since(session: Session, since: datetime) -> int:
-    """Number of automatic triages started at or after ``since`` (rate limiting)."""
+def triaged_since(session: Session, since: datetime, *, orchestrator: str | None = None) -> int:
+    """Number of automatic triages started at or after ``since`` (rate limiting).
+
+    ``orchestrator`` counts only the incidents of that instance (``None``: every instance).
+    """
     query = (
         select(func.count())
         .select_from(IncidentEvent)
         .where(IncidentEvent.kind == TRIAGE_EVENT, IncidentEvent.at >= since)
     )
+    if orchestrator is not None:
+        query = query.join(Incident, Incident.id == IncidentEvent.incident_id).where(
+            Incident.orchestrator == orchestrator
+        )
     return int(session.scalar(query) or 0)
 
 
@@ -222,7 +315,7 @@ def compose_error_summary(
     """The masked ``error_summary`` of an incident: ``Type: message``, then the traceback.
 
     The first line is what lists and alerts show; the traceback below it keeps the evidence
-    for a later re-triage when the Airflow log is no longer reachable.
+    for a later re-triage when the orchestrator's log is no longer reachable.
     """
     head = ""
     if exception_type:
@@ -298,11 +391,15 @@ def combine_pytest_output(before: str | None, after: str | None) -> str | None:
     return text
 
 
-# =========================================================================== state file
+# =========================================================================== poll cursor
 
 
 def state_path(cfg: HealerConfig) -> Path:
-    """``<healer_home>/state.json``: the worker's small persistent state (REST watermark)."""
+    """``<healer_home>/state.json``: where the phase-5 worker kept its REST watermark.
+
+    The poll position now lives in ``healer_kv`` (``cursor:<instance>``); this file is only
+    read once, by the first poll of an Airflow instance (:func:`dag_healer.store.repo.import_state_file`).
+    """
     return cfg.healer_home / STATE_FILE
 
 
@@ -333,48 +430,74 @@ def save_state(cfg: HealerConfig, state: Mapping[str, Any]) -> None:
         raise
 
 
-def _state_time(cfg: HealerConfig, key: str) -> datetime | None:
-    value = load_state(cfg).get(key)
-    if not isinstance(value, str) or not value:
+def _read_cursor(session: Session, cfg: HealerConfig, *, instance: str, kind: str) -> dict[str, Any] | None:
+    """The poll cursor of ``instance`` in ``healer_kv`` (``None`` before the first poll).
+
+    The first read of an instance of the default (Airflow) type imports a phase-5
+    ``state.json`` (its watermark and its reset floor) once.
+    """
+    if kind == DEFAULT_TYPE:
+        store_repo.import_state_file(session, state_path(cfg), instance=instance)
+    value = store_repo.kv_get(session, store_repo.cursor_key(instance))
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _configured_cursor(cfg: HealerConfig) -> dict[str, Any] | None:
+    settings = orchestrator_settings(cfg)
+    with default_session_factory(cfg)() as session:
+        return _read_cursor(session, cfg, instance=settings.instance, kind=settings.type)
+
+
+def _cursor_time(cursor: Mapping[str, Any] | None, name: str) -> datetime | None:
+    value = cursor.get(name) if cursor else None
+    if value is None or value == "":
         return None
     try:
-        return ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        return ensure_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
-        logger.warning("dag-healer worker: ignoring invalid %s %r in the state file", key, value)
+        logger.warning("dag-healer worker: ignoring invalid %s %r in the poll cursor", name, value)
         return None
 
 
 def get_watermark(cfg: HealerConfig) -> datetime | None:
-    """When the last successful REST poll started (``None`` before the first one)."""
-    return _state_time(cfg, WATERMARK_KEY)
+    """When the last successful poll started (``None`` before the first one).
+
+    Read from the poll cursor of the configured orchestrator instance in ``healer_kv``.
+    """
+    return _cursor_time(_configured_cursor(cfg), CURSOR_WATERMARK)
 
 
 def get_not_before(cfg: HealerConfig) -> datetime | None:
-    """The REST poll floor: failures updated before it are ignored (``None``: no floor)."""
-    return _state_time(cfg, NOT_BEFORE_KEY)
+    """The poll floor: failures updated before it are ignored (``None``: no floor)."""
+    return _cursor_time(_configured_cursor(cfg), CURSOR_NOT_BEFORE)
 
 
 def reset_state(cfg: HealerConfig, now: datetime | None = None) -> datetime:
-    """Restart the REST poll at ``now``: failures updated before that moment are never listed.
+    """Restart the poll at ``now``: failures updated before that moment are never listed.
 
-    Used after the store was emptied (``dag-healer store reset``) so that old failed task
-    instances still in Airflow's history do not come back as new incidents, even within the
-    overlap window of the next polls. Returns the moment that was recorded.
+    Used after the store was emptied (``dag-healer store reset``) so that old failures still
+    in the orchestrator's history do not come back as new incidents, even within the overlap
+    window of the next polls. Writes ``{"watermark": now, "not_before": now}`` as the poll
+    cursor of the configured instance (a phase-5 ``state.json`` is not imported any more) and
+    returns the moment that was recorded.
     """
     moment = ensure_utc(now) if now is not None else utcnow()
-    state = load_state(cfg)
-    state[WATERMARK_KEY] = moment.isoformat()
-    state[NOT_BEFORE_KEY] = moment.isoformat()
-    save_state(cfg, state)
+    settings = orchestrator_settings(cfg)
+    cursor = {CURSOR_WATERMARK: moment.isoformat(), CURSOR_NOT_BEFORE: moment.isoformat()}
+    with default_session_factory(cfg)() as session:
+        store_repo.kv_set(session, store_repo.cursor_key(settings.instance), cursor)
     return moment
 
 
 def set_watermark(cfg: HealerConfig, value: datetime) -> None:
-    """Persist the REST watermark."""
-    state = load_state(cfg)
+    """Persist the watermark of the configured instance's poll cursor (its floor is kept)."""
     moment = ensure_utc(value) or utcnow()
-    state[WATERMARK_KEY] = moment.isoformat()
-    save_state(cfg, state)
+    settings = orchestrator_settings(cfg)
+    with default_session_factory(cfg)() as session:
+        cursor = _read_cursor(session, cfg, instance=settings.instance, kind=settings.type) or {}
+        cursor[CURSOR_WATERMARK] = moment.isoformat()
+        cursor.setdefault(CURSOR_NOT_BEFORE, None)
+        store_repo.kv_set(session, store_repo.cursor_key(settings.instance), cursor)
 
 
 # =========================================================================== reconcile
@@ -382,7 +505,11 @@ def set_watermark(cfg: HealerConfig, value: datetime) -> None:
 
 @dataclass
 class ReconcileStats:
-    """What one :func:`reconcile` pass did."""
+    """What one :func:`reconcile` pass did.
+
+    ``since`` is the start of the poll window when the feed reports one (the Airflow REST
+    poll); ``queued`` counts the pending events stored from the adapter's hint queue.
+    """
 
     listed: int = 0
     created: list[str] = field(default_factory=list)
@@ -394,51 +521,46 @@ class ReconcileStats:
     pending_left: int = 0
     since: datetime | None = None
     errors: list[str] = field(default_factory=list)
-
-
-def _poll_since(cfg: HealerConfig, now: datetime) -> datetime:
-    watermark = get_watermark(cfg)
-    if watermark is None:
-        since = now - INITIAL_LOOKBACK
-    else:
-        overlap = max(MIN_POLL_OVERLAP, timedelta(seconds=2 * cfg.monitor.poll_interval_seconds))
-        since = watermark - overlap
-    floor = get_not_before(cfg)
-    if floor is not None and since < floor:
-        since = floor
-    return since
+    queued: int = 0
 
 
 def _record_new_incident(
     session_factory: SessionFactory,
     stats: ReconcileStats,
     *,
-    key: Mapping[str, Any],
+    ref: AttemptRef,
     source: str,
     error_summary: str,
     signature: str | None,
     now: datetime,
+    native_ref: Mapping[str, Any] | None = None,
+    error_name: str | None = None,
     note: str | None = None,
     pending_event_id: int | None = None,
+    confirm_event: bool = True,
 ) -> None:
+    """Create the incident of a confirmed failure (masked summary) and count the outcome.
+
+    ``note`` becomes a ``confirmed`` timeline event of a new incident; ``pending_event_id``
+    is the pushed event behind it, marked ``confirmed`` in the same transaction when
+    ``confirm_event`` is set.
+    """
     with session_factory() as session:
         incident, created = store_repo.create_incident(
             session,
-            dag_id=key["dag_id"],
-            run_id=key["run_id"],
-            task_id=key["task_id"],
-            map_index=int(key["map_index"]),
-            try_number=int(key["try_number"]),
+            **ref.store_key(),
             source=source,
             error_summary=error_summary,
             signature=signature,
             now=now,
+            native_ref=dict(native_ref or {}) or None,
+            error_name=mask_text(error_name) if error_name else None,
         )
         if note and created:
             store_repo.add_event(
                 session, incident, "confirmed", note, data={"pending_event_id": pending_event_id}
             )
-        if pending_event_id is not None:
+        if pending_event_id is not None and confirm_event:
             event = session.get(PendingEvent, pending_event_id)
             if event is not None:
                 store_repo.mark_pending_event(session, event, PENDING_CONFIRMED)
@@ -449,114 +571,235 @@ def _record_new_incident(
             incident.task_id,
             incident.map_index,
             incident.try_number,
-        ) != (key["dag_id"], key["run_id"], key["task_id"], int(key["map_index"]), int(key["try_number"]))
+        ) != (ref.pipeline_id, ref.run_id, ref.step_id, int(ref.map_index), int(ref.attempt))
     if created:
         stats.created.append(incident_id)
         logger.info(
             "incident %s %s.%s: created from %s (run %s, try %s)",
             _short(incident_id),
-            key["dag_id"],
-            key["task_id"],
+            ref.pipeline_id,
+            ref.step_id,
             source,
-            key["run_id"],
-            key["try_number"],
+            ref.run_id,
+            ref.attempt,
         )
     elif dedup:
         stats.folded += 1
         logger.info(
             "incident %s %s.%s: same failure seen again in run %s (try %s)",
             _short(incident_id),
-            key["dag_id"],
-            key["task_id"],
-            key["run_id"],
-            key["try_number"],
+            ref.pipeline_id,
+            ref.step_id,
+            ref.run_id,
+            ref.attempt,
         )
     else:
         stats.known += 1
 
 
-def _ti_key(ti: TaskInstanceInfo) -> dict[str, Any]:
-    return {
-        "dag_id": ti.dag_id,
-        "run_id": ti.run_id,
-        "task_id": ti.task_id,
-        "map_index": ti.map_index,
-        "try_number": ti.try_number,
-    }
+def _accepts_now(poll: Callable[..., Any]) -> bool:
+    """True when a feed's ``poll`` takes ``now`` (third-party feeds may predate the keyword)."""
+    try:
+        parameters = inspect.signature(poll).parameters
+    except (TypeError, ValueError):
+        return False
+    return "now" in parameters or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
-def _reconcile_rest(
+def _window_start(feed: FailureFeed, cursor: Mapping[str, Any] | None, now: datetime) -> datetime | None:
+    """Where the poll window starts, for feeds that tell (``poll_since``: the Airflow adapter)."""
+    poll_since = getattr(feed, "poll_since", None)
+    if not callable(poll_since):
+        return None
+    try:
+        since = poll_since(cursor, now=now)
+    except Exception:  # informational only
+        return None
+    return since if isinstance(since, datetime) else None
+
+
+def _polled_log(adapter: OrchestratorAdapter, ref: AttemptRef) -> str:
+    """The RAW log of a polled failure that came without an error text ("" when there is none).
+
+    The incident is created anyway; the triage asks for the log again.
+    """
+    try:
+        bundle = adapter.inspector.logs(ref, None)
+    except Exception as exc:  # the port never raises; a broken adapter must not stop the poll
+        text, reason = "", _cause_text(exc)
+    else:
+        text = bundle.text or ""
+        reason = _clip("; ".join(bundle.notes), 500) or "no log"
+        if bundle.source != "none":
+            return text
+    logger.info(
+        "dag-healer worker: could not fetch the log of %s.%s (run %s, try %s): %s",
+        ref.pipeline_id,
+        ref.step_id,
+        ref.run_id,
+        ref.attempt,
+        reason,
+    )
+    return text
+
+
+def _reconcile_poll(
     cfg: HealerConfig,
     session_factory: SessionFactory,
-    client: AirflowClient | Any,
+    adapter: OrchestratorAdapter,
     stats: ReconcileStats,
     now: datetime,
 ) -> None:
-    since = _poll_since(cfg, now)
-    stats.since = since
-    try:
-        failed = client.list_failed_task_instances(updated_since=since)
-    except Exception as exc:  # AirflowAPIError, network errors: retried on the next poll
-        message = _error_text(exc)
-        stats.errors.append(f"listing failed task instances: {message}")
-        logger.warning("dag-healer worker: listing failed task instances failed: %s", message)
+    """List the failures of the adapter's feed after the cursor; create the incidents of new keys.
+
+    Keys the store already has are skipped before anything else is asked of the orchestrator;
+    a failure without an error text gets its summary and signature from the attempt's log (the
+    phase-5 REST poll). The cursor advances only after a successful listing.
+    """
+    feed = adapter.feed
+    if feed is None:
         return
-    stats.listed = len(failed)
-    for ti in failed:
-        if not ti.dag_id or not ti.task_id or not ti.run_id:
+    words = _vocabulary(adapter)
+    key = store_repo.cursor_key(adapter.instance)
+    with session_factory() as session:
+        cursor = _read_cursor(session, cfg, instance=adapter.instance, kind=adapter.type)
+    stats.since = _window_start(feed, cursor, now)
+
+    def is_monitored(pipeline_id: str) -> bool:
+        if cfg.is_monitored(pipeline_id):
+            return True
+        stats.unmonitored += 1
+        return False
+
+    extra: dict[str, Any] = {"now": now} if _accepts_now(feed.poll) else {}
+    try:
+        page = feed.poll(cursor=cursor, is_monitored=is_monitored, **extra)
+    except Exception as exc:  # orchestrator errors: retried on the next poll, the cursor is kept
+        message = _cause_text(exc)
+        stats.errors.append(f"listing failed {words['step']} instances: {message}")
+        logger.warning("dag-healer worker: listing failed %s instances failed: %s", words["step"], message)
+        return
+    stats.listed = len(page.failures) + stats.unmonitored
+    every_failure = cfg.monitor.trigger == "every_failure"
+    for failure in page.failures:
+        ref = failure.ref
+        if not (failure.is_final or every_failure) or not ref.resolved:
             continue
-        if not cfg.is_monitored(ti.dag_id):
-            stats.unmonitored += 1
-            continue
-        key = _ti_key(ti)
         with session_factory() as session:
-            existing = store_repo.get_incident_by_key(session, **key)
+            existing = store_repo.get_incident_by_key(session, **ref.store_key())
         if existing is not None:
             stats.known += 1
             continue
-        try:
-            log_text = client.get_task_log(
-                ti.dag_id, ti.run_id, ti.task_id, ti.try_number, map_index=ti.map_index
-            )
-        except Exception as exc:  # the incident is created anyway; triage fetches the log again
-            logger.info(
-                "dag-healer worker: could not fetch the log of %s.%s (run %s, try %s): %s",
-                ti.dag_id,
-                ti.task_id,
-                ti.run_id,
-                ti.try_number,
-                _error_text(exc),
-            )
-            log_text = ""
-        summary, signature = summarize_failure(ti.dag_id, ti.task_id, log_text)
+        text = failure.error_summary or _polled_log(adapter, ref)
+        summary, signature = summarize_failure(ref.pipeline_id, ref.step_id, text)
         _record_new_incident(
             session_factory,
             stats,
-            key=key,
-            source="rest",
+            ref=ref,
+            source=failure.source,
             error_summary=summary,
             signature=signature,
             now=now,
+            native_ref=failure.native,
+            error_name=failure.error_name,
         )
-    set_watermark(cfg, now)
+    with session_factory() as session:
+        store_repo.kv_set(session, key, dict(page.cursor))
 
 
-def _confirm(ti: TaskInstanceInfo, try_number: int, trigger: str) -> tuple[bool, str]:
-    """Does the task instance state confirm the reported failure of ``try_number``?"""
-    state = (ti.state or "").lower() or "unknown"
-    if ti.try_number < try_number:
-        return False, f"Airflow knows only {ti.try_number} tries (state {state})"
-    if trigger == "every_failure":
-        if state in ("failed", "up_for_retry") or ti.try_number > try_number:
-            return True, f"state {state}, try {ti.try_number}"
-        return False, f"the task instance is {state}, not failed"
-    if ti.try_number > try_number:
-        return False, f"try {try_number} was retried (try {ti.try_number} is {state})"
-    if state == "failed":
-        return True, f"state failed, try {ti.try_number}"
-    if state == "up_for_retry":
-        return False, "the try will be retried (monitor.trigger is final_failure)"
-    return False, f"the task instance is {state}, not failed"
+class _Rejected(Exception):
+    """The store rejected the pending event of a queued hint (raised from the store's error)."""
+
+
+def _store_queued(
+    cfg: HealerConfig, session_factory: SessionFactory, channel: str, hints: Iterable[FailureHint]
+) -> int:
+    """Store the hints of one queued message in one transaction; how many were stored.
+
+    Raises :class:`_Rejected` (the transaction is rolled back) when the store rejects one of
+    them; any other error is the store's own failure.
+    """
+    stored = 0
+    with session_factory() as session:
+        for hint in hints:
+            if not cfg.is_monitored(hint.ref.pipeline_id):
+                continue
+            try:
+                store_repo.add_pending_event(
+                    session,
+                    **hint.ref.store_key(),
+                    channel=channel,
+                    payload={
+                        "error": _masked_tail(hint.error_text),
+                        "source": hint.source,
+                        "via": VIA_QUEUE,
+                    },
+                    native_ref=dict(hint.native),
+                    received_at=hint.received_at,
+                )
+            except _REJECTED_BY_STORE as exc:
+                raise _Rejected(type(exc).__name__) from exc
+            stored += 1
+    return stored
+
+
+def _drain_queue(
+    cfg: HealerConfig, session_factory: SessionFactory, adapter: OrchestratorAdapter, stats: ReconcileStats
+) -> None:
+    """Store the hints waiting in the adapter's queue as pending events (``"via": "queue"``).
+
+    Each message is stored in its own transaction; the messages are acknowledged once their
+    events are committed. A message that cannot be kept is dropped and acknowledged too, so it
+    never blocks the queue: one the push intake cannot read (malformed: ``ValueError``) and one
+    whose hints the store rejects (an empty or too long id...). Hints of unmonitored pipelines
+    are not stored. When the store itself fails, that message and the ones after it stay
+    unacknowledged (the queue delivers them again) and the error is recorded in
+    ``stats.errors``.
+    """
+    queue, push = adapter.queue, adapter.push
+    if queue is None or push is None or not _wants(cfg, "queue"):
+        return
+    try:
+        messages = list(queue.receive())
+    except Exception as exc:
+        message = _cause_text(exc)
+        stats.errors.append(f"receiving queued events: {message}")
+        logger.warning("dag-healer worker: receiving queued events failed: %s", message)
+        return
+    done: list[str] = []
+    for item in messages:
+        try:
+            hints = push.normalize(item.channel, item.payload, {})
+        except Exception as exc:  # malformed (ValueError) or unreadable: a hint is never the truth
+            logger.warning(
+                "dag-healer worker: dropping a queued %s event that cannot be read: %s",
+                _clip(item.channel, 64),
+                _clip(exc if isinstance(exc, ValueError) else _error_text(exc), 300),
+            )
+            done.append(item.receipt)
+            continue
+        try:
+            stats.queued += _store_queued(cfg, session_factory, item.channel, hints)
+        except _Rejected as exc:  # this message only: dropped like an unreadable one
+            logger.warning(
+                "dag-healer worker: dropping a queued %s event the store cannot keep: %s",
+                _clip(item.channel, 64),
+                _error_text(exc.__cause__ or exc),
+            )
+        except Exception as exc:  # the store failed: nothing more is acknowledged, delivered again
+            message = _cause_text(exc)
+            stats.errors.append(f"storing queued events: {message}")
+            logger.warning("dag-healer worker: storing queued events failed: %s", message)
+            break
+        done.append(item.receipt)
+    if not done:
+        return
+    try:
+        queue.ack(done)
+    except Exception as exc:  # stored already; a redelivery joins the pending event
+        message = _cause_text(exc)
+        stats.errors.append(f"acknowledging queued events: {message}")
+        logger.warning("dag-healer worker: acknowledging queued events failed: %s", message)
 
 
 def _discard(session_factory: SessionFactory, event_id: int, reason: str, stats: ReconcileStats) -> None:
@@ -568,100 +811,149 @@ def _discard(session_factory: SessionFactory, event_id: int, reason: str, stats:
     logger.info("dag-healer worker: discarded pending event %s: %s", event_id, _clip(reason, 300))
 
 
+def _push_sources(adapter: OrchestratorAdapter | None) -> tuple[str, ...]:
+    """The sources a pushed event may carry: the adapter's push sources (the first is the default)."""
+    if adapter is None:
+        return EVENT_SOURCES
+    sources = tuple(source for source in adapter.capabilities.sources if source in PUSH_SOURCES)
+    return sources or EVENT_SOURCES
+
+
 def _reconcile_pending(
     cfg: HealerConfig,
     session_factory: SessionFactory,
-    client: AirflowClient | Any | None,
+    adapter: OrchestratorAdapter | None,
     stats: ReconcileStats,
     now: datetime,
 ) -> None:
-    from dag_healer.airflow.client import AirflowAPIError
+    """Confirm the pending events of this instance (oldest first) through ``adapter.push.confirm``.
 
-    modes = set(cfg.monitor.modes)
+    The core decides first: an event whose source (or queue) is not enabled in
+    ``monitor.modes`` and an event of an unmonitored pipeline are discarded; without an
+    adapter (or a push intake) events stay pending. The adapter then confirms, discards or
+    defers each hint; a deferred one is discarded once it is older than
+    :data:`PENDING_MAX_AGE`. A deferral is reported in ``stats.errors`` unless the attempt has
+    not ended yet (``state`` ``RUNNING``: the hint arrived before the orchestrator recorded the
+    end of the attempt). A confirmed hint creates one incident per confirmed failure, its
+    summary and signature taken from the pushed error text.
+    """
+    instance = _instance(cfg, adapter)
+    words = _vocabulary(adapter)
+    sources = _push_sources(adapter)
+    push = adapter.push if adapter is not None else None
     with session_factory() as session:
-        events = [event.to_dict() for event in store_repo.list_pending_events(session)]
+        events = [event.to_dict() for event in store_repo.list_pending_events(session, orchestrator=instance)]
     for event in events:
         event_id = int(event["id"])
         payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
-        source = str(payload.get("source") or "listener")
-        if source not in EVENT_SOURCES:
-            source = "listener"
-        if source not in modes:
-            _discard(session_factory, event_id, f"{source} events are not enabled in monitor.modes", stats)
+        source = str(payload.get("source") or sources[0])
+        if source not in sources:
+            source = sources[0]
+        queued = payload.get("via") == VIA_QUEUE
+        if not _wants(cfg, VIA_QUEUE if queued else source):
+            mode = VIA_QUEUE if queued else source
+            _discard(session_factory, event_id, f"{mode} events are not enabled in monitor.modes", stats)
             continue
-        if not cfg.is_monitored(str(event["dag_id"])):
-            _discard(session_factory, event_id, f"DAG {event['dag_id']} is not monitored", stats)
+        pipeline_id = str(event["dag_id"])
+        if not cfg.is_monitored(pipeline_id):
+            _discard(session_factory, event_id, f"{words['pipeline']} {pipeline_id} is not monitored", stats)
             continue
-        if client is None:
+        if push is None:
             stats.pending_left += 1
             continue
         received = (
             ensure_utc(datetime.fromisoformat(event["received_at"])) if event.get("received_at") else now
         )
-        try:
-            ti = client.get_task_instance(
-                event["dag_id"], event["run_id"], event["task_id"], int(event["map_index"])
-            )
-        except Exception as exc:
-            status_code = exc.status_code if isinstance(exc, AirflowAPIError) else None
-            if status_code == 404:
-                _discard(session_factory, event_id, "Airflow does not know this task instance", stats)
-            elif received is not None and now - received > PENDING_MAX_AGE:
-                _discard(session_factory, event_id, f"unconfirmed after {PENDING_MAX_AGE}", stats)
-            else:
-                stats.pending_left += 1
-                stats.errors.append(f"confirming pending event {event_id}: {_error_text(exc)}")
-                logger.warning(
-                    "dag-healer worker: could not confirm pending event %s: %s", event_id, _error_text(exc)
-                )
-            continue
-        confirmed, reason = _confirm(ti, int(event["try_number"]), cfg.monitor.trigger)
-        if not confirmed:
-            _discard(session_factory, event_id, reason, stats)
-            continue
-        key = {name: event[name] for name in ("dag_id", "run_id", "task_id", "map_index", "try_number")}
-        summary, signature = summarize_failure(key["dag_id"], key["task_id"], str(payload.get("error") or ""))
-        _record_new_incident(
-            session_factory,
-            stats,
-            key=key,
+        hint = FailureHint(
+            ref=AttemptRef.from_row(event, default_orchestrator=instance),
+            channel=str(event.get("channel") or DEFAULT_CHANNEL),
             source=source,
-            error_summary=summary,
-            signature=signature,
-            now=now,
-            note=f"The {source} event was confirmed by the Airflow API ({reason}).",
-            pending_event_id=event_id,
+            error_text=str(payload.get("error") or ""),
+            received_at=received,
+            native=dict(event.get("native_ref") or {}),
         )
+        try:
+            confirmation = push.confirm(hint, trigger=cfg.monitor.trigger)
+        except Exception as exc:  # the port does not raise; a broken adapter: try again later
+            confirmation = Confirmation(verdict="retry_later", reason=_cause_text(exc))
+        if confirmation.verdict == "discarded":
+            _discard(session_factory, event_id, confirmation.reason, stats)
+            continue
+        if confirmation.verdict != "confirmed":
+            if received is not None and now - received > PENDING_MAX_AGE:
+                _discard(session_factory, event_id, f"unconfirmed after {PENDING_MAX_AGE}", stats)
+                continue
+            reason = _clip(confirmation.reason, 500)
+            stats.pending_left += 1
+            if getattr(confirmation, "state", None) is AttemptState.RUNNING:  # not ended yet: no error
+                logger.info(
+                    "dag-healer worker: pending event %s is checked again later: %s", event_id, reason
+                )
+            else:
+                stats.errors.append(f"confirming pending event {event_id}: {reason}")
+                logger.warning("dag-healer worker: could not confirm pending event %s: %s", event_id, reason)
+            continue
+        failures = [failure for failure in confirmation.failures if failure.ref.resolved]
+        if not failures:
+            _discard(session_factory, event_id, "the confirmation named no failed step", stats)
+            continue
+        note = _clip(
+            f"The {source} event was confirmed by the {words['product']} API ({confirmation.reason})."
+        )
+        for number, failure in enumerate(failures, start=1):
+            ref = failure.ref
+            summary, signature = summarize_failure(ref.pipeline_id, ref.step_id, failure.error_summary)
+            _record_new_incident(
+                session_factory,
+                stats,
+                ref=ref,
+                source=failure.source,
+                error_summary=summary,
+                signature=signature,
+                now=now,
+                native_ref=failure.native,
+                error_name=failure.error_name,
+                note=note,
+                pending_event_id=event_id,
+                confirm_event=number == len(failures),
+            )
         stats.confirmed += 1
 
 
 def reconcile(
     cfg: HealerConfig,
     session_factory: SessionFactory | None,
-    client: AirflowClient | Any | None,
+    client: Any | None,
     *,
     now: datetime | None = None,
+    adapter: OrchestratorAdapter | None = None,
 ) -> ReconcileStats:
-    """Create the incidents of new failures (REST poll and pushed events); see the module docstring.
+    """Create the incidents of new failures (poll, queue and pushed events); see the module docstring.
 
-    ``client`` may be ``None`` (no Airflow API): the REST poll is skipped and pending events
-    stay pending. Never raises for Airflow errors (they are logged and retried next time).
+    ``adapter`` wins; otherwise ``client`` (a phase-5 Airflow REST client or a test double) is
+    wrapped by :func:`~dag_healer.orchestrators.compat.as_adapter`. Without either the poll is
+    skipped and pending events stay pending. Everything is scoped to the orchestrator instance.
+    Never raises for orchestrator errors (they are logged and retried next time).
     """
     moment = _now(now)
     factory = session_factory or default_session_factory(cfg)
     stats = ReconcileStats()
-    modes = set(cfg.monitor.modes)
-    if "rest" in modes:
-        if client is None:
-            stats.errors.append("no Airflow API client: the REST poll was skipped")
+    resolved = adapter if adapter is not None else as_adapter(cfg, client)
+    words = _vocabulary(resolved)
+    if _wants(cfg, "poll"):
+        if resolved is None:
+            stats.errors.append(f"no {words['product']} API client: the REST poll was skipped")
         else:
-            _reconcile_rest(cfg, factory, client, stats, moment)
-    _reconcile_pending(cfg, factory, client, stats, moment)
-    if stats.created or stats.folded or stats.confirmed or stats.discarded:
+            _reconcile_poll(cfg, factory, resolved, stats, moment)
+    if resolved is not None:
+        _drain_queue(cfg, factory, resolved, stats)
+    _reconcile_pending(cfg, factory, resolved, stats, moment)
+    if stats.created or stats.folded or stats.confirmed or stats.discarded or stats.queued:
         logger.info(
-            "dag-healer worker: reconcile listed %d failed task instances, created %d incidents, "
+            "dag-healer worker: reconcile listed %d failed %s instances, created %d incidents, "
             "folded %d repeated failures, confirmed %d and discarded %d pushed events",
             stats.listed,
+            words["step"],
             len(stats.created),
             stats.folded,
             stats.confirmed,
@@ -673,14 +965,15 @@ def reconcile(
 def apply_commands(
     cfg: HealerConfig,
     session_factory: SessionFactory | None,
-    client: AirflowClient | Any | None,
+    client: Any | None,
     *,
     now: datetime | None = None,
+    adapter: OrchestratorAdapter | None = None,
 ) -> list[CommandOutcome]:
     """Apply the pending human commands (see :func:`dag_healer.worker.commands.apply_commands`)."""
     from dag_healer.worker.commands import apply_commands as _apply_commands
 
-    return _apply_commands(cfg, session_factory, client, now=now)
+    return _apply_commands(cfg, session_factory, client, now=now, adapter=adapter)
 
 
 # =========================================================================== process one incident
@@ -739,7 +1032,8 @@ class _Pipeline:
         incident_id: str,
         *,
         provider: LLMProvider | None,
-        client: AirflowClient | Any | None,
+        client: Any | None,
+        adapter: OrchestratorAdapter | None,
         notifier: Notifier | None,
         workspace_root: Path | None,
         now: datetime | None,
@@ -749,6 +1043,7 @@ class _Pipeline:
         self.incident_id = incident_id
         self.provider = provider
         self.client = client
+        self.adapter = adapter
         self.notifier = notifier
         self.workspace_root = workspace_root
         self.now = now
@@ -798,7 +1093,7 @@ class _Pipeline:
         from dag_healer.agent.context import gather_context
 
         self.stage = "gathering the context"
-        ctx = gather_context(self.cfg, snapshot, self.client)
+        ctx = gather_context(self.cfg, snapshot, self.adapter)
         violations, _status = evidence_violations(ctx)
         with self.sf() as session:
             incident = self._get(session)
@@ -839,7 +1134,8 @@ class _Pipeline:
         from dag_healer.agent.classify import classify_incident
 
         self.stage = "classifying"
-        outcome = classify_incident(self.cfg, ctx, self.provider)
+        taxonomy = self.adapter.taxonomy if self.adapter is not None else None
+        outcome = classify_incident(self.cfg, ctx, self.provider, taxonomy=taxonomy)
         self.outcome = outcome
         decision = outcome.decision
         violations, status = evidence_violations(ctx)
@@ -907,9 +1203,10 @@ class _Pipeline:
             if forced == "data":
                 incident.violated_rule = pick_violation(ctx, violations, status)
             if not incident.diagnosis:
-                error = ctx.exception_type or "the task error"
+                step = _vocabulary(self.adapter)["step"]
+                error = ctx.exception_type or f"the {step} error"
                 incident.diagnosis = _clip(
-                    f"{actor} resolved this incident as a {forced} problem. The task failed with {error}"
+                    f"{actor} resolved this incident as a {forced} problem. The {step} failed with {error}"
                     + (f": {ctx.exception_message}" if ctx.exception_message else "")
                     + ".",
                     8000,
@@ -933,6 +1230,26 @@ class _Pipeline:
             transition(session, incident, CLASSIFIED, f"Category {forced} set by {actor}")
         return forced
 
+    def _orchestrator_extra(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        """The alert keys of the orchestrator: its words and the links into its own UI.
+
+        ``vocabulary`` is the adapter's (``{}`` offline: the Airflow words); ``native_links``
+        are the ones the Healer views show (``{}`` for Airflow and offline).
+        """
+        adapter = self.adapter
+        if adapter is None:
+            return {"vocabulary": {}, "native_links": {}}
+        try:
+            vocabulary = dict(adapter.vocabulary.as_dict())
+        except Exception:  # a broken vocabulary: the alert keeps the Airflow words
+            vocabulary = {}
+        try:
+            native = dict(links.shown_native_links(self.cfg, snapshot, adapter=adapter) or {})
+        except Exception as exc:  # links are a convenience: the alert goes out without them
+            logger.debug("dag-healer worker: no native links for the alert: %s", _error_text(exc))
+            native = {}
+        return {"vocabulary": vocabulary, "native_links": native}
+
     def _alert(self, event: str, extra: Mapping[str, Any]) -> None:
         """Send the alert of ``event`` (outside any transaction) and record the outcomes."""
         from dag_healer.alerts import notify
@@ -940,8 +1257,9 @@ class _Pipeline:
         self.stage = f"sending the {event} alert"
         snapshot = self._snapshot()
         notifier = self.notifier or notify
+        details = {**dict(extra), **self._orchestrator_extra(snapshot)}
         try:
-            outcomes = list(notifier(self.cfg, snapshot, event, extra=dict(extra)))
+            outcomes = list(notifier(self.cfg, snapshot, event, extra=details))
         except Exception as exc:  # a custom notifier must not break the pipeline
             logger.warning("dag-healer worker: the %s alert failed: %s", event, _error_text(exc))
             outcomes = []
@@ -1024,7 +1342,14 @@ class _Pipeline:
         if self.provider is None:
             result = RepairResult(status=REPAIR_FAILED, error="No LLM provider is configured.")
         else:
-            result = run_repair(self.cfg, snapshot, ctx, self.provider, workspace_root=self.workspace_root)
+            result = run_repair(
+                self.cfg,
+                snapshot,
+                ctx,
+                self.provider,
+                workspace_root=self.workspace_root,
+                extra_env=self._sandbox_env(),
+            )
         final = REPAIRED if result.status == REPAIRED else REPAIR_FAILED
         error = _clip(result.error, 2000) if result.error else None
         notes = [_clip(note, 500) for note in result.notes[:MAX_EVENT_NOTES]]
@@ -1086,11 +1411,27 @@ class _Pipeline:
         self._alert(final, extra)
         return final
 
+    def _sandbox_env(self) -> dict[str, str | None] | None:
+        """The adapter's overrides of the pytest sandbox (``None`` offline or when they fail)."""
+        if self.adapter is None:
+            return None
+        try:
+            return dict(self.adapter.sandbox_env())
+        except Exception as exc:  # the core's own sandbox rules still apply
+            logger.warning(
+                "dag-healer worker: the pytest sandbox settings of the %s adapter failed: %s",
+                self.adapter.type,
+                _error_text(exc),
+            )
+            return None
+
     # ------------------------------------------------------------------ driver
     def run(self) -> str:
         snapshot = self._start()
         if snapshot is None:
             return self._current_status()
+        if self.adapter is None:
+            self.adapter = as_adapter(self.cfg, self.client)
         resolution = snapshot.get("resolution")
         forced = resolution if resolution in FORCED_CATEGORIES else None
         ctx = self._gather(snapshot)
@@ -1147,7 +1488,8 @@ def process_incident(
     incident_id: str,
     *,
     provider: LLMProvider | None,
-    client: AirflowClient | Any | None,
+    client: Any | None = None,
+    adapter: OrchestratorAdapter | None = None,
     notifier: Notifier | None = None,
     workspace_root: Path | None = None,
     now: datetime | None = None,
@@ -1156,8 +1498,12 @@ def process_incident(
 
     The incident is normally claimed (``triaging``) by the caller; a ``new`` or ``resumed``
     incident is claimed here. An incident in any other status is left alone. A ``resolution``
-    of ``data`` or ``code`` (set by a human command) skips the classification. ``notifier``
-    replaces :func:`dag_healer.alerts.notify` (tests). Never raises.
+    of ``data`` or ``code`` (set by a human command) skips the classification. ``adapter``
+    wins; otherwise ``client`` (a phase-5 Airflow REST client or a test double) is wrapped by
+    :func:`~dag_healer.orchestrators.compat.as_adapter`, and neither means an offline triage:
+    no orchestrator is asked anything, and only the classification reads the error taxonomy
+    of the adapter configured in ``cfg`` (built without I/O and cached, section 3.9).
+    ``notifier`` replaces :func:`dag_healer.alerts.notify` (tests). Never raises.
     """
     factory = session_factory or default_session_factory(cfg)
     pipeline = _Pipeline(
@@ -1166,6 +1512,7 @@ def process_incident(
         incident_id,
         provider=provider,
         client=client,
+        adapter=adapter,
         notifier=notifier,
         workspace_root=workspace_root,
         now=now,

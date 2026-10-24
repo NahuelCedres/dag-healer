@@ -11,11 +11,14 @@ import pytest
 from dag_healer.agent.llm import Classification
 from dag_healer.agent.policy import (
     RULE_A,
+    RULE_AGGREGATE,
     RULE_B,
     RULE_C,
     RULE_D,
+    RULE_DEFINITION,
     RULE_INFRA,
     RULE_LLM,
+    RULES,
     Signals,
     classify_error,
     compute_signals,
@@ -25,7 +28,10 @@ from dag_healer.agent.policy import (
     missing_column,
     policy_hint,
 )
+from dag_healer.airflow.errors import AIRFLOW_TAXONOMY
 from dag_healer.contracts.schema import Violation
+from dag_healer.core.vocab import ErrorTaxonomy
+from dag_healer.orchestrators.fake import FAKE_TAXONOMY
 
 SITE = "/home/airflow/.local/lib/python3.13/site-packages"
 REPO = "/opt/airflow/repo"
@@ -114,6 +120,8 @@ class FakeContext:
     masked_sample: dict[str, Any] | None = None
     datasets_checked: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    error_name: str | None = None
+    native: dict[str, Any] = field(default_factory=dict)
 
 
 def sales_context() -> FakeContext:
@@ -587,3 +595,175 @@ def test_compute_signals_defaults_for_an_empty_context() -> None:
     assert sig.top_repo_frame is None
     assert decide(sig, None, min_confidence=0.75).category == "ambiguous"
     assert sig.to_dict()["contract_status"] == "missing"
+
+
+# --------------------------------------------------------------------------- orchestrator taxonomy
+
+#: The keys of ``Signals.to_dict()`` before the orchestrator taxonomy, in their order.
+PHASE5_SIGNAL_KEYS = [
+    "contract_status", "violation_rules", "violation_columns", "draft_violation_rules",
+    "exception_type", "error_kind", "repo_frames_present", "top_repo_frame",
+    "missing_column_in_error", "columns_in_error", "violation_details", "exception_message",
+    "infra_marker",
+]  # fmt: skip
+
+
+def with_native(ctx: FakeContext, error_name: str | None = None, **native: Any) -> FakeContext:
+    """``ctx`` with the orchestrator's own error name and ``native_ref`` fields."""
+    ctx.error_name = error_name
+    ctx.native = dict(native)
+    return ctx
+
+
+def test_the_new_rules_are_listed() -> None:
+    assert (RULE_DEFINITION, RULE_AGGREGATE) == ("definition", "aggregate")
+    assert RULES[-2:] == (RULE_DEFINITION, RULE_AGGREGATE)
+    assert len(set(RULES)) == len(RULES)
+
+
+@pytest.mark.parametrize("factory", [sales_context, customers_context, inventory_context])
+def test_without_a_native_error_the_taxonomy_changes_nothing(factory: Any) -> None:
+    plain = compute_signals(factory())
+    assert list(plain.to_dict()) == PHASE5_SIGNAL_KEYS
+    for taxonomy in (None, AIRFLOW_TAXONOMY, FAKE_TAXONOMY):
+        assert compute_signals(factory(), taxonomy=taxonomy) == plain
+    # an Airflow error name gives the decision INFRA_TYPES already took
+    timeout = with_native(factory(), "AirflowTaskTimeout")
+    timeout.exception_type, timeout.exception_message = "AirflowTaskTimeout", "Timeout, PID: 4242"
+    expected = decide(compute_signals(timeout), None, min_confidence=0.75)
+    assert decide(compute_signals(timeout, taxonomy=AIRFLOW_TAXONOMY), None, min_confidence=0.75) == expected
+
+
+@pytest.mark.parametrize("name", ["FakeflowWorkerLost", "fakeflow.errors.FakeflowTimeout"])
+def test_an_infra_error_name_takes_the_infra_gate(name: str) -> None:
+    ctx = with_native(customers_context(), name)
+    assert policy_hint(compute_signals(ctx)).rule == RULE_B  # without the taxonomy: a code candidate
+    sig = compute_signals(ctx, taxonomy=FAKE_TAXONOMY)
+    marker = name.rsplit(".", 1)[-1]
+    assert (sig.error_kind, sig.missing_column_in_error, sig.infra_marker) == ("infra", None, marker)
+    assert (sig.native_error_name, sig.native_error_kind) == (name, "infra")
+    assert list(sig.to_dict()) == [*PHASE5_SIGNAL_KEYS, "native_error_name", "native_error_kind"]
+    decision = decide(sig, llm("code", 0.99), min_confidence=0.75)
+    assert (decision.category, decision.rule, decision.needs_llm_confirmation) == (
+        "ambiguous",
+        RULE_INFRA,
+        False,
+    )
+    assert marker in decision.reason
+
+
+def test_an_infra_event_type_takes_the_infra_gate() -> None:
+    ctx = with_native(customers_context(), "ValueError", event_type="StepStartFailed")
+    sig = compute_signals(ctx, taxonomy=FAKE_TAXONOMY)
+    assert (sig.error_kind, sig.infra_marker) == ("infra", "StepStartFailed")
+    assert (sig.native_error_name, sig.native_error_kind) == ("ValueError", "infra")
+    assert policy_hint(sig).rule == RULE_INFRA
+    # the event type alone is enough, from a plain mapping too
+    alone = compute_signals({"native": {"event_type": "StepStartFailed"}}, taxonomy=FAKE_TAXONOMY)
+    assert (alone.error_kind, alone.infra_marker, alone.native_error_name) == (
+        "infra",
+        "StepStartFailed",
+        None,
+    )
+    assert list(alone.to_dict()) == [*PHASE5_SIGNAL_KEYS, "native_error_kind"]
+
+
+@pytest.mark.parametrize("factory", [sales_context, customers_context, inventory_context])
+def test_a_definition_error_goes_to_a_human_before_any_other_gate(factory: Any) -> None:
+    sig = compute_signals(with_native(factory(), "FakeflowDefinitionError"), taxonomy=FAKE_TAXONOMY)
+    assert sig.native_error_kind == "definition"
+    hint = policy_hint(sig)
+    assert (hint.category, hint.rule, hint.needs_llm_confirmation) == ("ambiguous", RULE_DEFINITION, False)
+    assert "error in the pipeline definition (FakeflowDefinitionError)" in hint.reason
+    assert "a local pytest cannot reproduce it" in hint.reason
+    for answer in (None, llm("code", 0.99), llm("data", 0.99)):
+        decision = decide(sig, answer, min_confidence=0.75)
+        assert (decision.category, decision.rule, decision.confidence) == ("ambiguous", RULE_DEFINITION, 0.5)
+
+
+def test_an_aggregate_error_without_a_failed_child_goes_to_a_human() -> None:
+    ctx = with_native(
+        FakeContext(contract_status="approved", error_text="3 of 10 children failed"), "FakeflowFanOutFailed"
+    )
+    sig = compute_signals(ctx, taxonomy=FAKE_TAXONOMY)
+    assert (sig.exception_type, sig.native_error_kind) == (None, "aggregate")
+    hint = policy_hint(sig)
+    assert (hint.category, hint.rule, hint.needs_llm_confirmation) == ("ambiguous", RULE_AGGREGATE, False)
+    assert "summarises failed child runs (FakeflowFanOutFailed)" in hint.reason
+    assert decide(sig, llm("code", 0.99), min_confidence=0.75).rule == RULE_AGGREGATE
+
+
+def test_an_aggregate_error_with_a_sampled_child_failure_runs_the_usual_gates() -> None:
+    code = compute_signals(with_native(customers_context(), "FakeflowFanOutFailed"), taxonomy=FAKE_TAXONOMY)
+    assert (code.native_error_kind, code.error_kind) == ("aggregate", "code")
+    decision = decide(code, llm("code", 0.9), min_confidence=0.75)
+    assert (decision.category, decision.rule) == ("code", RULE_B)
+    data = compute_signals(with_native(sales_context(), "FakeflowFanOutFailed"), taxonomy=FAKE_TAXONOMY)
+    assert (decide(data, None, min_confidence=0.75).category, policy_hint(data).rule) == ("data", RULE_A)
+
+
+def test_code_and_data_shape_names_set_the_error_kind() -> None:
+    taxonomy = ErrorTaxonomy(code=frozenset({"VendorBug"}), data_shape=frozenset({"BadRecord"}))
+
+    def vendor(error_name: str | None = None) -> FakeContext:
+        ctx = FakeContext(exception_type="CustomVendorError", exception_message="boom")
+        return with_native(ctx, error_name)
+
+    assert compute_signals(vendor()).error_kind == "unknown"
+    code = compute_signals(vendor("VendorBug"), taxonomy=taxonomy)
+    assert (code.error_kind, code.native_error_kind, code.infra_marker) == ("code", "code", None)
+    assert policy_hint(code).category == "code"
+    data = compute_signals(vendor("BadRecord"), taxonomy=taxonomy)
+    assert (data.error_kind, policy_hint(data).rule) == ("data_shape", RULE_C)
+    # the missing column found in the error is kept
+    sales = compute_signals(with_native(sales_context(), "VendorBug"), taxonomy=taxonomy)
+    assert (sales.error_kind, sales.missing_column_in_error) == ("code", "amount")
+    assert policy_hint(sales).rule == RULE_A
+
+
+def test_an_unknown_native_error_name_only_adds_its_name() -> None:
+    ctx = with_native(customers_context(), "ValueError for olivia.martin@example.com")
+    sig = compute_signals(ctx, taxonomy=FAKE_TAXONOMY)
+    assert sig.native_error_kind is None
+    assert sig.native_error_name == "ValueError for [email]"
+    assert list(sig.to_dict()) == [*PHASE5_SIGNAL_KEYS, "native_error_name"]
+    plain = compute_signals(ctx)
+    assert (sig.error_kind, policy_hint(sig)) == (plain.error_kind, policy_hint(plain))
+
+
+# --------------------------------------------------------------------------- orchestrator words
+
+
+@pytest.mark.parametrize(
+    ("sig", "rule", "airflow_text"),
+    [
+        (
+            signals(
+                violation_rules=["missing_column"], violation_columns=["amount"], error_kind="data_shape"
+            ),
+            RULE_A,
+            "and the task failed with a data-shaped error (ValueError).",
+        ),
+        (
+            signals(error_kind="infra", infra_marker="SIGKILL"),
+            RULE_INFRA,
+            "retry the task or ask an operator.",
+        ),
+        (
+            signals(contract_status="draft", error_kind="data_shape"),
+            RULE_C,
+            "and the task failed with a data-shaped error (ValueError):",
+        ),
+    ],
+)
+def test_the_reasons_use_the_orchestrators_word_for_a_step(
+    sig: Signals, rule: str, airflow_text: str
+) -> None:
+    airflow = policy_hint(sig)
+    assert (airflow.rule, policy_hint(sig, step="task")) == (rule, airflow)
+    assert airflow_text in airflow.reason  # the phase-5 text
+    fakeflow = policy_hint(sig, step="step")
+    assert fakeflow.reason == airflow.reason.replace("the task", "the step")
+    assert "task" not in fakeflow.reason
+    assert decide(sig, None, min_confidence=0.75, step="step").reason == fakeflow.reason
+    assert decide(sig, None, min_confidence=0.75).reason == airflow.reason

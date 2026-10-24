@@ -132,7 +132,7 @@ def test_admin_can_act(client: Any, tokens: dict[str, str], seeded: dict[str, st
     headers = {**bearer(tokens["admin"]), **CSRF}
     detail = client.get(incident_url(seeded["waiting_admin"]), headers=headers)
     assert detail.json()["can_edit"] is True
-    assert detail.json()["allowed_actions"] == ["resolve_data", "resolve_code", "ignore"]
+    assert detail.json()["allowed_actions"] == ["resolve_data", "resolve_code", "retry_task", "ignore"]
 
     resolve = client.post(
         incident_url(seeded["waiting_admin"], "/resolve"), json={"resolution": "code"}, headers=headers

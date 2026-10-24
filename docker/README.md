@@ -136,16 +136,18 @@ recreated with the new environment).
 `python scripts/tasks.py demo` (same as `make demo` or `python scripts/demo.py`) runs the
 day-2 story of `example_existing_repo/` end to end (standard library only, Windows-safe):
 
-1. stops `healer-worker`, recreates `.demo/repo` from `example_existing_repo/` (new git
-   history; the `dags/` folder is rewritten in place so Airflow never loses the DAGs) and
-   empties the store with `dag-healer store reset --yes --artifacts` (it also restarts the
-   worker's REST poll at that moment, so older failures in Airflow's history are ignored);
+1. stops `healer-worker` and recreates `.demo/repo` from `example_existing_repo/` (new git
+   history; the `dags/` folder is rewritten in place so Airflow never loses the DAGs);
 2. `docker compose up --detach --wait` (builds the image when it is missing; `--build` forces
    a rebuild);
-3. `dag-healer init --repo /opt/airflow/repo`, then the demo settings in `healer.yaml` (poll
-   every 5 s; e-mail alerts to `mailpit:1025` for `data-team@example.com`), approves the
-   `sales_daily_etl` and `customers_sync` contracts (`inventory_report` stays a draft),
-   commits "Add dag-healer config and contracts" and starts the worker;
+3. in the api-server, `dag-healer store migrate` (a store left by an older image is upgraded
+   first; this also runs with `--no-reset`) and `dag-healer store reset --yes --artifacts`
+   (empties the store and restarts the worker's poll at that moment, so older failures in
+   Airflow's history are ignored); then `dag-healer init --repo /opt/airflow/repo`, the demo
+   settings in `healer.yaml` (poll every 5 s; e-mail alerts to `mailpit:1025` for
+   `data-team@example.com`), the approval of the `sales_daily_etl` and `customers_sync`
+   contracts (`inventory_report` stays a draft), a commit "Add dag-healer config and
+   contracts", and the worker is started;
 4. copies `fixtures/day2/*.csv` over `data/incoming/` (uncommitted), triggers the three DAGs
    through the REST API (admin token) and waits for their runs to fail;
 5. waits (up to `--timeout`, 600 s) for the three incidents: `sales_daily_etl` DATA
@@ -165,7 +167,10 @@ samples, 401/403 answers, resolve as code and as data); it exits 1 when a check 
 `HEALER_E2E=1 python -m pytest tests/e2e` wraps it for pytest.
 
 Other store commands (run with `python scripts/tasks.py healer ...`): `store stats` (rows per
-table) and `store reset --yes [--artifacts] [--keep-state]`.
+table), `store status` (schema version and pending migrations), `store migrate [--dry-run]`
+and `store reset --yes [--artifacts] [--keep-state]`. The worker, `dag-healer init` and
+`store migrate` create or upgrade the store schema; the api-server never migrates a store
+(its store routes answer 503 until the schema is current).
 
 ## Linux notes
 

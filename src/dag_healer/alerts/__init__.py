@@ -22,7 +22,12 @@ sample is only shown when it is flagged ``masked: true`` (the shape produced by
 ``reason`` (why a human is needed), ``error`` (why a repair failed), ``notes``
 (list of str), ``violations`` (list of ``Violation`` models or dicts), ``sample``,
 ``violated_rule``, ``diagnosis``, ``category``, ``confidence``, ``fix_summary``,
-``branch``, ``test_path``, ``changed_files``, ``pr_url``, ``pr_md_path``, ``attempts``.
+``branch``, ``test_path``, ``changed_files``, ``pr_url``, ``pr_md_path``, ``attempts``,
+``vocabulary`` (the orchestrator's words, ``Vocabulary.as_dict()`` of
+:mod:`dag_healer.core.vocab`; missing words are the Airflow ones) and ``native_links``
+(``{label: absolute URL}`` into the orchestrator's own UI, one "Open in <label>" link each;
+the worker sends none for Airflow, whose UI already hosts the Healer views). Without these
+two keys an alert reads exactly as an Airflow alert always did.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from dag_healer import links
 from dag_healer.config import ALERT_EVENTS
+from dag_healer.core.vocab import Vocabulary
 from dag_healer.masking import HASH_LENGTH, HASH_PREFIX, REDACTED, mask_text
 
 if TYPE_CHECKING:
@@ -65,6 +71,7 @@ MAX_SAMPLE_COLUMNS = 20
 MAX_VIOLATIONS = 10
 MAX_LIST_ITEMS = 10
 MAX_CHANGED_FILES = 20
+MAX_NATIVE_LINKS = 5
 MAX_OUTCOME_ERROR_CHARS = 500
 DEFAULT_SAMPLE_ROWS = 5
 
@@ -88,6 +95,8 @@ _DIFF_HEADER = re.compile(r"^diff --git a/(?P<a>.+?) b/(?P<b>.+)$", re.MULTILINE
 _WHITESPACE = re.compile(r"\s+")
 _BLANK_RUNS = re.compile(r"\n{3,}")
 _IDENTIFIER_KEYS = ("id", "dag_id", "run_id", "task_id", "map_index", "try_number", "status", "category")
+_ORCHESTRATOR_KEYS = ("vocabulary", "native_links")  # kept when only the identifiers are rendered
+_AIRFLOW_WORDS = Vocabulary().as_dict()
 
 
 # --------------------------------------------------------------------------- results
@@ -337,6 +346,37 @@ def _sample_rows_setting(cfg: Any) -> int:
     )
 
 
+def _upper_first(word: str) -> str:
+    """``task`` -> ``Task``; ``DAG`` stays ``DAG`` (never ``str.capitalize``)."""
+    return word[:1].upper() + word[1:]
+
+
+def _words(vocabulary: Any) -> dict[str, str]:
+    """The orchestrator's words over the Airflow ones, plus the labels the templates print."""
+    words = dict(_AIRFLOW_WORDS)
+    if isinstance(vocabulary, Mapping):
+        for name, value in vocabulary.items():
+            if name in words and isinstance(value, str) and value.strip():
+                words[name] = _identifier(value)
+    words["pipeline_label"] = _upper_first(words["pipeline"])
+    words["step_label"] = _upper_first(words["step"])
+    words["attempt_label"] = _upper_first(words["attempt"])
+    return words
+
+
+def _native_links(value: Any) -> dict[str, str]:
+    """``{label: url}`` links into the orchestrator's own UI (absolute http(s) URLs only)."""
+    if not isinstance(value, Mapping):
+        return {}
+    found: dict[str, str] = {}
+    for label, url in value.items():
+        name = _identifier(label)
+        target = url.strip() if isinstance(url, str) else ""
+        if name and target.lower().startswith(("http://", "https://")) and not _WHITESPACE.search(target):
+            found.setdefault(name, target)
+    return dict(list(found.items())[:MAX_NATIVE_LINKS])
+
+
 def build_context(
     cfg: Any, incident: Mapping[str, Any], event: str, extra: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -401,7 +441,13 @@ def build_context(
         "error": _masked(merged.get("error"), MAX_ERROR_CHARS),
         "notes": _masked_list(merged.get("notes")),
         "changed_files": _changed_files(merged),
-        "links": {**ti_links, "pr": pr_url, "pr_kind": pr_kind},
+        "links": {
+            **ti_links,
+            "pr": pr_url,
+            "pr_kind": pr_kind,
+            "native": _native_links(merged.get("native_links")),
+        },
+        "words": _words(merged.get("vocabulary")),
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
@@ -471,12 +517,13 @@ def _log_parts(context: Mapping[str, Any], subject: str) -> tuple[str, dict[str,
 def _fallback(context: Mapping[str, Any]) -> tuple[str, str, str]:
     """Minimal subject/text/html used when a template cannot be rendered."""
     inc = context["incident"]
+    words = context["words"]
     subject = f"{SUBJECT_PREFIX} {context['event_title']}: {inc['task_label']}"
     lines = [
         context["event_title"],
         "",
-        f"DAG: {inc['dag_id']}",
-        f"Task: {inc['task_id']}",
+        f"{words['pipeline_label']}: {inc['dag_id']}",
+        f"{words['step_label']}: {inc['task_id']}",
         f"Run: {inc['run_id']}",
         f"Classification: {inc['category_label']}",
     ]
@@ -511,7 +558,10 @@ def render_alert(
             mask_text(exc),
         )
         identifiers = {key: (incident or {}).get(key) for key in _IDENTIFIER_KEYS}
-        context = build_context(cfg, identifiers, event, None)
+        orchestrator = (
+            {key: extra.get(key) for key in _ORCHESTRATOR_KEYS} if isinstance(extra, Mapping) else None
+        )
+        context = build_context(cfg, identifiers, event, orchestrator)
     fallback = False
     try:
         env = template_environment()

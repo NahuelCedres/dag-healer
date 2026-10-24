@@ -12,6 +12,7 @@
   "allowed_actions": [
     "resolve_data",
     "resolve_code",
+    "retry_task",
     "ignore"
   ],
   "attempts": 0,

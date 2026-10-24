@@ -2,8 +2,20 @@
 
 :func:`compute_signals` condenses an incident context into :class:`Signals`;
 :func:`policy_hint` applies the deterministic part of the gates; :func:`decide` combines the
-hint with the LLM classification. The gates, in order:
+hint with the LLM classification. With the orchestrator's error taxonomy
+(``compute_signals(ctx, taxonomy=...)``, :class:`~dag_healer.core.vocab.ErrorTaxonomy`) the
+orchestrator's own name of the error (``ctx.error_name``) or its event type
+(``ctx.native["event_type"]``) is classified first: ``infra`` makes the error an infrastructure
+problem, ``code`` / ``data_shape`` set the error kind, and ``definition`` / ``aggregate`` lead to
+the first two gates. Without a taxonomy or an error name the signals are the phase-5 ones. The
+gates, in order:
 
+``definition`` - the error is a bug in the pipeline definition (for example a Step Functions
+    ``States.Runtime`` error) -> **ambiguous** (a local pytest cannot reproduce it; nothing to
+    fix in the step code or the data).
+``aggregate`` - the error only summarises failed child runs (a fan-out over a tolerated failure
+    threshold) and no child traceback is available -> **ambiguous**. With a sampled child
+    traceback the gates below decide.
 (a) ``a_contract_violated`` - an **approved** contract is violated and the error is data-shaped
     (or a violated column is named in the error) -> **data**. Deterministic: the LLM only writes
     the diagnosis and its confidence does not matter.
@@ -29,9 +41,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from dag_healer.masking import mask_text
+
+if TYPE_CHECKING:
+    from dag_healer.core.vocab import ErrorTaxonomy
 
 ErrorKind = Literal["data_shape", "code", "infra", "unknown"]
 Category = Literal["data", "code", "ambiguous"]
@@ -42,7 +57,21 @@ RULE_C = "c_no_approved_contract"
 RULE_D = "d_low_confidence"
 RULE_INFRA = "infra"
 RULE_LLM = "llm"
-RULES: tuple[str, ...] = (RULE_A, RULE_B, RULE_C, RULE_D, RULE_INFRA, RULE_LLM)
+RULE_DEFINITION = "definition"
+RULE_AGGREGATE = "aggregate"
+RULES: tuple[str, ...] = (
+    RULE_A,
+    RULE_B,
+    RULE_C,
+    RULE_D,
+    RULE_INFRA,
+    RULE_LLM,
+    RULE_DEFINITION,
+    RULE_AGGREGATE,
+)
+
+#: Fields of :class:`Signals` left out of :meth:`Signals.to_dict` while they are ``None``.
+_NATIVE_SIGNALS: tuple[str, ...] = ("native_error_name", "native_error_kind")
 
 DATA_GATE_CONFIDENCE = 0.95
 """Confidence reported for decisions taken by gate (a)."""
@@ -192,10 +221,19 @@ class Signals:
     exception_message: str | None = None
     #: What made the error look like an infrastructure problem.
     infra_marker: str | None = None
+    #: The orchestrator's own name of the error (``ctx.error_name``, masked), read with a taxonomy.
+    native_error_name: str | None = None
+    #: The taxonomy's kind of that error (``infra``, ``code``, ``data_shape``, ``definition``,
+    #: ``aggregate``), ``None`` when the taxonomy does not know it.
+    native_error_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-safe dict."""
-        return asdict(self)
+        """JSON-safe dict (the native fields only once they are known: phase-5 signals keep their keys)."""
+        data = asdict(self)
+        for name in _NATIVE_SIGNALS:
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
 
 @dataclass
@@ -377,11 +415,43 @@ def _quoted_in(column: str, text: str) -> bool:
     return bool(re.search(r"['\"\[]" + re.escape(column) + r"['\"\]]", text))
 
 
+def _native_error(ctx: Any, taxonomy: ErrorTaxonomy | None) -> tuple[str | None, str | None, str | None]:
+    """``(error name, kind, infra marker)`` of the orchestrator's own error, read with ``taxonomy``.
+
+    The name is ``ctx.error_name`` (masked), the event type ``ctx.native["event_type"]``. The
+    infra marker is the event type when the taxonomy lists it, else the short error name.
+    Without a taxonomy nothing is read.
+    """
+    if taxonomy is None:
+        return None, None, None
+    raw_name = _attr(ctx, "error_name")
+    name = mask_text(raw_name).strip() if raw_name else ""
+    native = _attr(ctx, "native")
+    raw_event = native.get("event_type") if isinstance(native, Mapping) else None
+    event_type = str(raw_event).strip() if raw_event else ""
+    if not name and not event_type:
+        return None, None, None
+    kind = taxonomy.kind_of(name or None, event_type=event_type or None)
+    marker = None
+    if kind == "infra":
+        infra_events = getattr(taxonomy, "infra_event_types", None) or ()
+        marker = event_type if event_type and event_type in infra_events else short_type(name)
+    return name or None, kind, marker
+
+
 # --------------------------------------------------------------------------- signals
 
 
-def compute_signals(ctx: Any) -> Signals:
-    """Condense an incident context (``IncidentContext`` or a duck-typed equivalent) into signals."""
+def compute_signals(ctx: Any, *, taxonomy: ErrorTaxonomy | None = None) -> Signals:
+    """Condense an incident context (``IncidentContext`` or a duck-typed equivalent) into signals.
+
+    ``taxonomy`` is the orchestrator's :class:`~dag_healer.core.vocab.ErrorTaxonomy` (see the
+    module docstring). Its ``infra`` kind turns the error into an infrastructure problem (no
+    missing column, the error name or event type as marker), so the infra gate fires; ``code``
+    and ``data_shape`` set the error kind and keep the column detection; ``definition`` and
+    ``aggregate`` are kept in ``native_error_kind`` for :func:`policy_hint`. Without a taxonomy,
+    or without an error name or event type, nothing changes (:data:`INFRA_TYPES` still applies).
+    """
     contract_status = str(_attr(ctx, "contract_status") or "missing")
     violations = list(_attr(ctx, "violations") or [])
     draft_violations = list(_attr(ctx, "draft_violations") or [])
@@ -416,6 +486,13 @@ def compute_signals(ctx: Any) -> Signals:
         known_columns=known_columns,
         repo_frames_present=bool(repo_frames),
     )
+    native_name, native_kind, native_marker = _native_error(ctx, taxonomy)
+    if native_kind == "infra":
+        kind, column, marker = "infra", None, native_marker
+    elif native_kind == "code":
+        kind, marker = "code", None
+    elif native_kind == "data_shape":
+        kind, marker = "data_shape", None
     tail = "\n".join(tb_source.splitlines()[-30:])
     haystack = f"{exception_message or ''}\n{tail}"
     columns_in_error = [col for col in violation_columns if _quoted_in(col, haystack)]
@@ -440,6 +517,8 @@ def compute_signals(ctx: Any) -> Signals:
         violation_details=details,
         exception_message=message or None,
         infra_marker=marker,
+        native_error_name=native_name,
+        native_error_kind=native_kind,
     )
 
 
@@ -467,20 +546,41 @@ def _rules(signals: Signals) -> str:
     return ", ".join(signals.violation_rules)
 
 
-def policy_hint(signals: Signals) -> PolicyHint:
-    """Apply the deterministic gates: which gate applies and its candidate category."""
+def policy_hint(signals: Signals, *, step: str = "task") -> PolicyHint:
+    """Apply the deterministic gates: which gate applies and its candidate category.
+
+    ``step`` is the orchestrator's word for a step in the reasons (``Vocabulary.step``; Airflow:
+    ``task``).
+    """
     approved = signals.contract_status == "approved"
     violated = approved and bool(signals.violation_rules)
     named_column = signals.missing_column_in_error in signals.violation_columns
     data_evidence = signals.error_kind == "data_shape" or named_column or bool(signals.columns_in_error)
     error = short_type(signals.exception_type) or "an error"
+    native_error = signals.native_error_name or error
 
+    if signals.native_error_kind == "definition":
+        return PolicyHint(
+            "ambiguous",
+            RULE_DEFINITION,
+            f"The failure is an error in the pipeline definition ({native_error}), not in the step code or "
+            "the data: a local pytest cannot reproduce it, so a human must fix the definition.",
+            False,
+        )
+    if signals.native_error_kind == "aggregate" and not signals.exception_type:
+        return PolicyHint(
+            "ambiguous",
+            RULE_AGGREGATE,
+            f"The failure summarises failed child runs ({native_error}) and no failed child is available: "
+            "a human must look at the children.",
+            False,
+        )
     if violated and data_evidence:
         return PolicyHint(
             "data",
             RULE_A,
-            f"The approved contract is violated ({_rules(signals)}) and the task failed with a data-shaped "
-            f"error ({error}).",
+            f"The approved contract is violated ({_rules(signals)}) and the {step} failed with a "
+            f"data-shaped error ({error}).",
             False,
         )
     if signals.error_kind == "infra":
@@ -488,7 +588,7 @@ def policy_hint(signals: Signals) -> PolicyHint:
             "ambiguous",
             RULE_INFRA,
             f"The failure looks like an infrastructure problem ({signals.infra_marker or error}); "
-            "neither the data nor the code is implicated: retry the task or ask an operator.",
+            f"neither the data nor the code is implicated: retry the {step} or ask an operator.",
             False,
         )
     if approved and not signals.violation_rules and signals.repo_frames_present:
@@ -507,9 +607,9 @@ def policy_hint(signals: Signals) -> PolicyHint:
         return PolicyHint(
             "ambiguous",
             RULE_C,
-            f"There is no approved data contract (status: {signals.contract_status}) and the task failed "
-            f"with a data-shaped error ({error}){draft}: a human must decide whether the data or the code "
-            "is wrong.",
+            f"There is no approved data contract (status: {signals.contract_status}) and the {step} "
+            f"failed with a data-shaped error ({error}){draft}: a human must decide whether the data or "
+            "the code is wrong.",
             False,
         )
     if violated:
@@ -527,13 +627,13 @@ def policy_hint(signals: Signals) -> PolicyHint:
     )
 
 
-def decide(signals: Signals, llm: Any, *, min_confidence: float) -> Decision:
+def decide(signals: Signals, llm: Any, *, min_confidence: float, step: str = "task") -> Decision:
     """Final decision from the signals and the LLM classification (``None`` when unavailable).
 
     ``llm`` is a :class:`dag_healer.agent.llm.Classification` (any object with ``category`` and
-    ``confidence`` works).
+    ``confidence`` works). ``step`` is the orchestrator's word for a step (see :func:`policy_hint`).
     """
-    hint = policy_hint(signals)
+    hint = policy_hint(signals, step=step)
     if not hint.needs_llm_confirmation:
         confidence = DATA_GATE_CONFIDENCE if hint.category == "data" else AMBIGUOUS_CONFIDENCE
         return Decision(hint.category, confidence, hint.reason, hint.rule, False)
@@ -627,9 +727,11 @@ __all__ = [
     "DATA_GATE_CONFIDENCE",
     "RULES",
     "RULE_A",
+    "RULE_AGGREGATE",
     "RULE_B",
     "RULE_C",
     "RULE_D",
+    "RULE_DEFINITION",
     "RULE_INFRA",
     "RULE_LLM",
     "Decision",

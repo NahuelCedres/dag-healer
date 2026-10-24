@@ -9,14 +9,19 @@ import httpx
 import pytest
 
 from dag_healer._version import __version__
+from dag_healer.core.vocab import Vocabulary
+from dag_healer.orchestrators.fake import FAKE_VOCABULARY
 from dag_healer.pr import create_pull_request as lazy_create_pull_request
+from dag_healer.pr import review_checklist as lazy_review_checklist
 from dag_healer.pr.github import GitHubError, create_pull_request
 from dag_healer.pr.prmd import (
     MAX_DIFF_CHARS,
+    REVIEW_CHECKLIST,
     diff_summary,
     pr_artifacts_dir,
     render_pr_markdown,
     render_pr_title,
+    review_checklist,
     write_pr_artifacts,
 )
 
@@ -329,6 +334,52 @@ def test_pr_markdown_uses_longer_fences_and_truncates() -> None:
     assert "The diff is truncated below" in md
     assert "[diff truncated: " in md
     assert len(md) < 65536
+
+
+@pytest.mark.parametrize(
+    "vocabulary",
+    [None, {}, Vocabulary().as_dict(), {"unknown": "word", "step": "  ", "product": None}],
+    ids=["none", "empty", "airflow", "unknown-and-blank"],
+)
+def test_pr_markdown_with_the_airflow_words_is_unchanged(vocabulary: dict | None) -> None:
+    assert _render(vocabulary=vocabulary) == EXPECTED_PR_MD
+
+
+def test_pr_markdown_in_the_words_of_another_orchestrator() -> None:
+    md = _render(incident={**INCIDENT, "map_index": 3}, vocabulary=FAKE_VOCABULARY.as_dict())
+    assert "| Flow | `customers_sync` |" in md
+    assert "| Step | `transform` |" in md
+    assert "| Run | `manual__2026-10-17T10:00:00+00:00` |" in md
+    assert "| Attempt | 2 |" in md
+    assert "| Map index | 3 |" in md
+    assert "Failure reported by Fakeflow (masked):" in md
+    assert '- [ ] After merging, retry the failed step (Healer tab, "Retry step") to confirm' in md
+    assert "Airflow" not in md
+    assert "| DAG |" not in md and "| Task |" not in md and "| Try |" not in md
+
+
+def test_labels_keep_upper_case_words() -> None:
+    md = _render(vocabulary={"pipeline": "DAG", "step": "state", "attempt": "redrive"})
+    assert "| DAG | `customers_sync` |" in md  # never "Dag"
+    assert "| State | `transform` |" in md and "| Redrive | 2 |" in md
+
+
+def test_review_checklist_and_title_follow_the_vocabulary() -> None:
+    fake = FAKE_VOCABULARY.as_dict()
+    assert REVIEW_CHECKLIST == review_checklist() == review_checklist({}) == lazy_review_checklist(None)
+    assert REVIEW_CHECKLIST[-1] == (
+        'After merging, retry the failed task (Healer tab, "Retry task") to confirm the pipeline recovers.'
+    )
+    assert review_checklist(fake)[:-1] == REVIEW_CHECKLIST[:-1]
+    assert review_checklist(fake)[-1] == (
+        'After merging, retry the failed step (Healer tab, "Retry step") to confirm the pipeline recovers.'
+    )
+    assert render_pr_title(INCIDENT, vocabulary={}) == render_pr_title(INCIDENT)
+    assert render_pr_title(INCIDENT, vocabulary=fake) == (
+        "fix(customers_sync): repair failing step transform [dag-healer]"
+    )
+    assert render_pr_title({}) == "fix(dag): repair failing task task [dag-healer]"
+    assert render_pr_title({}, vocabulary=fake) == "fix(flow): repair failing step step [dag-healer]"
 
 
 def test_pr_title_and_diff_summary() -> None:

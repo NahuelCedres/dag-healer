@@ -1,12 +1,17 @@
 """``dag-healer doctor`` (environment checks) and ``dag-healer check`` (configuration dump).
 
 ``doctor`` runs every check and exits 1 when at least one of them reports an error.
-Secrets are never printed: only whether they are set.
+Secrets are never printed: only whether they are set. The generic checks (configuration,
+repository, contracts, store, UI bundle, LLM) come first, then the ``orchestrator`` check
+(the configured adapter loads and can serve ``monitor.modes`` and ``monitor.trigger``) and
+the adapter's own checks (``adapter.doctor_checks()``: for Airflow the API, the poller's login
+and the plugin entry point), then SMTP, secrets, ingest and GitHub.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import socket
 from collections.abc import Callable
@@ -20,6 +25,7 @@ from dag_healer.cli.main import register_command
 
 if TYPE_CHECKING:
     from dag_healer.config import HealerConfig
+    from dag_healer.core.ports import OrchestratorAdapter
 
 OK = "ok"
 WARN = "warn"
@@ -161,6 +167,26 @@ def check_llm(cfg: HealerConfig | None) -> CheckResult:
     return CheckResult("llm", ERROR, f"{API_KEY_ENV} is not set; the worker cannot classify or repair")
 
 
+def check_orchestrator(cfg: HealerConfig) -> tuple[CheckResult, OrchestratorAdapter | None]:
+    """The configured orchestrator adapter loads and can serve ``monitor.modes`` / ``monitor.trigger``.
+
+    Returns the result and a new adapter (``None`` when it cannot be built; building it does no
+    I/O). The caller runs the adapter's own checks and closes it.
+    """
+    from dag_healer.orchestrators import registry
+
+    try:
+        settings = registry.orchestrator_settings(cfg)
+        adapter = registry.ensure_adapter(registry.load_factory(settings.type).create(cfg), settings.type)
+    except registry.AdapterLoadError as exc:
+        return CheckResult("orchestrator", ERROR, str(exc)), None
+    problems = registry.config_problems(cfg, adapter)
+    if problems:
+        return CheckResult("orchestrator", ERROR, "; ".join(problems)), adapter
+    detail = f"{adapter.display_name} (type {adapter.type}, instance {adapter.instance})"
+    return CheckResult("orchestrator", OK, detail), adapter
+
+
 def _http_get(url: str) -> Any:
     import httpx
 
@@ -200,7 +226,7 @@ def check_airflow_api(cfg: HealerConfig) -> CheckResult:
 
 def check_airflow_auth(cfg: HealerConfig, api_reachable: bool) -> CheckResult:
     """The REST poller's credentials obtain a token (``POST /auth/token``)."""
-    if "rest" not in cfg.monitor.modes:
+    if not cfg.monitor.wants("poll"):
         return CheckResult("airflow auth", SKIP, "REST polling disabled (monitor.modes)")
     username, password = cfg.airflow.username, cfg.airflow.password
     if not username or not password:
@@ -246,8 +272,7 @@ def check_secret_literals(cfg: HealerConfig) -> CheckResult:
 
 def check_ingest(cfg: HealerConfig) -> CheckResult:
     """The listener / callback fast path needs a shared ingest token."""
-    push_modes = {"listener", "callback"} & set(cfg.monitor.modes)
-    if not push_modes:
+    if not cfg.monitor.wants("push"):
         return CheckResult("ingest", SKIP, "listener/callback modes disabled")
     if cfg.ingest.token or os.environ.get("HEALER_INGEST_TOKEN", "").strip():
         return CheckResult("ingest", OK, "ingest token is set (value hidden)")
@@ -270,35 +295,56 @@ def check_github(cfg: HealerConfig) -> CheckResult:
 # --------------------------------------------------------------------------- doctor
 
 
+def _guarded(name: str, run: Callable[[], Any]) -> CheckResult:
+    """Run one check; an exception (or a result that is not a CheckResult) becomes an error."""
+    try:
+        result = run()
+    except Exception as exc:  # a broken check must not hide the others
+        return CheckResult(name, ERROR, f"{type(exc).__name__}: {exc}")
+    if not isinstance(result, CheckResult) or result.status not in _LABELS:
+        return CheckResult(name, ERROR, f"the check returned {type(result).__name__}, not a CheckResult")
+    return result
+
+
+def _adapter_checks(adapter: OrchestratorAdapter) -> list[CheckResult]:
+    """Run ``adapter.doctor_checks()`` in the adapter's order, then close the adapter."""
+    try:
+        return [_guarded(str(check.name), check.run) for check in adapter.doctor_checks()]
+    except Exception as exc:  # doctor_checks() itself failed: report it, keep the other checks
+        return [CheckResult(f"{adapter.type} checks", ERROR, f"{type(exc).__name__}: {exc}")]
+    finally:
+        with contextlib.suppress(Exception):  # closing is best effort
+            adapter.close()
+
+
 def run_checks(config_path: str | None = None) -> list[CheckResult]:
-    """Run every doctor check and return the results in display order."""
+    """Run every doctor check and return the results in display order (see the module docstring)."""
     config_result, cfg = check_config(config_path)
     results = [config_result]
     if cfg is None:
         results += [check_bundle(), check_plugin_entry_point(), check_llm(None)]
         return results
-    api_result = check_airflow_api(cfg)
-    steps: list[Callable[[], CheckResult]] = [
-        lambda: check_repo(cfg),
-        lambda: check_contracts(cfg),
-        lambda: check_store(cfg),
-        check_bundle,
-        check_plugin_entry_point,
-        lambda: check_llm(cfg),
-        lambda: api_result,
-        lambda: check_airflow_auth(cfg, api_result.status != ERROR),
-        lambda: check_smtp(cfg),
-        lambda: check_secret_literals(cfg),
-        lambda: check_ingest(cfg),
-        lambda: check_github(cfg),
+    results += [
+        _guarded("repository", lambda: check_repo(cfg)),
+        _guarded("contracts", lambda: check_contracts(cfg)),
+        _guarded("store", lambda: check_store(cfg)),
+        _guarded("ui bundle", check_bundle),
+        _guarded("llm", lambda: check_llm(cfg)),
     ]
-    for step in steps:
-        try:
-            results.append(step())
-        except Exception as exc:  # a broken check must not hide the others
-            results.append(
-                CheckResult(getattr(step, "__name__", "check"), ERROR, f"{type(exc).__name__}: {exc}")
-            )
+    adapter: OrchestratorAdapter | None = None
+    try:
+        orchestrator_result, adapter = check_orchestrator(cfg)
+    except Exception as exc:  # a broken adapter factory must not hide the other checks
+        orchestrator_result = CheckResult("orchestrator", ERROR, f"{type(exc).__name__}: {exc}")
+    results.append(orchestrator_result)
+    if adapter is not None:
+        results += _adapter_checks(adapter)
+    results += [
+        _guarded("smtp", lambda: check_smtp(cfg)),
+        _guarded("secrets", lambda: check_secret_literals(cfg)),
+        _guarded("ingest", lambda: check_ingest(cfg)),
+        _guarded("github", lambda: check_github(cfg)),
+    ]
     return results
 
 
@@ -396,6 +442,7 @@ __all__ = [
     "check_github",
     "check_ingest",
     "check_llm",
+    "check_orchestrator",
     "check_plugin_entry_point",
     "check_repo",
     "check_secret_literals",

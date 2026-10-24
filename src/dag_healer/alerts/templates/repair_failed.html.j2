@@ -3,14 +3,14 @@
 {% block headline %}Automatic repair failed{% endblock %}
 {% block lead %}dag-healer treated this failure as a code issue but could not produce a verified fix. Nothing was merged or pushed to your base branch.{% endblock %}
 {% block content %}
-{{ m.summary(incident) }}
+{{ m.summary(incident, words) }}
 {{ m.text_section("Diagnosis", incident.diagnosis) }}
 {% call m.section("What went wrong") %}
 {{ m.pre(error or "The agent could not make the reproducing test pass within the configured limits.") }}
 {% if incident.attempts %}<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">Repair attempts: {{ incident.attempts }}</p>{% endif %}
 {% endcall %}
 {{ m.list_section("Notes", notes) }}
-{{ m.pre_section("Original task error", incident.error_summary) }}
+{{ m.pre_section("Original " ~ words.step ~ " error", incident.error_summary) }}
 {% call m.section("Next steps") %}
 <ul style="margin:0 0 12px 0;padding:0 0 0 20px;font-size:14px;line-height:21px;color:#1f2937;">
   <li style="margin:0 0 4px 0;">Investigate the failure manually, using the diagnosis above.</li>
@@ -18,6 +18,6 @@
   <li style="margin:0 0 4px 0;">Or resolve the incident as a data issue, or ignore it.</li>
 </ul>
 {{ m.button(links.task_instance, "Open the Healer incident", accent) }}
-{{ m.secondary_links(links) }}
+{{ m.secondary_links(links, words) }}
 {% endcall %}
 {% endblock %}

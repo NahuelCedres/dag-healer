@@ -5,9 +5,16 @@ the test process gets as little as possible from the worker:
 
 * **Environment** (:func:`scrubbed_env`): no LLM/GitHub/SMTP credentials, no
   ``HEALER_*`` settings, no Airflow metadata-database or JWT settings, no
-  ``PYTHONPATH``/``PYTEST_*`` injection, and nothing whose name looks like a secret.
+  ``PYTHONPATH``/``PYTEST_*`` injection, no CI markers that change pytest's report
+  (``CI``, ``BUILD_NUMBER``), and nothing whose name looks like a secret.
   Airflow is pointed at a throw-away ``AIRFLOW_HOME`` with an SQLite database in
   unit-test mode, so tests that import Airflow never touch the real deployment.
+* **Cloud credentials** are always removed, whatever the orchestrator (the worker may run
+  with cloud permissions, e.g. an AWS task role): the AWS, Google and Azure credential
+  variables (:data:`CLOUD_SCRUB_EXACT`, :data:`CLOUD_SCRUB_PREFIXES`), and the AWS SDKs get no
+  instance-metadata credentials and no shared credential or config file
+  (:data:`CLOUD_SANDBOX_ENV`). These rules are applied after the caller's ``extra_env``, so an
+  orchestrator override can never bring a credential back.
 * **Time**: the whole process group is killed when ``timeout`` expires (POSIX:
   ``start_new_session`` + ``os.killpg``; Windows: best-effort ``taskkill /T``).
 * **Resources** (POSIX): ``RLIMIT_AS``, ``RLIMIT_NPROC`` and ``RLIMIT_FSIZE`` are lowered
@@ -76,6 +83,10 @@ SCRUB_EXACT = frozenset(
         "GIT_ASKPASS",
         "SSH_ASKPASS",
         "SSH_AUTH_SOCK",
+        # pytest reports differently when it sees these (full crash messages in the short
+        # summary, untruncated diffs), so the output would depend on the worker's host.
+        "CI",
+        "BUILD_NUMBER",
     }
 )
 #: Variable-name prefixes removed from the pytest environment.
@@ -105,6 +116,31 @@ SCRUB_MARKERS: tuple[str, ...] = (
     "PRIVATE_KEY",
     "CREDENTIAL",
 )
+#: Cloud credential variables always removed, even when ``extra_env`` sets them.
+CLOUD_SCRUB_EXACT = frozenset(
+    {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+        "AWS_PROFILE",
+        "AWS_ROLE_ARN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_SECRET",
+    }
+)
+#: Prefixes of cloud credential variables always removed (the ECS/EKS container credentials).
+CLOUD_SCRUB_PREFIXES: tuple[str, ...] = (
+    "AWS_CONTAINER_CREDENTIALS_",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+)
+#: Always set: no EC2 instance-metadata credentials, no shared credential or config file.
+CLOUD_SANDBOX_ENV: dict[str, str] = {
+    "AWS_EC2_METADATA_DISABLED": "true",
+    "AWS_SHARED_CREDENTIALS_FILE": "",
+    "AWS_CONFIG_FILE": "",
+}
 
 _SUMMARY_RE = re.compile(r"^=*\s*(?P<body>.*?)\s+in\s+(?P<secs>\d+(?:\.\d+)?)s(?:\s+\([^)]*\))?\s*=*\s*$")
 _COUNT_RE = re.compile(r"(\d+)\s+([a-z]+(?:\s+passed|\s+failed)?)")
@@ -184,6 +220,21 @@ def _is_scrubbed(name: str) -> bool:
     return any(marker in upper for marker in SCRUB_MARKERS)
 
 
+def _enforce_cloud_sandbox(env: dict[str, str]) -> dict[str, str]:
+    """Remove the cloud credentials from ``env`` and set :data:`CLOUD_SANDBOX_ENV` (in place).
+
+    Names compare case-insensitively (Windows), and a differently cased copy of a
+    :data:`CLOUD_SANDBOX_ENV` variable is replaced too.
+    """
+    fixed = {name.upper() for name in CLOUD_SANDBOX_ENV}
+    for name in list(env):
+        upper = name.upper()
+        if upper in CLOUD_SCRUB_EXACT or upper.startswith(CLOUD_SCRUB_PREFIXES) or upper in fixed:
+            del env[name]
+    env.update(CLOUD_SANDBOX_ENV)
+    return env
+
+
 def _sqlite_url(path: Path) -> str:
     """``sqlite:///`` URL for an absolute path (four slashes on POSIX, ``C:/`` on Windows)."""
     return f"sqlite:///{path.resolve().as_posix()}"
@@ -205,11 +256,17 @@ def scrubbed_env(
     Removes credentials and settings that must never reach user code (see the
     ``SCRUB_*`` constants: ``ANTHROPIC_API_KEY``, ``GITHUB_TOKEN``, ``HEALER_*``,
     ``AIRFLOW__DATABASE__*``, ``AIRFLOW__API_AUTH__*``, ``AIRFLOW__CORE__FERNET_KEY``, SMTP
-    settings, ``PYTHONPATH``, ``PYTEST_*`` and any name containing SECRET/TOKEN/PASSWORD/...)
-    and sets ``AIRFLOW_HOME``, ``AIRFLOW__CORE__UNIT_TEST_MODE=True``,
+    settings, ``PYTHONPATH``, ``PYTEST_*``, ``CI``, ``BUILD_NUMBER`` and any name containing
+    SECRET/TOKEN/PASSWORD/...)
+    and the cloud credentials (``CLOUD_SCRUB_*``: ``AWS_ACCESS_KEY_ID``,
+    ``AWS_SECRET_ACCESS_KEY``, ``AWS_SESSION_TOKEN``, ``AWS_SECURITY_TOKEN``, ``AWS_PROFILE``,
+    ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE``, ``AWS_CONTAINER_CREDENTIALS_*``,
+    ``AWS_CONTAINER_AUTHORIZATION_TOKEN*``, ``GOOGLE_APPLICATION_CREDENTIALS``,
+    ``AZURE_CLIENT_SECRET``), and sets ``AIRFLOW_HOME``, ``AIRFLOW__CORE__UNIT_TEST_MODE=True``,
     ``AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:///<home>/unittests.db``,
     ``AIRFLOW__CORE__LOAD_EXAMPLES=False``, ``PYTHONDONTWRITEBYTECODE=1``,
-    ``PYTHONIOENCODING=utf-8`` and ``PY_COLORS=0``.
+    ``PYTHONIOENCODING=utf-8``, ``PY_COLORS=0``, ``AWS_EC2_METADATA_DISABLED=true`` and empty
+    ``AWS_SHARED_CREDENTIALS_FILE`` / ``AWS_CONFIG_FILE``.
     """
     source = os.environ if base is None else base
     env = {key: value for key, value in source.items() if not _is_scrubbed(key)}
@@ -230,7 +287,7 @@ def scrubbed_env(
             "PY_COLORS": "0",
         }
     )
-    return env
+    return _enforce_cloud_sandbox(env)
 
 
 # --------------------------------------------------------------------------- process control
@@ -394,7 +451,9 @@ def run_pytest(
         timeout: seconds before the whole process tree is killed.
         python: interpreter to use (default: the current one).
         extra_args: extra pytest options, placed before the targets.
-        extra_env: variables set on top of :func:`scrubbed_env` (``None`` removes one).
+        extra_env: variables set on top of :func:`scrubbed_env` (``None`` removes one); the
+            cloud credential rules are applied again afterwards, so it can neither set a
+            cloud credential nor enable the instance metadata service.
 
     Returns:
         A :class:`PytestResult`. Never raises for test failures, timeouts or a missing
@@ -427,6 +486,7 @@ def run_pytest(
                 env.pop(key, None)
             else:
                 env[key] = str(value)
+        _enforce_cloud_sandbox(env)
         output_path = tmpdir / "pytest-output.log"
         timed_out = False
         start = time.monotonic()

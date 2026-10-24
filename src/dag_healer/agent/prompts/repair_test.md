@@ -1,6 +1,6 @@
 # Phase 1 of 2: write ONE failing test that reproduces the incident
 
-An Airflow task of this repository failed and dag-healer classified the failure as a CODE
+{{a_product}} {{step}} of this repository failed and dag-healer classified the failure as a CODE
 bug: the input data satisfies the approved data contract, so the code has to change. Before
 anybody touches the code, you write a pytest test that reproduces the failure. A second phase
 (with a new prompt) will fix the code; you must NOT fix anything now.
@@ -13,11 +13,11 @@ anybody touches the code, you write a pytest test that reproduces the failure. A
    test (at most two or three closely related cases) that:
    - calls the misbehaving code directly, with hard-coded inputs copied from the evidence
      (exception message, traceback, masked sample rows). Prefer the exact value that broke
-     the task, for example the string quoted in the error message;
+     the {{step}}, for example the string quoted in the error message;
    - asserts the CORRECT behaviour, i.e. what the code must return once it is fixed, so the
      test fails now and passes after a correct fix. Do not assert that the error is raised and
      do not use `pytest.raises` for the observed error;
-   - is deterministic, fast and self-contained: no network, no database, no Airflow, no
+   - is deterministic, fast and self-contained: no network, no database, no {{product}}, no
      current date or time, no reading of files under `data/` or `fixtures/`, no environment
      variables; only the standard library, pytest and packages the code under test already
      imports;
@@ -38,7 +38,7 @@ anybody touches the code, you write a pytest test that reproduces the failure. A
 ## Rules (the tools enforce them and return an error message when you break one)
 
 - In this phase you may create or change files ONLY under `{{tests_dir}}/`. Application code,
-  DAGs, configuration, data and fixtures are read-only: the fix happens in the next phase.
+  {{pipelines}}, configuration, data and fixtures are read-only: the fix happens in the next phase.
 - Paths are relative to the repository root. Absolute paths and `..` are rejected.
 - Never written: `healer.yaml`, `healer/**`, `.github/**`, `.git/**`, lockfiles and dependency
   manifests (`requirements*.txt`, `pyproject.toml`, `setup.py`, `setup.cfg`, ...), `.env*`,

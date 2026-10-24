@@ -48,6 +48,11 @@ and works without `make` (every `make <target>` delegates to it):
 - UI changes: `pnpm lint`, `pnpm format:check` and `pnpm test` in `ui/`.
 - Plugin, API or worker changes: `python scripts/tasks.py test-airflow` as well.
 
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`: the
+ruff checks above, the unit tests on Linux, macOS and Windows (Python 3.10 and 3.13; Linux
+also 3.11 and 3.12) and a build of the UI bundle and the wheel. It does not run the `ui/`
+checks or `test-airflow`, so run those yourself when they apply.
+
 ## Commit messages
 
 dag-healer follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/),

@@ -13,8 +13,9 @@ Command (payload)         Effect
                           DATA (report) or CODE (repair) branch.
 ``resolve`` ignore        ``resolution`` = ``ignore``, status ``ignored``.
 ``retry_repair``          ``resolution`` = ``code``, status ``resumed``: a new repair attempt.
-``retry_task``            ``POST /api/v2/dags/{dag}/clearTaskInstances`` for the failed task
-                          instance; the status does not change (for CODE incidents the fix
+``retry_task``            the orchestrator runs the failed step again through the adapter's
+                          remediator (Airflow: ``clearTaskInstances`` for the failed task
+                          instance); the status does not change (for CODE incidents the fix
                           stays on its branch until it is merged).
 ``approve_contract``      approves ``<contracts dir>/<dag_id>.yaml`` in the working tree
                           (refused when the file changed since the user reviewed it, see
@@ -22,7 +23,8 @@ Command (payload)         Effect
 ========================  =====================================================================
 
 A command that is no longer allowed for the incident's current status (see
-:data:`dag_healer.api.views.ALLOWED_ACTIONS_BY_STATUS`) fails with a clear error.
+:data:`dag_healer.api.views.ALLOWED_ACTIONS_BY_STATUS`) fails with a clear error. The worker
+applies only the commands of its own orchestrator instance.
 """
 
 from __future__ import annotations
@@ -36,7 +38,11 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
 
+from dag_healer.core.errors import NotSupported
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR, AttemptRef
+from dag_healer.core.vocab import RemediationKind
 from dag_healer.masking import mask_text
+from dag_healer.orchestrators.compat import as_adapter
 from dag_healer.store import repo as store_repo
 from dag_healer.store.models import (
     COMMAND_APPLIED,
@@ -49,15 +55,18 @@ from dag_healer.store.models import (
 )
 from dag_healer.worker.pipeline import (
     SessionFactory,
+    _cause_text,
     _clip,
     _error_text,
+    _instance,
+    _vocabulary,
     default_session_factory,
     transition,
 )
 
 if TYPE_CHECKING:
-    from dag_healer.airflow.client import AirflowClient
     from dag_healer.config import HealerConfig
+    from dag_healer.core.ports import OrchestratorAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -214,16 +223,17 @@ def _apply_incident_command(
     return _outcome(command, COMMAND_APPLIED, message, data)
 
 
-def _cleared_count(response: Mapping[str, Any]) -> int | None:
-    items = response.get("task_instances")
-    if isinstance(items, list):
-        return len(items)
-    total = response.get("total_entries")
-    return int(total) if isinstance(total, int) else None
+def _remediation_verb(kind: RemediationKind, words: Mapping[str, str]) -> str:
+    """What the orchestrator was asked to do (``clear the task instance``), for error texts."""
+    if kind is RemediationKind.RESUME_RUN:
+        return f"resume the {words['run']}"
+    if kind is RemediationKind.RERUN_PIPELINE:
+        return f"start a new {words['run']}"
+    return f"clear the {words['step']} instance"
 
 
 def _retry_task(
-    cfg: HealerConfig, sf: SessionFactory, client: AirflowClient | Any | None, command: Mapping[str, Any]
+    cfg: HealerConfig, sf: SessionFactory, adapter: OrchestratorAdapter | None, command: Mapping[str, Any]
 ) -> CommandOutcome:
     payload = command.get("payload") or {}
     with sf() as session:
@@ -235,26 +245,51 @@ def _retry_task(
         )
         category = incident.category
         branch_note = incident.pr_url or incident.pr_md_path
-    if client is None:
-        raise CommandFailed("No Airflow API client is configured, so the task cannot be cleared.")
-    task_ids: list[Any] = [task_id] if map_index < 0 else [(task_id, map_index)]
+        native = dict(incident.native_ref or {})
+        orchestrator = incident.orchestrator or DEFAULT_ORCHESTRATOR
+        try_number = int(incident.try_number)
+        incident_id = str(incident.id)
+    words = _vocabulary(adapter)
+    if adapter is None:
+        raise CommandFailed(
+            f"No {words['product']} API client is configured, so the {words['step']} cannot be cleared."
+        )
+    remediator = adapter.remediator
+    if remediator is None:
+        raise CommandFailed(f"{adapter.display_name} offers no way to run a failed {words['step']} again.")
+    ref = AttemptRef(orchestrator, str(command["dag_id"]), run_id, task_id, map_index, try_number)
+    kinds = remediator.available(ref, native)
+    if not kinds:
+        raise CommandFailed(f"{words['retry_action']} is not available for this incident.")
+    kind = kinds[0]
+    actor = str(command["actor"])
     try:
-        response = client.clear_task_instances(command["dag_id"], run_id, task_ids, only_failed=True)
-    except Exception as exc:  # AirflowAPIError, network errors
-        raise CommandFailed(f"Airflow refused to clear the task instance: {_error_text(exc)}") from exc
-    count = _cleared_count(response if isinstance(response, Mapping) else {})
-    actor = command["actor"]
-    message = (
-        f"{actor} cleared {task_id} in run {run_id}"
-        + (f" ({count} task instance(s))" if count is not None else "")
-        + "; Airflow will run it again."
-    )
+        result = remediator.remediate(
+            ref, native, kind, idempotency_key=f"healer-{command['id']}-{incident_id[:16]}", actor=actor
+        )
+    except NotSupported as exc:
+        raise CommandFailed(f"{words['retry_action']} is not available for this incident: {exc}") from exc
+    except Exception as exc:  # orchestrator errors (the adapter's translation of the original)
+        verb = _remediation_verb(kind, words)
+        raise CommandFailed(f"{words['product']} refused to {verb}: {_cause_text(exc)}") from exc
+    if not result.accepted:
+        verb = _remediation_verb(kind, words)
+        raise CommandFailed(result.detail or f"{words['product']} did not accept the request to {verb}.")
+    message = result.detail
     if category == "code" and branch_note:
-        message += " The proposed fix is not merged yet, so the task runs the current code."
+        message += f" The proposed fix is not merged yet, so the {words['step']} runs the current code."
+    for warning in result.warnings:
+        message += f" Warning: {warning}"
     note = _note(payload)
     if note:
         message += f" Note: {note}"
-    data = {"run_id": run_id, "task_id": task_id, "map_index": map_index, "cleared": count}
+    data: dict[str, Any] = {"run_id": run_id, "task_id": task_id, "map_index": map_index}
+    if "cleared" in result.native:
+        data["cleared"] = result.native.get("cleared")
+    if result.kind is not RemediationKind.RETRY_STEP:
+        data["remediation"] = result.kind.value
+    if result.warnings:
+        data["warnings"] = [_clip(warning, 500) for warning in result.warnings]
     with sf() as session:
         incident = store_repo.get_incident(session, str(command["incident_id"]))
         _finish(session, command["id"], COMMAND_APPLIED, message, incident=incident, actor=actor, data=data)
@@ -336,6 +371,7 @@ def _approve_contract(cfg: HealerConfig, sf: SessionFactory, command: Mapping[st
             approved_by=approved.approved_by,
             approved_at=approved.approved_at,
             source_hash=approved.source_hash,
+            orchestrator=str(command.get("orchestrator") or DEFAULT_ORCHESTRATOR),
         )
         _finish(session, command["id"], COMMAND_APPLIED, message, actor=actor, data=data)
     logger.info("dag-healer worker: %s", _clip(message, 500))
@@ -382,16 +418,24 @@ def _fail(sf: SessionFactory, command: Mapping[str, Any], message: str) -> Comma
 def apply_command(
     cfg: HealerConfig,
     session_factory: SessionFactory,
-    client: AirflowClient | Any | None,
+    client: Any | None,
     command: Mapping[str, Any],
+    *,
+    adapter: OrchestratorAdapter | None = None,
 ) -> CommandOutcome:
-    """Apply one command (``Command.to_dict()`` shape); never raises."""
+    """Apply one command (``Command.to_dict()`` shape); never raises.
+
+    ``adapter`` wins; otherwise ``client`` (a phase-5 Airflow REST client or a test double) is
+    wrapped by :func:`~dag_healer.orchestrators.compat.as_adapter`. Without either a
+    ``retry_task`` command fails; the other commands need no orchestrator.
+    """
     kind = command.get("kind")
     try:
         if kind in ("resolve", "retry_repair"):
             return _apply_incident_command(cfg, session_factory, command)
         if kind == "retry_task":
-            return _retry_task(cfg, session_factory, client, command)
+            resolved = adapter if adapter is not None else as_adapter(cfg, client)
+            return _retry_task(cfg, session_factory, resolved, command)
         if kind == "approve_contract":
             return _approve_contract(cfg, session_factory, command)
         raise CommandFailed(f"Unknown command kind {kind!r}.")
@@ -405,16 +449,26 @@ def apply_command(
 def apply_commands(
     cfg: HealerConfig,
     session_factory: SessionFactory | None,
-    client: AirflowClient | Any | None,
+    client: Any | None,
     *,
     now: datetime | None = None,
     limit: int = 100,
+    adapter: OrchestratorAdapter | None = None,
 ) -> list[CommandOutcome]:
-    """Apply every pending command, oldest first; returns one outcome per command."""
+    """Apply every pending command of this orchestrator instance, oldest first.
+
+    The instance is ``adapter.instance`` (``adapter`` wins over ``client``, see
+    :func:`apply_command`), else the configured one. Returns one outcome per command.
+    """
     factory = session_factory or default_session_factory(cfg)
+    resolved = adapter if adapter is not None else as_adapter(cfg, client)
+    instance = _instance(cfg, resolved)
     with factory() as session:
-        commands = [command.to_dict() for command in store_repo.pending_commands(session, limit=limit)]
-    outcomes = [apply_command(cfg, factory, client, command) for command in commands]
+        commands = [
+            command.to_dict()
+            for command in store_repo.pending_commands(session, limit=limit, orchestrator=instance)
+        ]
+    outcomes = [apply_command(cfg, factory, client, command, adapter=resolved) for command in commands]
     if outcomes:
         applied = sum(1 for outcome in outcomes if outcome.status == COMMAND_APPLIED)
         logger.info("dag-healer worker: applied %d of %d pending command(s)", applied, len(outcomes))

@@ -1,4 +1,4 @@
-"""Tests of ``dag-healer store stats|reset`` and the REST poll floor it records."""
+"""Tests of ``dag-healer store stats|reset`` and the poll floor it records in ``healer_kv``."""
 
 from __future__ import annotations
 
@@ -92,8 +92,9 @@ def test_reset_empties_every_table_and_restarts_the_rest_poll(
 
     assert main(["-c", str(config_file), "store", "reset", "--yes", "--artifacts"]) == 0
     out = capsys.readouterr().out
-    assert "reset: 7 row(s) deleted" in out
-    assert "earlier failures are not picked up again" in out
+    assert "reset: 8 row(s) deleted" in out  # the 7 rows above and the poll cursor
+    assert "healer_kv: 1" in out
+    assert "(healer_kv cursor:airflow): earlier failures are not picked up again" in out
     assert set(_counts(url).values()) == {0}
     assert not (healer_env / "prs").exists() and not (healer_env / "work").exists()
 
@@ -108,7 +109,10 @@ def test_reset_keep_state_leaves_the_watermark(config_file: Path, healer_env: Pa
     assert main(["-c", str(config_file), "store", "reset", "--yes", "--keep-state"]) == 0
     assert pipeline.get_watermark(cfg) == NOW
     assert pipeline.get_not_before(cfg) is None
-    assert (healer_env / "state.json").is_file()
+    with session_scope(_url(config_file)) as session:
+        cursor = store_repo.kv_get(session, store_repo.cursor_key("airflow"))
+    assert cursor == {"watermark": NOW.isoformat(), "not_before": None}
+    assert not (healer_env / "state.json").exists()  # the poll position lives in healer_kv
 
 
 def test_reset_works_without_a_config_file(

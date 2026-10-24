@@ -7,12 +7,12 @@ PostgreSQL store; an SQLite store is copied to ``<db>.bak-v<version>`` automatic
 its tables are rebuilt. The worker also migrates on start, the Airflow api-server never does.
 
 ``reset --yes`` deletes every incident, timeline event, alert, command, pending event,
-cached contract state and worker poll cursor (``healer_kv``); the schema and the contract
-YAML files are kept. It also restarts the worker's REST poll at the moment of the reset, so
-failed task instances that are still in Airflow's history do not come back as new
-incidents; ``--keep-state`` leaves the poll position alone (``state.json`` and the
-``healer_kv`` rows). ``--artifacts`` additionally deletes the PR.md / fix.patch files and
-any leftover repair workspaces under ``$HEALER_HOME``.
+cached contract state and ``healer_kv`` row (the worker's poll cursors and its
+``instance:<id>`` record); the schema and the contract YAML files are kept. It also restarts
+the worker's poll at the moment of the reset (a new ``cursor:<instance>`` in ``healer_kv``),
+so failures that are still in the orchestrator's history do not come back as new incidents;
+``--keep-state`` leaves the ``healer_kv`` rows alone. ``--artifacts`` additionally deletes
+the PR.md / fix.patch files and any leftover repair workspaces under ``$HEALER_HOME``.
 
 Meant for demos and test environments: stop the worker first (it is the only writer of
 the repository and of most rows). The commands work without a ``healer.yaml`` as long as
@@ -40,7 +40,7 @@ ARTIFACT_DIRS: tuple[str, ...] = ("prs", "work")
 def _data_tables(*, keep_state: bool = False) -> list[object]:
     """Store tables holding data, children first (the schema version table is kept).
 
-    ``keep_state=True`` also keeps ``healer_kv`` (the worker's poll cursors).
+    ``keep_state=True`` also keeps ``healer_kv`` (the worker's poll cursors and instance record).
     """
     from dag_healer.store.models import Base, KeyValue, SchemaVersion
 
@@ -64,7 +64,7 @@ def table_counts(url: str) -> dict[str, int]:
 def reset_store(url: str, *, keep_state: bool = False) -> dict[str, int]:
     """Delete every row of the store's data tables; returns the deleted rows per table.
 
-    ``keep_state=True`` keeps the worker's poll cursors (``healer_kv``).
+    ``keep_state=True`` keeps the worker's poll cursors and instance record (``healer_kv``).
     """
     from dag_healer.store import session_scope
 
@@ -250,16 +250,19 @@ def _cmd_reset(args: argparse.Namespace) -> int:
     print(f"Store {mask_url(url)} reset: {total} row(s) deleted" + (f" ({details})" if details else ""))
 
     if not args.keep_state:
-        from dag_healer.worker.pipeline import reset_state, state_path
+        from dag_healer.orchestrators.registry import orchestrator_settings
+        from dag_healer.store.repo import cursor_key
+        from dag_healer.worker.pipeline import reset_state
 
         try:
+            key = cursor_key(orchestrator_settings(cfg).instance)
             moment = reset_state(cfg)
-        except OSError as exc:
-            error(f"cannot write the worker state file {state_path(cfg)}: {exc}")
+        except Exception as exc:  # driver-specific connection errors, an unreadable orchestrator section
+            error(f"cannot restart the worker poll in {mask_url(url)}: {type(exc).__name__}: {exc}")
             return 1
         print(
-            f"Worker REST poll restarts at {moment.isoformat(timespec='seconds')} "
-            f"({state_path(cfg)}): earlier failures are not picked up again."
+            f"Worker poll restarts at {moment.isoformat(timespec='seconds')} "
+            f"(healer_kv {key}): earlier failures are not picked up again."
         )
     if args.artifacts:
         try:
@@ -306,8 +309,7 @@ def _configure(parser: argparse.ArgumentParser) -> None:
     reset.add_argument(
         "--keep-state",
         action="store_true",
-        help="Keep the worker's poll position (state.json and the healer_kv cursors; by default "
-        "the poll restarts now).",
+        help="Keep the worker's poll position (the healer_kv rows; by default the poll restarts now).",
     )
     reset.add_argument(
         "--artifacts",

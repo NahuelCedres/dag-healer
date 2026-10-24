@@ -1,10 +1,15 @@
-"""FastAPI dependencies of the dag-healer API: configuration, store sessions, ingest guards.
+"""FastAPI dependencies of the dag-healer API: configuration, orchestrator, store sessions,
+ingest guards.
 
 Everything here works without Airflow; authentication lives in :mod:`dag_healer.api.auth`.
+The process serves one orchestrator instance (:func:`get_instance`): lists, filters and the
+commands it enqueues are scoped to it. :func:`get_adapter` gives the instance's adapter for
+capability checks and native links; the API never calls the orchestrator itself.
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import os
@@ -19,6 +24,10 @@ from sqlalchemy.orm import Session
 
 from dag_healer.api import auth
 from dag_healer.config import ConfigError, HealerConfig, load_config
+from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
+from dag_healer.core.ports import OrchestratorAdapter
+from dag_healer.masking import mask_text
+from dag_healer.orchestrators import registry
 from dag_healer.store.db import StoreSchemaOutdated, ensure_initialized, get_engine, session_scope
 
 log = logging.getLogger(__name__)
@@ -79,6 +88,63 @@ def get_config() -> HealerConfig:
     return cfg
 
 
+# --------------------------------------------------------------------------- orchestrator
+
+_adapter_failures: set[tuple[str, ...]] = set()
+_adapter_failures_lock = threading.Lock()
+_MAX_REMEMBERED_FAILURES = 64
+
+
+def _log_adapter_failure(cfg: HealerConfig, exc: Exception) -> None:
+    """Warn once per configuration (file, type, instance) and error."""
+    section = getattr(cfg, "orchestrator", None)
+    key = (
+        str(getattr(cfg, "source_path", None)),
+        str(getattr(section, "type", None)),
+        str(getattr(section, "instance", None)),
+        f"{type(exc).__name__}: {exc}",
+    )
+    with _adapter_failures_lock:
+        if key in _adapter_failures:
+            return
+        if len(_adapter_failures) >= _MAX_REMEMBERED_FAILURES:
+            _adapter_failures.clear()
+        _adapter_failures.add(key)
+    log.warning(
+        "dag-healer: the orchestrator adapter cannot be built (%s); the API serves its routes "
+        "without it (no capability filtering, no native links)",
+        mask_text(key[-1])[:500],
+    )
+
+
+def get_adapter(cfg: HealerConfig = Depends(get_config)) -> OrchestratorAdapter | None:
+    """Dependency: the orchestrator adapter of the configuration (cached, built without I/O).
+
+    ``None`` when it cannot be built (logged once per configuration): the routes then behave
+    as before adapters existed (no capability filtering, no native links, ``/me`` without
+    ``orchestrator``). Tests override this dependency to inject an adapter.
+    """
+    try:
+        return registry.get_adapter(cfg)
+    except Exception as exc:  # a broken adapter must not take the Healer views down
+        _log_adapter_failure(cfg, exc)
+        return None
+
+
+def get_instance(
+    cfg: HealerConfig = Depends(get_config),
+    adapter: OrchestratorAdapter | None = Depends(get_adapter),
+) -> str:
+    """Dependency: the orchestrator instance id this process serves (``"airflow"`` by default).
+
+    The adapter's instance, else ``orchestrator.instance`` (or its type) from the configuration.
+    """
+    if adapter is not None:
+        return str(adapter.instance)
+    instance = getattr(getattr(cfg, "orchestrator", None), "instance_id", None)
+    return str(instance) if instance else DEFAULT_ORCHESTRATOR
+
+
 def get_session(cfg: HealerConfig = Depends(get_config)) -> Iterator[Session]:
     """Dependency: a store session (``store.db.session_scope``) for the request.
 
@@ -115,7 +181,7 @@ def readable_dag_ids(authorizer: auth.Authorizer, user: Any, candidates: Iterabl
 
 
 class SlidingWindowRateLimiter:
-    """In-process sliding-window rate limiter keyed by client address."""
+    """In-process sliding-window rate limiter keyed by a string (client address, channel and token)."""
 
     def __init__(self, limit: int, window_seconds: float, *, max_keys: int = 10_000) -> None:
         self.limit = int(limit)
@@ -155,18 +221,25 @@ class SlidingWindowRateLimiter:
 
 
 ingest_rate_limiter = SlidingWindowRateLimiter(INGEST_RATE_LIMIT, INGEST_RATE_WINDOW_SECONDS)
+#: Rate limiter of ``POST /events/{channel}`` (keyed by channel and ingest token).
+channel_rate_limiter = SlidingWindowRateLimiter(INGEST_RATE_LIMIT, INGEST_RATE_WINDOW_SECONDS)
+#: Characters of a channel name used in a rate-limiter key (the path segment is caller-chosen).
+_MAX_CHANNEL_KEY_CHARS = 64
 
 
-def ingest_guard(request: Request) -> None:
-    """Dependency: rate limit (120/min per client) and body size cap of the ingest route."""
-    client = request.client.host if request.client else "unknown"
-    retry_after = ingest_rate_limiter.hit(client)
+def _rate_limit(limiter: SlidingWindowRateLimiter, key: str) -> None:
+    """Count one ingest request under ``key``; 429 with ``Retry-After`` above the limit."""
+    retry_after = limiter.hit(key)
     if retry_after is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failure events; slow down.",
             headers={"Retry-After": str(max(1, int(retry_after + 0.999)))},
         )
+
+
+def _check_body_size(request: Request) -> None:
+    """413 when ``Content-Length`` announces more than :data:`INGEST_MAX_BODY_BYTES` (400 if invalid)."""
     length = request.headers.get("content-length")
     if length is not None:
         try:
@@ -177,6 +250,24 @@ def ingest_guard(request: Request) -> None:
             ) from None
         if too_large:
             raise HTTPException(status_code=413, detail="Failure event payload is too large")
+
+
+def ingest_guard(request: Request) -> None:
+    """Dependency: rate limit (120/min per client) and body size cap of the ingest route."""
+    _rate_limit(ingest_rate_limiter, request.client.host if request.client else "unknown")
+    _check_body_size(request)
+
+
+def channel_ingest_guard(request: Request, channel: str) -> None:
+    """Dependency: rate limit (120/min per channel and token) and body size cap of ``/events/{channel}``.
+
+    Keyed by the channel and a digest of ``X-Healer-Token`` rather than by the client address:
+    the senders of a channel (EventBridge API destinations, for example) share addresses.
+    """
+    token = request.headers.get(INGEST_TOKEN_HEADER) or ""
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    _rate_limit(channel_rate_limiter, f"{channel[:_MAX_CHANNEL_KEY_CHARS]}:{digest}")
+    _check_body_size(request)
 
 
 def configured_ingest_token(cfg: HealerConfig) -> str | None:
@@ -205,8 +296,12 @@ __all__ = [
     "CONFIG_TTL_SECONDS",
     "INGEST_TOKEN_HEADER",
     "SlidingWindowRateLimiter",
+    "channel_ingest_guard",
+    "channel_rate_limiter",
     "configured_ingest_token",
+    "get_adapter",
     "get_config",
+    "get_instance",
     "get_session",
     "ingest_guard",
     "ingest_rate_limiter",

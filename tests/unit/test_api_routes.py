@@ -11,9 +11,11 @@ Users (header ``X-Test-User``):
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import textwrap
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,12 +25,18 @@ from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from dag_healer.api import auth, deps, views
+from dag_healer.airflow.adapter import AirflowAdapter
+from dag_healer.api import auth, deps, schemas, views
 from dag_healer.api.app import create_app
+from dag_healer.config import config_from_mapping
 from dag_healer.contracts.io import approve_contract, compute_source_hash, save_contract
 from dag_healer.contracts.schema import ColumnRule, Contract, DatasetContract, DatasetLocator
+from dag_healer.core.specs import TaskInfo
+from dag_healer.orchestrators import registry
+from dag_healer.orchestrators.fake import FAKE_CAPABILITIES, FAKE_VOCABULARY, FakeAdapter, FakeWorld
 from dag_healer.store import db
 from dag_healer.store import repo as store_repo
+from dag_healer.store.migrations import backup_path, current_version
 from dag_healer.store.models import Command, IncidentEvent, PendingEvent
 
 RAW_EMAIL = "jane.doe@example.com"
@@ -369,6 +377,7 @@ def api(healer_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
     db.dispose_engines()
     deps.reset_config_cache()
     deps.ingest_rate_limiter.reset()
+    deps.channel_rate_limiter.reset()
     ids = seed(db_url, healer_env)
     authorizer = FakeAuthorizer()
     app = create_app()
@@ -378,6 +387,7 @@ def api(healer_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
         yield Api(client, repo, healer_env, db_url, authorizer, ids)
     deps.reset_config_cache()
     deps.ingest_rate_limiter.reset()
+    deps.channel_rate_limiter.reset()
     db.dispose_engines()
 
 
@@ -544,7 +554,7 @@ def test_incident_detail_actions_by_permission_and_status(api: Api) -> None:
     failed = api.get(f"/dags/customers_sync/incidents/{api.ids['code_retry']}").json()
     assert failed["allowed_actions"] == ["retry_repair", "resolve_data", "ignore"]
     amb = api.get(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}").json()
-    assert amb["allowed_actions"] == ["resolve_data", "resolve_code", "ignore"]
+    assert amb["allowed_actions"] == ["resolve_data", "resolve_code", "retry_task", "ignore"]
     assert amb["links"]["task_instance"].endswith("/tasks/build_report/mapped/3/plugin/healer-ti")
     ignored = api.get(f"/dags/deleted_dag/incidents/{api.ids['deleted']}").json()
     assert ignored["allowed_actions"] == []
@@ -720,8 +730,13 @@ def test_retry_repair_and_retry_task(api: Api) -> None:
     assert (
         api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-repair").status_code == 409
     )
-    assert api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-task").status_code == 409
-    first, second = _commands(api)
+    refused = api.post(f"/dags/customers_sync/incidents/{api.ids['code_retry']}/retry-task")
+    assert refused.status_code == 409
+    detail = "Action 'retry_task' is not allowed while the incident is 'repair_failed'"
+    assert refused.json() == {"detail": detail}
+    waiting = api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/retry-task")
+    assert waiting.status_code == 202  # the task can run again before anyone decides
+    first, second, third = _commands(api)
     assert (first.kind, first.actor, first.incident_id) == ("retry_repair", "limited", api.ids["code_retry"])
     assert second.kind == "retry_task"
     assert second.payload == {
@@ -730,6 +745,7 @@ def test_retry_repair_and_retry_task(api: Api) -> None:
         "task_id": "transform",
         "map_index": -1,
     }
+    assert (third.kind, third.incident_id) == ("retry_task", api.ids["ambiguous"])
 
 
 def test_approve_contract(api: Api) -> None:
@@ -861,7 +877,7 @@ def test_rate_limiter_window() -> None:
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
-        ("waiting_human", ["resolve_data", "resolve_code", "ignore"]),
+        ("waiting_human", ["resolve_data", "resolve_code", "retry_task", "ignore"]),
         ("repair_failed", ["retry_repair", "resolve_data", "ignore"]),
         ("error", ["retry_repair", "resolve_data", "ignore"]),
         ("reported", ["resolve_code", "retry_task", "ignore"]),
@@ -960,3 +976,520 @@ def test_store_errors_answer_503(api: Api) -> None:
     response = api.get("/incidents")
     assert response.status_code == 503
     assert response.json() == {"detail": "The dag-healer store is unavailable"}
+
+
+# --------------------------------------------------------------------------- orchestrator instances
+
+
+def test_default_responses_leave_out_the_additive_fields(api: Api) -> None:
+    summary = api.get("/incidents").json()["incidents"][0]
+    assert not {"orchestrator", "error_name", "links"} & set(summary)
+    detail = api.get(f"/dags/customers_sync/incidents/{api.ids['code']}").json()
+    assert not {"orchestrator", "error_name", "action_warnings"} & set(detail)
+    assert set(detail["links"]) == {"task_instance", "dag", "healer"}
+
+
+def test_wire_fields_are_left_out_only_while_neutral() -> None:
+    base = {
+        "id": "i", "dag_id": "d", "run_id": "r", "task_id": "t", "map_index": -1, "try_number": 1,
+        "status": "reported", "source": "rest", "error_summary": "", "occurrences": 1,
+    }  # fmt: skip
+    additive = {"orchestrator", "error_name", "links"}
+    neutral = schemas.IncidentSummary(**base)
+    assert not additive & set(neutral.model_dump())
+    assert not additive & set(json.loads(neutral.model_dump_json()))
+    links = schemas.IncidentLinks(task_instance="a", dag="b", healer="c", native={"Fakeflow": "http://x/1"})
+    shown = schemas.IncidentSummary(**base, orchestrator="fake", error_name="KeyError", links=links)
+    assert additive <= set(shown.model_dump())
+    assert json.loads(shown.model_dump_json())["links"]["native"] == {"Fakeflow": "http://x/1"}
+    me = schemas.MeView(user="u", base_url="http://b")
+    assert json.loads(me.model_dump_json()) == {"user": "u", "base_url": "http://b"}
+    standalone = schemas.MeView(user="u", base_url="http://b", host="standalone")
+    assert json.loads(standalone.model_dump_json())["host"] == "standalone"
+    # the omitted fields stay documented in the response schemas (OpenAPI)
+    properties = schemas.IncidentDetail.model_json_schema(mode="serialization")["properties"]
+    assert {"links", "orchestrator", "error_name", "action_warnings"} <= set(properties)
+
+
+def _seed_other_instance(api: Api) -> str:
+    """An incident of another orchestrator instance, under a DAG this instance also has."""
+    with api.session() as session:
+        incident, _ = store_repo.create_incident(
+            session,
+            orchestrator="sfn-prod",
+            dag_id="sales_daily_etl",
+            run_id="exec-1",
+            task_id="load_sales",
+            try_number=1,
+            source="poll",
+            error_summary="States.TaskFailed",
+            signature="sig-sfn",
+            now=T0 + timedelta(hours=2),
+            status="waiting_human",
+        )
+        # a later failure folded into it: the task-instance lookup must not find it either
+        _, created = store_repo.create_incident(
+            session,
+            orchestrator="sfn-prod",
+            dag_id="sales_daily_etl",
+            run_id="exec-2",
+            task_id="load_sales",
+            try_number=1,
+            source="poll",
+            signature="sig-sfn",
+            now=T0 + timedelta(hours=3),
+        )
+        assert not created
+        return incident.id
+
+
+def test_incidents_of_another_instance_are_neither_listed_nor_shown(api: Api) -> None:
+    pages = ["/incidents", "/dags", "/dags/sales_daily_etl/incidents"]
+    before = {page: api.get(page).json() for page in pages}
+    other = _seed_other_instance(api)
+    assert {page: api.get(page).json() for page in pages} == before
+    assert api.get(f"/dags/sales_daily_etl/incidents/{other}").status_code == 404
+    assert api.get(f"/dags/sales_daily_etl/incidents/{other}/pr.md").status_code == 404
+    for run_id in ("exec-1", "exec-2"):
+        found = api.get(
+            "/dags/sales_daily_etl/task-instance", params={"run_id": run_id, "task_id": "load_sales"}
+        )
+        assert found.json() == {"incident": None}
+    base = f"/dags/sales_daily_etl/incidents/{other}"
+    assert api.post(f"{base}/resolve", json={"resolution": "ignore"}).status_code == 404
+    assert api.post(f"{base}/retry-repair").status_code == 404
+    assert api.post(f"{base}/retry-task").status_code == 404
+    assert _commands(api) == []
+
+
+def test_commands_and_events_carry_the_instance(api: Api) -> None:
+    api.post(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/resolve", json={"resolution": "code"})
+    api.post("/dags/inventory_report/contract/approve")
+    assert [(c.kind, c.orchestrator) for c in _commands(api)] == [
+        ("resolve", "airflow"),
+        ("approve_contract", "airflow"),
+    ]
+    pending = _post_event(api).json()["pending_event_id"]
+    with api.session() as session:
+        event = session.get(PendingEvent, pending)
+        assert (event.orchestrator, event.channel) == ("airflow", "task-failed")
+        assert set(event.payload) == {"error", "source", "state", "max_tries", "hostname", "reported_at"}
+
+
+def test_without_an_adapter_the_routes_behave_as_before(api: Api) -> None:
+    api.client.app.dependency_overrides[deps.get_adapter] = lambda: None
+    assert api.get("/me", user="viewer").json() == {"user": "viewer", "base_url": BASE_URL}
+    detail = api.get(f"/dags/sales_daily_etl/incidents/{api.ids['data']}").json()
+    assert detail["allowed_actions"] == ["resolve_code", "retry_task", "ignore"]
+    assert set(detail["links"]) == {"task_instance", "dag", "healer"}
+    assert _post_event(api).status_code == 202
+    unknown = api.client.post("/api/v1/events/fake", json={}, headers={"X-Healer-Token": INGEST_TOKEN})
+    assert unknown.status_code == 404
+
+
+def test_adapter_failures_are_logged_once(
+    api: Api, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(cfg: Any) -> Any:
+        raise registry.AdapterLoadError("orchestrator type 'acme': module 'acme' is not installed")
+
+    monkeypatch.setattr(registry, "get_adapter", broken)
+    monkeypatch.setattr(deps, "_adapter_failures", set())
+    cfg = deps.get_config()
+    with caplog.at_level(logging.WARNING, logger="dag_healer.api.deps"):
+        assert deps.get_adapter(cfg) is None
+        assert deps.get_adapter(cfg) is None
+    assert sum("cannot be built" in record.getMessage() for record in caplog.records) == 1
+    assert deps.get_instance(cfg, None) == "airflow"
+    assert deps.get_instance(config_from_mapping({"orchestrator": {"instance": "prod"}}), None) == "prod"
+    assert api.get("/me", user="viewer").json() == {"user": "viewer", "base_url": BASE_URL}
+
+
+def test_orchestrator_view_of_airflow_instances() -> None:
+    assert views.orchestrator_view(None) is None
+    assert views.orchestrator_view(AirflowAdapter(config_from_mapping({}))) is None
+    named = views.orchestrator_view(
+        AirflowAdapter(config_from_mapping({"orchestrator": {"instance": "prod"}}))
+    )
+    assert named is not None
+    assert (named.type, named.instance, named.display_name) == ("airflow", "prod", "Apache Airflow")
+    assert named.vocabulary["retry_action"] == "Retry task"
+    assert named.capabilities["remediations"] == ["retry_step"]
+    assert named.capabilities["ui_hosts"] == ["airflow_plugin", "standalone"]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("reported", ["resolve_code", "ignore"]),
+        ("repaired", []),
+        ("waiting_human", ["resolve_data", "resolve_code", "ignore"]),
+    ],
+)
+def test_allowed_actions_without_retry(status: str, expected: list[str]) -> None:
+    assert views.allowed_actions(status, can_edit=True, retry_available=False) == expected
+
+
+# --------------------------------------------------------------------------- Fakeflow (a non-Airflow adapter)
+
+FAKE_RUN = "run-7"
+
+
+def fakeflow_world() -> FakeWorld:
+    """The Fakeflow side of the seeded Fakeflow incidents."""
+    world = FakeWorld()
+    world.add_pipeline(
+        "sales_daily_etl",
+        file="dags/sales_daily_etl.py",
+        steps={"load_sales": TaskInfo("load_sales", "python")},
+    )
+    world.add_pipeline(
+        "customers_sync", file="dags/customers_sync.py", steps={"transform": TaskInfo("transform", "python")}
+    )
+    world.fail("sales_daily_etl", FAKE_RUN, "load_sales", text="KeyError: 'amount'", error_name="KeyError")
+    world.fail("customers_sync", FAKE_RUN, "transform", map_index=2, text="ValueError: bad date")
+    return world
+
+
+def seed_fakeflow(db_url: str) -> dict[str, str]:
+    with db.session_scope(db_url) as session:
+        reported, _ = store_repo.create_incident(
+            session,
+            orchestrator="fake",
+            dag_id="sales_daily_etl",
+            run_id=FAKE_RUN,
+            task_id="load_sales",
+            try_number=1,
+            source="poll",
+            error_summary=f"KeyError: 'amount' ({RAW_EMAIL})",
+            error_name="KeyError",
+            native_ref={"seq": 1},
+            now=T0 + timedelta(hours=2),
+            status="reported",
+            category="data",
+        )
+        repaired, _ = store_repo.create_incident(
+            session,
+            orchestrator="fake",
+            dag_id="customers_sync",
+            run_id=FAKE_RUN,
+            task_id="transform",
+            map_index=2,
+            try_number=1,
+            source="push",
+            error_summary="ValueError: bad date",
+            error_name=f"ValueError({RAW_EMAIL})",
+            now=T0 + timedelta(hours=3),
+            status="repaired",
+            category="code",
+        )
+        return {"reported": reported.id, "repaired": repaired.id}
+
+
+@dataclass
+class Fakeflow:
+    adapter: FakeAdapter
+    ids: dict[str, str]
+
+
+@pytest.fixture
+def fakeflow(api: Api) -> Fakeflow:
+    """The API serving a Fakeflow instance (``deps.get_adapter`` overridden)."""
+    adapter = FakeAdapter(world=fakeflow_world())
+    api.client.app.dependency_overrides[deps.get_adapter] = lambda: adapter
+    return Fakeflow(adapter, seed_fakeflow(api.db_url))
+
+
+def test_fakeflow_lists_and_details_carry_the_additive_fields(api: Api, fakeflow: Fakeflow) -> None:
+    body = api.get("/incidents").json()
+    assert [item["id"] for item in body["incidents"]] == [fakeflow.ids["repaired"], fakeflow.ids["reported"]]
+    assert body["total"] == 2
+    repaired, reported = body["incidents"]
+    assert reported["orchestrator"] == "fake" and reported["error_name"] == "KeyError"
+    assert reported["links"]["native"] == {
+        "Fakeflow": f"http://fakeflow.localhost/flows/sales_daily_etl/runs/{FAKE_RUN}/steps/load_sales?attempt=1"
+    }
+    assert reported["links"]["task_instance"].startswith(f"{BASE_URL}/dags/sales_daily_etl/runs/{FAKE_RUN}/")
+    assert repaired["links"]["native"]["Fakeflow"].endswith("/steps/transform?attempt=1&map_index=2")
+    assert RAW_EMAIL not in json.dumps(body) and repaired["error_name"] == "ValueError([email])"
+
+    detail = api.get(f"/dags/sales_daily_etl/incidents/{fakeflow.ids['reported']}").json()
+    assert detail["orchestrator"] == "fake" and detail["error_name"] == "KeyError"
+    assert detail["links"]["native"] == reported["links"]["native"]
+    assert detail["allowed_actions"] == ["resolve_code", "retry_task", "ignore"]  # same ids and order
+    assert "action_warnings" not in detail  # repo_sync: a merged fix is picked up without a deploy
+    dag = api.get("/dags/customers_sync/incidents").json()
+    assert [item["id"] for item in dag["incidents"]] == [fakeflow.ids["repaired"]]
+    dags = {item["dag_id"]: item for item in api.get("/dags").json()["dags"]}
+    assert dags["customers_sync"]["last_incident"]["orchestrator"] == "fake"
+    ti = api.get(
+        "/dags/customers_sync/task-instance",
+        params={"run_id": FAKE_RUN, "task_id": "transform", "map_index": 2},
+    ).json()
+    assert ti["incident"]["id"] == fakeflow.ids["repaired"]
+    # the Airflow incidents of the same store belong to another instance now
+    assert api.get(f"/dags/sales_daily_etl/incidents/{api.ids['data']}").status_code == 404
+
+
+def test_fakeflow_me_has_the_orchestrator_block(api: Api, fakeflow: Fakeflow) -> None:
+    assert api.get("/me", user="viewer").json() == {
+        "user": "viewer",
+        "base_url": BASE_URL,
+        "orchestrator": {
+            "type": "fake",
+            "instance": "fake",
+            "display_name": "Fakeflow",
+            "vocabulary": FAKE_VOCABULARY.as_dict(),
+            "capabilities": {
+                "sources": ["poll", "push"],
+                "push_channels": ["fake"],
+                "attempts_visible": True,
+                "remediations": ["retry_step", "resume_run", "rerun_pipeline"],
+                "fix_delivery": "repo_sync",
+                "ui_hosts": ["standalone"],
+                "native_authz": False,
+            },
+        },
+    }
+
+
+def test_fakeflow_commands_are_queued_for_its_worker(api: Api, fakeflow: Fakeflow) -> None:
+    reported = f"/dags/sales_daily_etl/incidents/{fakeflow.ids['reported']}"
+    assert api.post(f"{reported}/resolve", json={"resolution": "ignore"}).status_code == 202
+    repaired = f"/dags/customers_sync/incidents/{fakeflow.ids['repaired']}"
+    assert api.post(f"{repaired}/retry-task").status_code == 202
+    assert api.post("/dags/inventory_report/contract/approve").status_code == 202
+    commands = _commands(api)
+    assert [(c.kind, c.orchestrator) for c in commands] == [
+        ("resolve", "fake"),
+        ("retry_task", "fake"),
+        ("approve_contract", "fake"),
+    ]
+    assert commands[1].payload == {"note": None, "run_id": FAKE_RUN, "task_id": "transform", "map_index": 2}
+    assert api.get("/dags/inventory_report/contract").json()["pending_approval"] is True
+    # the approval pending for the Fakeflow worker is not pending for the Airflow one
+    api.client.app.dependency_overrides.pop(deps.get_adapter)
+    assert api.get("/dags/inventory_report/contract").json()["pending_approval"] is False
+    assert api.post("/dags/inventory_report/contract/approve").json()["command_id"] != commands[2].id
+
+
+def test_retry_task_needs_a_remediator_that_offers_it(
+    api: Api, fakeflow: Fakeflow, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = f"/dags/sales_daily_etl/incidents/{fakeflow.ids['reported']}"
+    fakeflow.adapter.remediator = None
+    assert api.get(path).json()["allowed_actions"] == ["resolve_code", "ignore"]
+    refused = api.post(f"{path}/retry-task")
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": "Action retry_task is not available for this incident"}
+
+    fakeflow.adapter.remediator = fakeflow.adapter
+    fakeflow.adapter.available = lambda ref, native: ()  # type: ignore[method-assign]
+    assert api.get(path).json()["allowed_actions"] == ["resolve_code", "ignore"]
+    assert api.post(f"{path}/retry-task").status_code == 409
+
+    def broken(ref: Any, native: Any) -> Any:
+        raise RuntimeError(f"cannot decide for {RAW_EMAIL}")
+
+    fakeflow.adapter.available = broken  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="dag_healer.api.views"):
+        assert api.get(path).json()["allowed_actions"] == ["resolve_code", "ignore"]
+    assert RAW_EMAIL not in caplog.text and "[email]" in caplog.text
+    # the status check comes first
+    other = api.post(
+        f"/dags/customers_sync/incidents/{fakeflow.ids['repaired']}/resolve", json={"resolution": "code"}
+    )
+    assert other.status_code == 409 and "not allowed" in other.json()["detail"]
+    assert _commands(api) == []
+
+
+def test_ci_deploy_warns_before_retrying_a_repaired_incident(api: Api, fakeflow: Fakeflow) -> None:
+    fakeflow.adapter.capabilities = replace(FAKE_CAPABILITIES, fix_delivery="ci_deploy")
+    repaired = api.get(f"/dags/customers_sync/incidents/{fakeflow.ids['repaired']}").json()
+    assert repaired["allowed_actions"] == ["retry_task"]
+    assert repaired["action_warnings"] == {
+        "retry_task": [
+            "A merged fix reaches Fakeflow only through your deployment: deploy it before "
+            '"Retry step", or the step runs the old code again.'
+        ]
+    }
+    reported = api.get(f"/dags/sales_daily_etl/incidents/{fakeflow.ids['reported']}").json()
+    assert "action_warnings" not in reported
+    viewer = api.get(f"/dags/customers_sync/incidents/{fakeflow.ids['repaired']}", user="viewer").json()
+    assert "action_warnings" not in viewer  # nothing offered, nothing to warn about
+
+
+# --------------------------------------------------------------------------- push channels
+
+HINT = {
+    "pipeline_id": "sales_daily_etl",
+    "run_id": "run-9",
+    "step_id": "load_sales",
+    "attempt": 2,
+    "error": f"Traceback ...\nKeyError: 'amount' for {RAW_EMAIL}",
+    "event_id": "evt-1",
+    "input": {"customer_email": RAW_EMAIL},
+}
+
+
+def _post_hint(
+    api: Api,
+    payload: Any = None,
+    *,
+    channel: str = "fake",
+    token: str | None = INGEST_TOKEN,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    sent = {"X-Healer-Token": token} if token is not None else {}
+    sent.update(headers or {})
+    return api.client.post(
+        f"/api/v1/events/{channel}", json=HINT if payload is None else payload, headers=sent
+    )
+
+
+def test_channel_event_is_stored_masked(api: Api, fakeflow: Fakeflow) -> None:
+    response = _post_hint(api)
+    assert response.status_code == 202
+    body = response.json()
+    assert body["accepted"] is True
+    (pending_id,) = body["pending_event_ids"]
+    with api.session() as session:
+        event = session.get(PendingEvent, pending_id)
+        assert (event.orchestrator, event.channel, event.status) == ("fake", "fake", "pending_check")
+        assert (event.dag_id, event.run_id, event.task_id, event.map_index, event.try_number) == (
+            "sales_daily_etl",
+            "run-9",
+            "load_sales",
+            -1,
+            2,
+        )
+        assert set(event.payload) == {"error", "source"}  # never the execution input
+        assert event.payload["source"] == "push"
+        assert RAW_EMAIL not in event.payload["error"] and "[email]" in event.payload["error"]
+        assert event.native_ref == {"event_id": "evt-1"}
+    # a repeated delivery of the same attempt returns the same pending row
+    assert _post_hint(api).json() == body
+    long_error = _post_hint(api, {**HINT, "run_id": "run-10", "error": "x" * 10_000})
+    with api.session() as session:
+        stored = session.get(PendingEvent, long_error.json()["pending_event_ids"][0])
+        assert len(stored.payload["error"]) <= 4096
+
+
+def test_channel_event_validation(api: Api, fakeflow: Fakeflow) -> None:
+    assert _post_hint(api, [HINT]).status_code == 422
+    empty = api.client.post("/api/v1/events/fake", headers={"X-Healer-Token": INGEST_TOKEN})
+    assert empty.status_code == 422
+    assert empty.json() == {"detail": "The event body must be a JSON object"}
+    malformed = _post_hint(api, {"run_id": "run-9", "error": RAW_EMAIL})
+    assert malformed.status_code == 422
+    assert malformed.json() == {"detail": "pipeline_id must be a string, not NoneType"}
+    unknown = _post_hint(api, channel="eventbridge")
+    assert unknown.status_code == 404
+    assert unknown.json() == {"detail": "Unknown event channel: eventbridge"}
+    unmonitored = _post_hint(api, {**HINT, "pipeline_id": "unmonitored_flow"})
+    assert unmonitored.status_code == 202
+    assert unmonitored.json() == {"accepted": False, "pending_event_ids": []}
+    assert _post_hint(api, token="wrong").status_code == 401
+    with api.session() as session:
+        assert session.scalars(select(PendingEvent)).all() == []
+
+
+def test_channel_event_answers_500_without_echoing_an_intake_bug(
+    api: Api, fakeflow: Fakeflow, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(channel: str, payload: Any, headers: Any) -> Any:
+        raise KeyError(payload["error"])
+
+    fakeflow.adapter.normalize = broken  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="dag_healer.api.routers.events"):
+        response = _post_hint(api)
+    assert response.status_code == 500
+    assert response.json() == {"detail": "The event could not be read"}
+    assert RAW_EMAIL not in caplog.text and "KeyError" in caplog.text
+
+
+def test_push_intake_never_sees_the_ingest_token(api: Api, fakeflow: Fakeflow) -> None:
+    seen: list[dict[str, str]] = []
+    normalize = fakeflow.adapter.normalize
+
+    def recording(channel: str, payload: Any, headers: Any) -> Any:
+        seen.append(dict(headers))
+        return normalize(channel, payload, headers)
+
+    fakeflow.adapter.normalize = recording  # type: ignore[method-assign]
+    response = _post_hint(api, headers={"X-Event-Signature": "sig", "Cookie": "_token=x"})
+    assert response.status_code == 202
+    (headers,) = seen
+    assert headers["x-event-signature"] == "sig"
+    assert not {"x-healer-token", "cookie", "authorization"} & set(headers)
+
+
+def test_task_failed_needs_the_task_failed_channel(api: Api, fakeflow: Fakeflow) -> None:
+    response = _post_event(api)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Unknown event channel: task-failed"}
+    assert _post_event(api, token="wrong").status_code == 401  # the token check comes first
+    with api.session() as session:
+        assert session.scalars(select(PendingEvent)).all() == []
+
+
+def test_channel_route_serves_only_the_adapter_channels(api: Api) -> None:
+    # the default Airflow adapter has only task-failed, which the static route serves
+    response = _post_hint(api)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Unknown event channel: fake"}
+    assert _post_event(api).status_code == 202
+
+
+def test_channel_rate_limit_is_keyed_by_channel_and_token(
+    api: Api, fakeflow: Fakeflow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deps, "channel_rate_limiter", deps.SlidingWindowRateLimiter(2, 60))
+    assert _post_hint(api).status_code == 202
+    assert _post_hint(api, {**HINT, "run_id": "run-11"}).status_code == 202
+    limited = _post_hint(api, {**HINT, "run_id": "run-12"})
+    assert limited.status_code == 429
+    assert int(limited.headers["retry-after"]) >= 1
+    assert _post_hint(api, token="another-token").status_code == 401  # another token: its own budget
+    assert _post_hint(api, channel="eventbridge").status_code == 404  # another channel: its own budget
+    assert _post_event(api).status_code == 404  # task-failed keeps its per-client limiter
+
+
+def test_channel_event_body_too_large(api: Api, fakeflow: Fakeflow) -> None:
+    response = api.client.post(
+        "/api/v1/events/fake",
+        content=b"{" + b" " * (70 * 1024) + b"}",
+        headers={"X-Healer-Token": INGEST_TOKEN, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+
+
+# --------------------------------------------------------------------------- outdated store
+
+V1_STORE = Path(__file__).parent / "fixtures" / "store" / "healer_v1.db"
+OUTDATED = "dag-healer store schema v1: start the worker or run 'dag-healer store migrate'"
+
+
+def test_an_outdated_store_answers_503_and_is_never_migrated(
+    api: Api, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = tmp_path / "v1" / "healer.db"
+    store.parent.mkdir()
+    shutil.copyfile(V1_STORE, store)
+    url = f"sqlite:///{store.as_posix()}"
+    monkeypatch.setenv("HEALER_DATABASE_URL", url)
+    deps.reset_config_cache()
+    outdated = (503, {"detail": OUTDATED})
+    for path in ("/incidents", "/dags", "/contracts", "/dags/sales_daily_etl/incidents"):
+        response = api.get(path)
+        assert (response.status_code, response.json()) == outdated, path
+    response = _post_event(api)
+    assert (response.status_code, response.json()) == outdated
+    api.client.app.dependency_overrides[deps.get_adapter] = lambda: FakeAdapter(world=FakeWorld())
+    response = _post_hint(api)
+    assert (response.status_code, response.json()) == outdated
+    assert api.get("/me", user="viewer").status_code == 200  # /me does not read the store
+    engine = db.get_engine(url)
+    assert current_version(engine) == 1  # web processes never migrate: the worker does
+    backup = backup_path(engine, 1)
+    assert backup is not None and not backup.exists()

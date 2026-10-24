@@ -4,13 +4,15 @@
 ``python scripts/tasks.py demo`` (or ``make demo``, or ``python scripts/demo.py``) plays the
 "day 2" story of ``example_existing_repo/``:
 
-1. **reset** - stops the healer worker, recreates ``.demo/repo`` from
-   ``example_existing_repo/`` (new git history, commit "Initial legacy repo") and empties the
-   healer store (``dag-healer store reset --yes --artifacts`` in the api-server);
+1. **reset** - stops the healer worker and recreates ``.demo/repo`` from
+   ``example_existing_repo/`` (new git history, commit "Initial legacy repo");
 2. **stack** - ``docker compose up --detach --wait`` (the image is built when it is missing,
    or always with ``--build``);
-3. **adoption** - ``dag-healer init --repo /opt/airflow/repo``, demo settings in the generated
-   ``healer.yaml`` (poll every 5 s, alerts to Mailpit ``mailpit:1025`` for
+3. **adoption** - in the api-server, ``dag-healer store migrate`` (also with ``--no-reset``:
+   a store written by an older image is upgraded before anything writes to it) and
+   ``dag-healer store reset --yes --artifacts`` (empties the store; skipped with
+   ``--no-reset``); then ``dag-healer init --repo /opt/airflow/repo``, demo settings in the
+   generated ``healer.yaml`` (poll every 5 s, alerts to Mailpit ``mailpit:1025`` for
    ``data-team@example.com``), approval of the ``sales_daily_etl`` and ``customers_sync``
    contracts (``inventory_report`` stays a draft) and a commit "Add dag-healer config and
    contracts" in ``.demo/repo``; then the worker is started;
@@ -689,6 +691,18 @@ def start_stack(options: DemoOptions) -> None:
         raise DemoError("Airflow did not become healthy; see: python scripts/tasks.py logs airflow-apiserver")
 
 
+def prepare_store(reset: bool) -> None:
+    """Upgrade the healer store to the image's schema, then empty it when ``reset``.
+
+    ``store migrate`` always runs first: ``store reset`` and the contract approvals of
+    :func:`adopt` write the store without migrating it, so a store left by an older image
+    would make them fail (only the worker, ``dag-healer init`` and ``store migrate`` migrate).
+    """
+    compose_exec(APISERVER, ["dag-healer", "store", "migrate"])
+    if reset:
+        compose_exec(APISERVER, ["dag-healer", "store", "reset", "--yes", "--artifacts"])
+
+
 def adopt(options: DemoOptions) -> None:
     """``dag-healer init``, demo settings, contract approvals and the config commit."""
     compose_exec(APISERVER, ["dag-healer", "init", "--repo", CONTAINER_REPO])
@@ -726,8 +740,7 @@ def run_demo(options: DemoOptions) -> DemoResult:
     start_stack(options)
 
     say("3/6 adopting dag-healer in the repository")
-    if options.reset:
-        compose_exec(APISERVER, ["dag-healer", "store", "reset", "--yes", "--artifacts"])
+    prepare_store(options.reset)
     adopt(options)
     compose("up", "--detach", "--wait", "--wait-timeout", "300", WORKER)
 

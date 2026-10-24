@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import re
 import smtplib
 import socket
 import uuid
@@ -30,6 +31,8 @@ from dag_healer.alerts import AlertOutcome, notify, render_alert
 from dag_healer.alerts import email as alert_email
 from dag_healer.alerts.log import ALERT_LOGGER_NAME
 from dag_healer.config import ALERT_EVENTS, config_from_mapping
+from dag_healer.core.vocab import Vocabulary
+from dag_healer.orchestrators.fake import FAKE_VOCABULARY
 from dag_healer.store.repo import record_alert
 
 RAW_EMAIL = "john.doe@example.com"
@@ -94,7 +97,11 @@ def _free_port() -> int:
 def _start_sink(**smtp_kwargs: Any) -> tuple[Controller, Sink]:
     handler = SinkHandler()
     port = _free_port()
-    controller = Controller(handler, hostname="127.0.0.1", port=port, **smtp_kwargs)
+    # A fixed server_hostname: aiosmtpd would call socket.getfqdn() for its greeting, which can
+    # outlast the start-up timeout on CI hosts whose name does not resolve quickly (macOS).
+    controller = Controller(
+        handler, hostname="127.0.0.1", port=port, server_hostname="localhost", **smtp_kwargs
+    )
     controller.start()
     return controller, Sink("127.0.0.1", port, handler)
 
@@ -366,6 +373,134 @@ def test_broken_incident_fields_keep_the_identifiers(monkeypatch: pytest.MonkeyP
     assert rendered.subject == SUBJECTS["reported"]
     assert "Masked data sample" not in rendered.text
     assert RAW_EMAIL not in rendered.text
+
+
+# --------------------------------------------------------------------------- orchestrator words and links
+
+FAKEFLOW_URL = "http://fakeflow.localhost/flows/sales_daily_etl/runs/r?attempt=2&map_index=3"
+_GENERATED_AT = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC")
+
+
+def _stable(rendered: alerts.RenderedAlert) -> tuple[str, str, str]:
+    """Subject, text and HTML without the generation minute (two renders may straddle one)."""
+    return (
+        rendered.subject,
+        _GENERATED_AT.sub("<t>", rendered.text),
+        _GENERATED_AT.sub("<t>", rendered.html),
+    )
+
+
+def _fakeflow(**extra: Any) -> dict[str, Any]:
+    return {"vocabulary": FAKE_VOCABULARY.as_dict(), "native_links": {"Fakeflow": FAKEFLOW_URL}, **extra}
+
+
+@pytest.mark.parametrize("event", ALERT_EVENTS)
+@pytest.mark.parametrize(
+    "extra",
+    [{"vocabulary": {}, "native_links": {}}, {"vocabulary": Vocabulary().as_dict()}, {"native_links": None}],
+    ids=["empty", "airflow-words", "no-links"],
+)
+def test_airflow_words_and_no_native_links_change_nothing(event: str, extra: dict[str, Any]) -> None:
+    incident = make_incident(map_index=3, occurrences=2, attempts=1)
+    plain = render_alert(make_cfg(), incident, event)
+    assert _stable(render_alert(make_cfg(), incident, event, extra=extra)) == _stable(plain)
+    assert "\nDAG:            sales_daily_etl\n" in plain.text
+    assert "\nTask:           transform_sales (map index 3)\n" in plain.text
+    assert "\nRun:            manual__2026-10-17T10:00:00+00:00\n" in plain.text
+    assert "\nTry:            2\n" in plain.text
+    assert "\nDAG incidents:    http://localhost:8080/dags/sales_daily_etl/plugin/healer-dag\n" in plain.text
+    assert "Open in" not in plain.text and "Open in" not in plain.html
+
+
+@pytest.mark.parametrize("event", ALERT_EVENTS)
+def test_alerts_speak_the_orchestrator_words(event: str) -> None:
+    rendered = render_alert(make_cfg(), make_incident(map_index=3), event, extra=_fakeflow())
+    assert rendered.fallback is False
+    assert rendered.subject == SUBJECTS[event].replace("transform_sales", "transform_sales[3]")
+    text, html = rendered.text, rendered.html
+    assert "\nFlow:           sales_daily_etl\n" in text
+    assert "\nStep:           transform_sales (map index 3)\n" in text
+    assert "\nRun:            manual__2026-10-17T10:00:00+00:00\n" in text
+    assert "\nAttempt:        2\n" in text
+    assert "\nFlow incidents:   http://localhost:8080/dags/sales_daily_etl/plugin/healer-dag\n" in text
+    assert f"\nOpen in Fakeflow: {FAKEFLOW_URL}\n" in text
+    assert ">Flow</td>" in html and ">Step</td>" in html and ">Attempt</td>" in html and ">Run</td>" in html
+    assert ">Flow incidents</a>" in html
+    assert f'href="{FAKEFLOW_URL.replace("&", "&amp;")}"' in html and ">Open in Fakeflow</a>" in html
+    for body in (text, html):
+        assert "DAG" not in body and "Task" not in body and "Try" not in body
+        assert "the task" not in body and "task error" not in body
+
+
+def test_event_texts_use_the_step_word() -> None:
+    reported = render_alert(make_cfg(), make_incident(), "reported", extra=_fakeflow())
+    for body in (reported.text, reported.html):
+        assert "The input data of this step does not match its data contract." in body
+        assert "then retry the step from the Healer incident tab." in body
+    repaired = render_alert(make_cfg(), make_incident(category="code"), "repaired", extra=_fakeflow())
+    assert "Once the fix is deployed, retry the step from the Healer incident tab." in repaired.text
+    assert "retry the step from there." in repaired.html
+    with_pr = make_incident(category="code", pr_url="https://github.com/acme/etl/pull/12")
+    reviewed = render_alert(make_cfg(), with_pr, "repaired", extra=_fakeflow())
+    assert "retry the step from the Healer incident tab." in reviewed.html
+    failed = render_alert(make_cfg(), make_incident(category="code"), "repair_failed", extra=_fakeflow())
+    assert "Original step error" in failed.text and "Original step error" in failed.html
+
+
+def test_only_absolute_native_links_are_rendered() -> None:
+    native = {
+        "Fakeflow": FAKEFLOW_URL,
+        "Script": "javascript:alert(1)",
+        "Relative": "/flows/x",
+        "": "http://fakeflow.localhost/empty-label",
+        "Spaced": "http://fakeflow.localhost/a b",
+        "Multi\nline label": "https://fakeflow.localhost/runs",
+    }
+    context = alerts.build_context(make_cfg(), make_incident(), "reported", {"native_links": native})
+    assert context["links"]["native"] == {
+        "Fakeflow": FAKEFLOW_URL,
+        "Multi line label": "https://fakeflow.localhost/runs",
+    }
+    for extra in (None, {"native_links": ["x"]}, {"native_links": {"Fakeflow": 42}}):
+        assert alerts.build_context(make_cfg(), make_incident(), "reported", extra)["links"]["native"] == {}
+
+
+def test_words_fall_back_to_airflow_and_keep_upper_case() -> None:
+    words = alerts.build_context(
+        make_cfg(), make_incident(), "reported", {"vocabulary": {"step": "state", "pipeline": "", "x": "y"}}
+    )["words"]
+    assert words["step"] == "state" and words["step_label"] == "State"
+    assert words["pipeline"] == "DAG" and words["pipeline_label"] == "DAG"
+    assert words["attempt_label"] == "Try" and "x" not in words
+
+
+def test_fallback_uses_the_orchestrator_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Broken:
+        def get_template(self, name: str):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(alerts, "template_environment", lambda: Broken())
+    rendered = render_alert(make_cfg(), make_incident(), "reported", extra=_fakeflow())
+    assert rendered.fallback is True
+    assert "\nFlow: sales_daily_etl\nStep: transform_sales\nRun: manual__" in rendered.text
+    plain = render_alert(make_cfg(), make_incident(), "reported")
+    assert "\nDAG: sales_daily_etl\nTask: transform_sales\nRun: manual__" in plain.text
+
+
+def test_identifier_only_alerts_keep_the_orchestrator_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = alerts._normalize_sample
+
+    def picky(sample: Any, max_rows: int):
+        if sample is not None:
+            raise TypeError("unexpected sample shape")
+        return original(sample, max_rows)
+
+    monkeypatch.setattr(alerts, "_normalize_sample", picky)
+    rendered = render_alert(make_cfg(), make_incident(), "reported", extra=_fakeflow(sample={"rows": []}))
+    assert rendered.fallback is False
+    assert "\nFlow:           sales_daily_etl\n" in rendered.text
+    assert f"\nOpen in Fakeflow: {FAKEFLOW_URL}\n" in rendered.text
+    assert "Masked data sample" not in rendered.text
 
 
 # --------------------------------------------------------------------------- notify: log channel

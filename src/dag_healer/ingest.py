@@ -4,6 +4,10 @@ This module runs inside Airflow task processes (listener and ``on_failure_callba
 and inside the api-server, so it only uses the standard library and never raises:
 a failure to report is logged and the REST poller of the worker picks the failure up
 later anyway (events are only a latency hint, REST is the source of truth).
+
+It is the task runners' side of the Airflow adapter's ``task-failed`` push channel
+(``POST /events/task-failed``). Other orchestrators push to ``POST /events/{channel}``,
+where their adapter reads the payload; nothing here is shared with them.
 """
 
 from __future__ import annotations

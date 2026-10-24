@@ -11,9 +11,9 @@ The seeded terminal failure is the recorded one (``customers_sync.transform``, t
 the logs of the golden snapshots.
 
 The rest of the module checks what the suite cannot see: the phase-5 rules that moved into the
-adapter (poll window, confirmation, the retry message), compared with the phase-5 code while it
-still exists, the payload checks of ``normalize``, the code locator against ``agent.context``,
-the error translation and the factory.
+adapter (poll window, confirmation, the retry message), compared with frozen copies of the
+phase-5 code they came from, the payload checks of ``normalize``, the code locator against
+``agent.context``, the error translation and the factory.
 """
 
 from __future__ import annotations
@@ -21,11 +21,12 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import posixpath
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from urllib.parse import parse_qs, quote
@@ -44,7 +45,9 @@ from dag_healer.airflow.adapter import (
     INITIAL_LOOKBACK,
     LOG_SOURCE,
     MAX_EVENT_ERROR_CHARS,
+    MAX_PIPELINE_MEMOS,
     MIN_POLL_OVERLAP,
+    PIPELINE_MEMO_SECONDS,
     SANDBOX_ENV,
     STATE_NOT_BEFORE_KEY,
     STATE_WATERMARK_KEY,
@@ -155,12 +158,72 @@ def query(request: httpx.Request) -> dict[str, list[str]]:
     return parse_qs(request.url.query.decode(), keep_blank_values=True)
 
 
-def phase5(module: ModuleType, name: str) -> Any:
-    """A phase-5 function the adapter's rules were copied from (skip once it is gone)."""
-    value = getattr(module, name, None)
-    if value is None:
-        pytest.skip(f"{module.__name__}.{name} no longer exists (the worker delegates to the adapter)")
-    return value
+# =========================================================================== phase-5 references
+# Frozen copies of the phase-5 worker and context code the adapter's rules were moved from (the
+# worker and the context now ask the adapter), so the parity checks keep comparing against them.
+
+
+def phase5_confirm(ti: TaskInstanceInfo, try_number: int, trigger: str) -> tuple[bool, str]:
+    """``worker.pipeline._confirm`` of phase 5."""
+    state = (ti.state or "").lower() or "unknown"
+    if ti.try_number < try_number:
+        return False, f"Airflow knows only {ti.try_number} tries (state {state})"
+    if trigger == "every_failure":
+        if state in ("failed", "up_for_retry") or ti.try_number > try_number:
+            return True, f"state {state}, try {ti.try_number}"
+        return False, f"the task instance is {state}, not failed"
+    if ti.try_number > try_number:
+        return False, f"try {try_number} was retried (try {ti.try_number} is {state})"
+    if state == "failed":
+        return True, f"state failed, try {ti.try_number}"
+    if state == "up_for_retry":
+        return False, "the try will be retried (monitor.trigger is final_failure)"
+    return False, f"the task instance is {state}, not failed"
+
+
+def phase5_poll_since(
+    watermark: datetime | None, floor: datetime | None, interval: int, now: datetime
+) -> datetime:
+    """``worker.pipeline._poll_since`` of phase 5, on the values it read from ``state.json``."""
+    if watermark is None:
+        since = now - timedelta(hours=24)
+    else:
+        since = watermark - max(timedelta(seconds=60), timedelta(seconds=2 * interval))
+    if floor is not None and since < floor:
+        since = floor
+    return since
+
+
+def phase5_api_dag_file(cfg: HealerConfig, dag: Mapping[str, Any]) -> str | None:
+    """``agent.context._api_dag_file`` of phase 5 for one ``get_dag`` answer (without its note)."""
+    from dag_healer.agent.context import map_to_repo_path
+
+    def inside_repo(rel: str) -> bool:
+        try:
+            root = cfg.repo_root
+            candidate = (root / rel).resolve()
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            return False
+        return candidate.is_file()
+
+    def join_rel(base: str | None, rel: str) -> str | None:
+        joined = (
+            posixpath.normpath(posixpath.join(base, rel)) if base and base != "." else posixpath.normpath(rel)
+        )
+        if joined in (".", "") or joined == ".." or joined.startswith("../") or joined.startswith("/"):
+            return None
+        return joined
+
+    mapped = map_to_repo_path(dag.get("fileloc"), cfg) if dag.get("fileloc") else None
+    if mapped and inside_repo(mapped):
+        return mapped
+    relative = dag.get("relative_fileloc")
+    if isinstance(relative, str) and relative.strip():
+        candidate = join_rel(cfg.repo.dags_dir or "dags", relative.strip().replace("\\", "/"))
+        if candidate and inside_repo(candidate):
+            return candidate
+    return None
 
 
 class AirflowServer:
@@ -520,7 +583,7 @@ class AirflowHarness:
 
 
 class TestAirflowConformance(OrchestratorConformance):
-    """The packaged suite against Airflow (check 14 runs its setup, then waits for step 6)."""
+    """The packaged suite against Airflow (check 14 plays the demo's three incidents end to end)."""
 
     @pytest.fixture
     def harness(self, healer_env: Path) -> AirflowHarness:
@@ -714,7 +777,6 @@ def test_poll_never_lists_before_the_floor(caplog: pytest.LogCaptureFixture) -> 
 def test_poll_window_matches_the_phase5_worker(healer_env: Path) -> None:
     from dag_healer.worker import pipeline
 
-    poll_since = phase5(pipeline, "_poll_since")
     cases = [
         (None, None, 30),
         (NOW - timedelta(minutes=10), None, 30),
@@ -733,9 +795,33 @@ def test_poll_window_matches_the_phase5_worker(healer_env: Path) -> None:
         pipeline.save_state(cfg, state)
         cursor = cursor_from_state(pipeline.load_state(cfg))
         adapter = AirflowAdapter(cfg, client=PhaseFiveClient())
-        assert adapter.poll_since(cursor, now=NOW) == poll_since(cfg, NOW), (watermark, floor, interval)
-    moment = pipeline.reset_state(cfg, NOW)
-    assert cursor_from_state(pipeline.load_state(cfg)) == reset_cursor(moment)
+        expected = phase5_poll_since(watermark, floor, interval, NOW)
+        assert adapter.poll_since(cursor, now=NOW) == expected, (watermark, floor, interval)
+
+
+def test_the_worker_writes_and_imports_the_adapter_cursor(tmp_path: Path, healer_env: Path) -> None:
+    """``healer_kv`` holds the very cursor text the adapter reads and writes."""
+    from dag_healer.store import dispose_engines, session_scope
+    from dag_healer.store import repo as store_repo
+    from dag_healer.worker import pipeline
+
+    def cursor_of(cfg: HealerConfig) -> Any:
+        with session_scope(cfg.database_url) as session:
+            return store_repo.kv_get(session, store_repo.cursor_key("airflow"))
+
+    try:
+        reset = config_from_mapping({"store": {"url": f"sqlite:///{(tmp_path / 'reset.db').as_posix()}"}})
+        assert cursor_of(reset) is None
+        moment = pipeline.reset_state(reset, NOW)
+        assert cursor_of(reset) == reset_cursor(moment)
+
+        state = {STATE_WATERMARK_KEY: "2026-10-18T08:00:00Z", STATE_NOT_BEFORE_KEY: "2026-10-18T07:00:00Z"}
+        imported = config_from_mapping({"store": {"url": f"sqlite:///{(tmp_path / 'import.db').as_posix()}"}})
+        pipeline.save_state(imported, state)
+        assert pipeline.get_watermark(imported) == datetime(2026, 10, 18, 8, 0, tzinfo=timezone.utc)
+        assert cursor_of(imported) == cursor_from_state(state)
+    finally:
+        dispose_engines()
     assert (pipeline.WATERMARK_KEY, pipeline.NOT_BEFORE_KEY) == (STATE_WATERMARK_KEY, STATE_NOT_BEFORE_KEY)
     assert (pipeline.INITIAL_LOOKBACK, pipeline.MIN_POLL_OVERLAP) == (INITIAL_LOOKBACK, MIN_POLL_OVERLAP)
 
@@ -901,9 +987,17 @@ CONFIRM_CASES = [
     ("every_failure", "up_for_retry", 1, 1, "confirmed", "state up_for_retry, try 1"),
     ("every_failure", "failed", 1, 1, "confirmed", "state failed, try 1"),
     ("every_failure", "success", 2, 1, "confirmed", "state success, try 2"),
-    ("every_failure", "running", 1, 1, "discarded", "the task instance is running, not failed"),
+    ("every_failure", "running", 2, 1, "confirmed", "state running, try 2"),
+    ("final_failure", "running", 2, 1, "discarded", "try 1 was retried (try 2 is running)"),
     ("every_failure", None, 1, 1, "discarded", "the task instance is unknown, not failed"),
     ("every_failure", "failed", 1, 3, "discarded", "Airflow knows only 1 tries (state failed)"),
+]
+#: What the phase-5 rules say about a try that has not ended: the adapter checks such a hint again
+#: later instead (:func:`test_confirm_checks_a_try_that_has_not_ended_again_later`).
+UNFINISHED_CASES = [
+    ("every_failure", "running", 1, 1, "discarded", "the task instance is running, not failed"),
+    ("final_failure", "running", 1, 1, "discarded", "the task instance is running, not failed"),
+    ("final_failure", "queued", 2, 2, "discarded", "the task instance is queued, not failed"),
 ]
 
 
@@ -931,16 +1025,37 @@ def test_confirm_applies_the_phase5_rules(
     assert failure.failed_at == expected_at and failure.error_name is None and dict(failure.native) == {}
 
 
-@pytest.mark.parametrize(("trigger", "state", "ti_try", "hint_try", "verdict", "reason"), CONFIRM_CASES)
+@pytest.mark.parametrize(
+    ("trigger", "state", "ti_try", "hint_try", "verdict", "reason"), CONFIRM_CASES + UNFINISHED_CASES
+)
 def test_confirm_try_matches_the_phase5_worker(
     trigger: str, state: str | None, ti_try: int, hint_try: int, verdict: str, reason: str
 ) -> None:
-    from dag_healer.worker import pipeline
-
-    phase5_confirm = phase5(pipeline, "_confirm")
     ti = TaskInstanceInfo(dag_id="etl", run_id=RUN, task_id="t", try_number=ti_try, state=state)
     assert confirm_try(ti, hint_try, trigger) == phase5_confirm(ti, hint_try, trigger)
     assert confirm_try(ti, hint_try, trigger) == (verdict == "confirmed", reason)
+
+
+@pytest.mark.parametrize("trigger", ["final_failure", "every_failure"])
+@pytest.mark.parametrize(
+    "state", ["running", "queued", "scheduled", "deferred", "up_for_reschedule", "restarting"]
+)
+def test_confirm_checks_a_try_that_has_not_ended_again_later(trigger: Any, state: str) -> None:
+    client = PhaseFiveClient()
+    client.add("etl", RUN, "t", try_number=2, state=state, end_date=None)
+    adapter = AirflowAdapter(HealerConfig(), client=client)
+    ref = AttemptRef("airflow", "etl", RUN, "t", -1, 2)
+    result = adapter.confirm(hint(ref), trigger=trigger)
+    assert (result.verdict, result.reason, result.state, result.failures) == (
+        "retry_later",
+        f"the task instance is {state}, not failed yet",
+        AttemptState.RUNNING,
+        (),
+    )
+    # the listener posts before Airflow records the end of the try: a later check confirms it
+    client.add("etl", RUN, "t", try_number=2, state="failed")
+    later = adapter.confirm(hint(ref), trigger=trigger)
+    assert (later.verdict, later.reason, later.state) == ("confirmed", "state failed, try 2", None)
 
 
 def test_confirm_errors_and_foreign_hints() -> None:
@@ -953,11 +1068,15 @@ def test_confirm_errors_and_foreign_hints() -> None:
     assert mapped.verdict == "confirmed" and client.calls[-1] == ("ti", "etl", RUN, "t", 3)
     client.errors["ti"] = AirflowAPIError("Service Unavailable", status_code=503)
     later = adapter.confirm(hint(AttemptRef("airflow", "etl", RUN, "t", 3)), trigger="final_failure")
-    assert later.verdict == "retry_later" and "Airflow API error 503: Service Unavailable" in later.reason
-    client.errors["ti"] = RuntimeError("boom")
-    assert adapter.confirm(
-        hint(AttemptRef("airflow", "etl", RUN, "t", 3)), trigger="final_failure"
-    ).verdict == ("retry_later")
+    # the phase-5 worker's text ("confirming pending event <id>: <Type>: <first line>")
+    assert (later.verdict, later.reason, later.state) == (
+        "retry_later",
+        "AirflowAPIError: Airflow API error 503: Service Unavailable",
+        None,
+    )
+    client.errors["ti"] = RuntimeError("boom\nsecond line")
+    failing = adapter.confirm(hint(AttemptRef("airflow", "etl", RUN, "t", 3)), trigger="final_failure")
+    assert (failing.verdict, failing.reason) == ("retry_later", "RuntimeError: boom")
     calls = len(client.calls)
     foreign = adapter.confirm(hint(AttemptRef("airflow-staging", "etl", RUN, "t")), trigger="final_failure")
     assert foreign.verdict == "discarded" and "airflow-staging" in foreign.reason
@@ -1057,6 +1176,15 @@ def test_logs_render_the_task_log_and_never_raise(tmp_path: Path) -> None:
     )
 
 
+def test_a_failed_log_fetch_hands_its_whole_reason_to_the_core() -> None:
+    client = PhaseFiveClient()
+    client.errors["log"] = error = AirflowAPIError("x" * 2000, status_code=500)
+    (note,) = AirflowAdapter(HealerConfig(), client=client).logs(SEEDED, None).notes
+    # RAW and whole: the core masks the note, then cuts its reason to 500 characters (phase 5)
+    assert note == f"Fetching the task log from Airflow failed: AirflowAPIError: {error}"
+    assert len(note) > 2000
+
+
 def test_logs_of_an_empty_or_mapped_try() -> None:
     client = PhaseFiveClient()
     client.add("etl", RUN, "t", map_index=5, try_number=2, log="")
@@ -1089,6 +1217,50 @@ def test_pipeline_source_reads_the_dag(tmp_path: Path) -> None:
     server.route("GET", "/api/v2/dags/no_source", {"dag_id": "no_source", "fileloc": None})
     bare = adapter.pipeline_source("no_source", include_text=True)  # dagSources answers 404
     assert bare == PipelineSource(origin="api:dags")
+
+
+def test_pipeline_source_reads_the_dag_once_per_gathering(tmp_path: Path) -> None:
+    """The text asked for right after the location reuses its get_dag (the phase-5 call pattern)."""
+    adapter, server, _cfg = served_adapter(tmp_path)
+    dag, source = ("GET", "/api/v2/dags/customers_sync"), ("GET", "/api/v2/dagSources/customers_sync")
+    located = adapter.pipeline_source("customers_sync")
+    with_text = adapter.pipeline_source("customers_sync", include_text=True)
+    assert server.api_calls == [dag, source]
+    assert located is not None and with_text is not None and with_text.text
+    assert (with_text.path, with_text.relative_path) == (located.path, located.relative_path)
+    adapter.pipeline_source("customers_sync", include_text=True)  # the outcome was used up
+    assert server.api_calls[2:] == [dag, source]
+
+    # a DAG that could not be read: the text comes alone, without a second get_dag and no error
+    server.route("GET", "/api/v2/dagSources/broken", {"content": "dag = DAG('broken')"})
+    with pytest.raises(NotFound):
+        adapter.pipeline_source("broken")
+    calls = len(server.api_calls)
+    recovered = adapter.pipeline_source("broken", include_text=True)
+    assert recovered == PipelineSource(text="dag = DAG('broken')", origin="api:dagSources")
+    assert server.api_calls[calls:] == [("GET", "/api/v2/dagSources/broken")]
+
+    # an outcome older than PIPELINE_MEMO_SECONDS is read again
+    adapter.pipeline_source("customers_sync")
+    moment, outcome = adapter._dags["customers_sync"]
+    adapter._dags["customers_sync"] = (moment - PIPELINE_MEMO_SECONDS - 1, outcome)
+    calls = len(server.api_calls)
+    adapter.pipeline_source("customers_sync", include_text=True)
+    assert server.api_calls[calls:] == [dag, source]
+
+
+def test_pipeline_source_remembers_a_bounded_number_of_dags() -> None:
+    class Unknown(PhaseFiveClient):
+        def get_dag(self, dag_id: str) -> dict[str, Any]:
+            raise AirflowAPIError("DAG not found", status_code=404)
+
+    adapter = AirflowAdapter(HealerConfig(), client=Unknown())
+    for number in range(MAX_PIPELINE_MEMOS + 5):
+        with pytest.raises(NotFound):
+            adapter.pipeline_source(f"dag_{number}")
+    assert len(adapter._dags) == MAX_PIPELINE_MEMOS and "dag_0" not in adapter._dags
+    adapter.close()
+    assert not adapter._dags
 
 
 # =========================================================================== CodeLocator
@@ -1139,8 +1311,8 @@ def test_path_mappings_map_frames_like_the_phase5_context(
     cfg = config_from_mapping({"repo": {"path": str(EXAMPLE_REPO)}})
     root = cfg.repo_root
     mappings = [PathMapping(root.as_posix(), ""), *AirflowCodeLocator(cfg).path_mappings(root, None)]
-    path_roots = phase5(context, "_path_roots")
-    assert sorted((m.runtime_prefix, m.repo_base) for m in mappings) == sorted(path_roots(cfg))
+    # the phase-5 roots, still the default of map_to_repo_path (mappings=None)
+    assert sorted((m.runtime_prefix, m.repo_base) for m in mappings) == sorted(context._path_roots(cfg))
     frames = [
         "/opt/airflow/repo/src/etl/customers.py",
         "/opt/airflow/repo/dags/../src/etl/inventory.py",
@@ -1190,9 +1362,6 @@ def test_pipeline_file_follows_the_phase5_order(tmp_path: Path) -> None:
 
 
 def test_reported_file_matches_the_phase5_context(tmp_path: Path) -> None:
-    from dag_healer.agent import context
-
-    api_dag_file = phase5(context, "_api_dag_file")
     repo = copy_repo(tmp_path / "repo")
     cfg = config_from_mapping({"repo": {"path": str(repo)}})
     locator = AirflowCodeLocator(cfg)
@@ -1206,10 +1375,8 @@ def test_reported_file_matches_the_phase5_context(tmp_path: Path) -> None:
         {},
     ]
     for dag in dags:
-        ctx = context.IncidentContext(incident_id="i", dag_id="d", run_id="r", task_id="t")
-        client = SimpleNamespace(get_dag=lambda _dag_id, dag=dag: dag)
         reported = PipelineSource(path=dag.get("fileloc"), relative_path=dag.get("relative_fileloc"))
-        assert locator.reported_file(cfg.repo_root, reported) == api_dag_file(cfg, ctx, client), dag
+        assert locator.reported_file(cfg.repo_root, reported) == phase5_api_dag_file(cfg, dag), dag
 
 
 # =========================================================================== Remediator

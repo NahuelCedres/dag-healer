@@ -3,7 +3,10 @@
 Without ``--once`` the worker polls forever (stop it with SIGTERM / Ctrl+C); with it, one
 iteration runs (apply commands, reconcile, process every claimable incident) and the exit
 code is 1 when that iteration hit errors. ``--provider`` overrides ``llm.provider`` and
-``$HEALER_LLM_PROVIDER``. Heavy imports stay inside the handler so ``--help`` is fast.
+``$HEALER_LLM_PROVIDER``. A worker that cannot start (the orchestrator adapter does not load,
+it cannot serve ``monitor.modes`` / ``monitor.trigger``, or the store already belongs to
+another orchestrator type under this instance id) prints the reason and exits with 1. Heavy
+imports stay inside the handler so ``--help`` is fast.
 """
 
 from __future__ import annotations
@@ -45,7 +48,7 @@ def build_provider(cfg: object, name: str | None) -> object:
 
 def _run(args: argparse.Namespace) -> int:
     from dag_healer.config import ConfigError
-    from dag_healer.worker.loop import run_worker
+    from dag_healer.worker.loop import WorkerStartError, run_worker
 
     try:
         cfg = load_cli_config(args)
@@ -65,6 +68,9 @@ def _run(args: argparse.Namespace) -> int:
         package_logger.setLevel(logging.INFO)
     try:
         stats = run_worker(cfg, once=args.once, provider=provider)  # type: ignore[arg-type]
+    except WorkerStartError as exc:
+        error(str(exc))
+        return 1
     finally:
         package_logger.setLevel(previous_level)
     if args.once:

@@ -15,6 +15,7 @@ from typing import Any
 _EXPORTS: dict[str, str] = {
     "run_worker": "dag_healer.worker.loop",
     "Worker": "dag_healer.worker.loop",
+    "WorkerStartError": "dag_healer.worker.loop",
     "WorkerStats": "dag_healer.worker.loop",
     "process_incident": "dag_healer.worker.pipeline",
     "reconcile": "dag_healer.worker.pipeline",

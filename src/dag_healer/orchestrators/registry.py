@@ -20,6 +20,9 @@ third-party distribution registers) or an explicit ``"package.module:factory"`` 
   it means ``{type: airflow, instance: airflow, options: {}}`` (every phase-5 ``healer.yaml``).
 * :func:`parse_options` validates ``orchestrator.options`` against the factory's
   ``options_model`` (pydantic, imported only when a model is used).
+* :func:`config_problems` lists what a configuration asks for that an adapter cannot serve
+  (a detection mode without its port, ``trigger: every_failure`` without visible attempts);
+  the worker refuses to start on any of them and ``dag-healer doctor`` reports them.
 
 Importing this module loads only the standard library and :mod:`dag_healer.core`; adapter
 modules are imported when their type is first loaded.
@@ -70,6 +73,22 @@ EXTRA_MODULES: dict[str, tuple[str, ...]] = {"aws": ("boto3", "botocore")}
 _TARGET = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 _FACTORY_MEMBERS: tuple[str, ...] = ("type", "display_name", "options_model", "secret_options", "create")
 _MAX_CACHED_ADAPTERS = 16
+#: Detection kind of each ``monitor.modes`` value (``config.MODE_KINDS``; the config module is
+#: not imported here, it needs pydantic).
+_MODE_KINDS: dict[str, str] = {
+    "rest": "poll",
+    "poll": "poll",
+    "listener": "push",
+    "callback": "push",
+    "push": "push",
+    "queue": "queue",
+}
+#: ``(detection kind, adapter port, what the adapter lacks)`` checked by :func:`config_problems`.
+_DETECTION_PORTS: tuple[tuple[str, str, str], ...] = (
+    ("poll", "feed", "offers no failure feed to poll"),
+    ("push", "push", "accepts no pushed failure events"),
+    ("queue", "queue", "has no hint queue to drain"),
+)
 
 _lock = threading.RLock()
 _registrations: tuple[Registration, ...] | None = None
@@ -496,6 +515,52 @@ def reset_adapters() -> None:
             logger.debug("dag-healer: closing a cached adapter failed: %s", exc)
 
 
+# =========================================================================== configuration checks
+
+
+def _wanted(monitor: Any, kind: str, modes: list[str]) -> bool:
+    """``monitor.wants(kind)``, or the ``modes`` of that kind for a monitor section without it."""
+    wants = getattr(monitor, "wants", None)
+    if callable(wants):
+        try:
+            return bool(wants(kind))
+        except ValueError:  # a monitor section that does not know this kind
+            return False
+    return bool(modes)
+
+
+def config_problems(cfg: Any, adapter: OrchestratorAdapter) -> list[str]:
+    """What ``cfg`` asks for that ``adapter`` cannot serve: one English line per problem.
+
+    A detection mode of ``monitor.modes`` without its port (``rest``/``poll`` without a
+    ``feed``, ``listener``/``callback``/``push`` without a ``push`` intake, ``queue`` without a
+    ``queue``) and ``monitor.trigger: every_failure`` when the orchestrator does not show
+    automatic retries as failed attempts. Each line names the mode or the trigger and the
+    adapter's display name. Pure: no I/O, ``cfg`` is duck typed (``cfg.monitor.wants``,
+    ``modes``, ``trigger``). Every phase-5 Airflow configuration gives an empty list.
+    """
+    monitor = getattr(cfg, "monitor", None)
+    if monitor is None:
+        return []
+    name = str(getattr(adapter, "display_name", "") or getattr(adapter, "type", "") or "the orchestrator")
+    configured = [str(mode) for mode in getattr(monitor, "modes", None) or ()]
+    problems: list[str] = []
+    for kind, port, missing in _DETECTION_PORTS:
+        modes = [mode for mode in configured if _MODE_KINDS.get(mode) == kind]
+        if _wanted(monitor, kind, modes) and getattr(adapter, port, None) is None:
+            named = ", ".join(modes) or kind
+            problems.append(f"monitor.modes includes {named}, but {name} {missing}")
+    capabilities = getattr(adapter, "capabilities", None)
+    if getattr(monitor, "trigger", None) == "every_failure" and not getattr(
+        capabilities, "attempts_visible", True
+    ):
+        problems.append(
+            f"monitor.trigger is every_failure, but {name} does not show automatic retries as "
+            "failed attempts: use final_failure"
+        )
+    return problems
+
+
 __all__ = [
     "BUILTIN_EXTRAS",
     "BUILTIN_TYPES",
@@ -509,6 +574,7 @@ __all__ = [
     "OrchestratorSettings",
     "Registration",
     "available_types",
+    "config_problems",
     "conflict_message",
     "conflicts",
     "ensure_adapter",

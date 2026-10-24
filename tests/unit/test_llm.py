@@ -128,12 +128,11 @@ def assert_common_request(api: FakeAPI, index: int = 0, *, fallbacks: bool = Tru
     assert body["system"][0]["type"] == "text"
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert body["messages"][0]["role"] == "user"
+    # The SDK's ``?beta=true`` query is not checked: anthropic 2.3 stopped sending it.
     if fallbacks:
-        assert request.url.params.get("beta") == "true"
         assert request.headers["anthropic-beta"] == FALLBACK_BETA
         assert body["fallbacks"] == "default"
     else:
-        assert "beta" not in request.url.params
         assert "anthropic-beta" not in request.headers
         assert "fallbacks" not in body
     assert body["messages"][-1]["role"] in ("user", "assistant")

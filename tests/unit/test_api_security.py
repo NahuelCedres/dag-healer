@@ -198,7 +198,8 @@ def test_every_api_route_requires_an_airflow_user() -> None:
     ]
     assert unprotected == []
     events = [route for route in routes if route.path.startswith("/api/v1/events/")]
-    assert [route.path for route in events] == ["/api/v1/events/task-failed"]
+    # the static task-failed route comes first, so it keeps matching before the generic one
+    assert [route.path for route in events] == ["/api/v1/events/task-failed", "/api/v1/events/{channel}"]
     assert all(deps.require_ingest_token in route.calls for route in events)
     assert all(route.path.startswith("/api/v1/") for route in routes)
 
@@ -342,6 +343,24 @@ def test_events_are_exempt_from_csrf_but_need_the_token(env: Env) -> None:
         url, json=payload, headers={"X-Healer-Token": TOKEN, "Origin": "https://evil.x"}
     )
     assert response.status_code == 202
+
+
+def test_channel_events_are_exempt_from_csrf_but_need_the_token(env: Env) -> None:
+    from dag_healer.orchestrators.fake import FakeAdapter, FakeWorld
+
+    deps.channel_rate_limiter.reset()
+    env.app.dependency_overrides[deps.get_adapter] = lambda: FakeAdapter(world=FakeWorld())
+    payload = {"pipeline_id": "inventory_report", "run_id": "run-1", "step_id": "build_report"}
+    url = "/api/v1/events/fake"
+    assert env.client.post(url, json=payload).status_code == 401
+    assert env.client.post(url, json=payload, headers={"X-Healer-Token": "nope"}).status_code == 401
+    response = env.client.post(
+        url, json=payload, headers={"X-Healer-Token": TOKEN, "Origin": "https://evil.x"}
+    )
+    assert response.status_code == 202
+    assert response.json()["accepted"] is True
+    # an unknown channel is only revealed to callers that hold the token
+    assert env.client.post("/api/v1/events/eventbridge", json=payload).status_code == 401
 
 
 def test_request_body_is_capped(env: Env) -> None:

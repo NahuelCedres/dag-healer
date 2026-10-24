@@ -120,6 +120,19 @@ def _stamp(value: datetime | None) -> str:
     return _as_utc(value or _utcnow()).isoformat(timespec="seconds")
 
 
+def _cursor_floor(value: Any) -> datetime | None:
+    """The ``not_before`` floor of a poll cursor (ISO-8601); ``None`` when absent or invalid."""
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    except ValueError:
+        logger.debug("Fakeflow: ignoring an invalid not_before in the poll cursor")
+        return None
+
+
 def _check_id(value: Any, what: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{what} must be a string, not {type(value).__name__}")
@@ -745,22 +758,40 @@ class FakeAdapter:
         cursor: Mapping[str, Any] | None,
         is_monitored: Callable[[str], bool],
         limit: int = DEFAULT_POLL_LIMIT,
+        now: datetime | None = None,
     ) -> FailurePage:
-        """Failed and retrying attempts recorded after ``cursor`` (``{"seq": n}``), oldest first."""
+        """Failed and retrying attempts recorded after ``cursor`` (``{"seq": n}``), oldest first.
+
+        A cursor's ``not_before`` (ISO-8601: the reset floor written by ``dag-healer store
+        reset``) is honoured by every poll: only the attempts that ended at or after it are
+        listed, and the returned cursor keeps it (``{"seq": n, "not_before": ...}``), so a poll
+        that lists nothing does not lose it. An attempt without an end time counts as ending at
+        ``now`` (the poll start, default: the world's clock). Without a floor the returned
+        cursor is ``{"seq": n}``.
+        """
         world = self._io("poll")
         after = 0
+        floor: datetime | None = None
         if cursor:
-            try:
-                after = max(0, int(cursor.get("seq", 0)))
-            except (TypeError, ValueError):
-                logger.debug("Fakeflow: ignoring an invalid poll cursor")
+            if "seq" in cursor:
+                try:
+                    after = max(0, int(cursor.get("seq", 0)))
+                except (TypeError, ValueError):
+                    logger.debug("Fakeflow: ignoring an invalid poll cursor")
+            floor = _cursor_floor(cursor.get("not_before"))
         candidates = [a for a in world.ordered() if a.seq > after and a.is_failure]
+        if floor is not None:
+            moment = _as_utc(now) if now is not None else _as_utc(world.clock())
+            candidates = [a for a in candidates if _as_utc(a.ended_at or a.started_at or moment) >= floor]
         size = max(1, int(limit))
         page, rest = candidates[:size], candidates[size:]
         failures = tuple(self._failure(a, POLL_SOURCE) for a in page if is_monitored(a.ref.pipeline_id))
         last = page[-1].seq if page else after
         logger.debug("Fakeflow: poll after %d returned %d failure(s)", after, len(failures))
-        return FailurePage(failures=failures, cursor={"seq": last}, complete=not rest)
+        next_cursor: dict[str, Any] = {"seq": last}
+        if floor is not None:
+            next_cursor["not_before"] = floor.isoformat()
+        return FailurePage(failures=failures, cursor=next_cursor, complete=not rest)
 
     # ------------------------------------------------------------------ PushIntake
     def normalize(
@@ -795,7 +826,11 @@ class FakeAdapter:
         return [FailureHint(ref=ref, channel=channel, source=PUSH_SOURCE, error_text=error, native=native)]
 
     def confirm(self, hint: FailureHint, *, trigger: Trigger) -> Confirmation:
-        """Check a hint against the world (the phase-5 Airflow rules in neutral terms)."""
+        """Check a hint against the world (the Airflow adapter's rules in neutral terms).
+
+        The latest attempt still ``RUNNING`` is checked again later (``retry_later`` with state
+        ``RUNNING``), like a task instance that has not ended.
+        """
         try:
             world = self._io("confirm")
         except OrchestratorError as exc:
@@ -820,6 +855,10 @@ class FakeAdapter:
                 )
             return Confirmation(verdict="discarded", reason=f"Fakeflow has no attempt {ref.attempt}")
         state = current.state.value
+        if current.state is AttemptState.RUNNING and latest.ref.attempt == ref.attempt:
+            return Confirmation(
+                verdict="retry_later", reason="the attempt is running, not failed yet", state=current.state
+            )
         if trigger == "every_failure":
             if current.is_failure:
                 return self._confirmed(current, hint, f"state {state}, attempt {ref.attempt}")

@@ -1,6 +1,6 @@
 # Phase 2 of 2: make the failing test pass with a minimal fix
 
-An Airflow task of this repository failed because of a CODE bug. In phase 1 a pytest test was
+{{a_product}} {{step}} of this repository failed because of a CODE bug. In phase 1 a pytest test was
 written that reproduces the failure: `{{test_file}}`. It currently fails like this:
 
 {{pytest_before}}
