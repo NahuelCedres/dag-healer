@@ -1209,8 +1209,13 @@ def test_the_bootstrap_refuses_unsafe_archive_members(tmp_path: Path, kind: str)
 def test_run_pytest_in_an_emulated_container(
     engine: FakeEngine, project: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    links = symlink("pkg/data.txt", project / "inside_link") and symlink(
-        str(tmp_path / "secret.txt"), project / "absolute_link"
+    # Links only on POSIX: the emulated container extracts on this host, and a Linux-style link
+    # extracted on Windows can make pytest's directory scan fail (WinError 123 on Python 3.10).
+    # A real sandbox always extracts inside a Linux container.
+    links = (
+        POSIX
+        and symlink("pkg/data.txt", project / "inside_link")
+        and symlink(str(tmp_path / "secret.txt"), project / "absolute_link")
     )
     (tmp_path / "secret.txt").write_text("SECRET\n", encoding="utf-8")
     write_files(project, {"tests/test_vandal.py": VANDAL_TEST})
