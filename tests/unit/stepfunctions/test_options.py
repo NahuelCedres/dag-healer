@@ -291,6 +291,13 @@ def test_the_external_id_is_kept_but_never_shown() -> None:
     assert options.model_dump()["role_external_id"] == "s3cr3t-external-id"
 
 
+def test_a_rejected_external_id_never_appears_in_the_validation_error() -> None:
+    message = _invalid(
+        role_arn="arn:aws:iam::123456789012:role/healer", role_external_id=["s3cr3t-external-id"]
+    )
+    assert "role_external_id" in message and "s3cr3t-external-id" not in message
+
+
 def test_the_factory_names_its_model_and_its_secret() -> None:
     assert FACTORY.options_model is StepFunctionsOptions
     assert FACTORY.secret_options == ("role_external_id",)

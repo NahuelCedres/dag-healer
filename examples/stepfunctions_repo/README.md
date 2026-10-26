@@ -106,10 +106,11 @@ dag-healer incidents list
 `llm.provider` defaults to `fake` here: dag-healer classifies with its deterministic policy and
 replays `fixtures/fake_llm` for the repair, without an API key. Set `HEALER_LLM_PROVIDER=anthropic`
 (and `ANTHROPIC_API_KEY`) for real diagnoses. The outcomes are the ones of the table above. The
-CODE fix is a pull request (with `github.repo` and `GITHUB_TOKEN`) or a `PR.md`; it changes
-`src/etl/customers.py` and adds a test, and it reaches AWS only through your deployment
-(`sam build && sam deploy`): a redrive reruns the code deployed at that time with the original
-definition, so deploy the merged fix first.
+CODE fix is a pull request (with `github.repo` and `GITHUB_TOKEN`; see
+[docs/github/README.md](../../docs/github/README.md) for the token and the base branch's rules)
+or a `PR.md`; it changes `src/etl/customers.py` and adds a test, and it reaches AWS only through
+your deployment (`sam build && sam deploy`): a redrive reruns the code deployed at that time with
+the original definition, so deploy the merged fix first.
 
 ## The manual live check
 

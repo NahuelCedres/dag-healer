@@ -6,10 +6,11 @@ import json
 import logging
 import shutil
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 
@@ -560,6 +561,217 @@ def test_airflow_auth_and_ingest_follow_the_detection_modes(
         assert auth_result.detail == "REST polling disabled (monitor.modes)"
     if ingest == doctor_cmd.SKIP:
         assert ingest_result.detail == "listener/callback modes disabled"
+
+
+# --------------------------------------------------------------------------- doctor: the GitHub setup
+
+GITHUB_TOKEN_VALUE = "github_pat_DOCTOR0canary0123456789"
+GITHUB_CONFIG = "github: {repo: acme-health/etl, token: '${GITHUB_TOKEN}'}\n"
+GITHUB_API = "/repos/acme-health/etl"
+GITHUB_RULES = f"{GITHUB_API}/rules/branches/main?per_page=100"
+#: The API answers of a repository whose ruleset does everything dag-healer recommends.
+WELL_SET_GITHUB: dict[str, Any] = {
+    GITHUB_API: (200, {"full_name": "acme-health/etl", "permissions": {"admin": False, "push": True}}),
+    GITHUB_RULES: (
+        200,
+        [
+            {"type": "deletion", "ruleset_id": 42},
+            {"type": "non_fast_forward", "ruleset_id": 42},
+            {"type": "pull_request", "ruleset_id": 42, "parameters": {"required_approving_review_count": 1}},
+            {
+                "type": "required_status_checks",
+                "ruleset_id": 42,
+                "parameters": {"required_status_checks": [{"context": "unit-tests"}]},
+            },
+        ],
+    ),
+    f"{GITHUB_API}/rulesets/42": (
+        200,
+        {"id": 42, "name": "Protect main", "current_user_can_bypass": "never"},
+    ),
+}
+
+
+@pytest.fixture
+def github_api(monkeypatch: pytest.MonkeyPatch) -> Callable[[Mapping[str, Any]], list[httpx.Request]]:
+    """Point doctor's GitHub checks at a fake API answering by raw path; returns its requests."""
+
+    def install(routes: Mapping[str, Any]) -> list[httpx.Request]:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            route = routes.get(request.url.raw_path.decode("ascii"), (404, {"message": "Not Found"}))
+            if isinstance(route, Exception):
+                raise route
+            headers = route[2] if len(route) > 2 else None
+            return httpx.Response(route[0], json=route[1], headers=headers)
+
+        monkeypatch.setattr(doctor_cmd, "_github_transport", lambda: httpx.MockTransport(handler))
+        return requests
+
+    return install
+
+
+def _github_lines(out: str) -> list[tuple[str, str, str]]:
+    """``(label, name, detail)`` of every ``github...`` line (several findings repeat a name)."""
+    lines = []
+    for line in out.splitlines():
+        if line[:1] == "[" and line[5:6] == "]" and line[7:].startswith("github"):
+            name, detail = line[7:].split("  ", 1)
+            lines.append((line[:6], name.strip(), detail.strip()))
+    return lines
+
+
+def test_doctor_checks_the_github_setup(
+    tmp_path: Path,
+    isolated: Path,
+    github_api: Callable[[Mapping[str, Any]], list[httpx.Request]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", GITHUB_TOKEN_VALUE)
+    requests = github_api(WELL_SET_GITHUB)
+    code, out = _doctor(tmp_path, FAKEFLOW + GITHUB_CONFIG, capsys)
+    assert code == 0, out
+    assert _github_lines(out) == [
+        ("[ OK ]", "github", "pull requests on acme-health/etl (token hidden)"),
+        ("[ OK ]", "github token", "a fine-grained personal access token"),
+        ("[ OK ]", "github repository", "the token's account is not an admin of acme-health/etl"),
+        (
+            "[ OK ]",
+            "github base branch",
+            "main requires a pull request with an approving review and blocks force pushes and deletion, "
+            "and requires status checks",
+        ),
+        ("[ OK ]", "github workflows", "no workflow files in .github/workflows"),
+    ]
+    assert GITHUB_TOKEN_VALUE not in out
+    assert {(request.method, request.url.host) for request in requests} == {("GET", "api.github.com")}
+    assert all(request.headers["Authorization"] == f"Bearer {GITHUB_TOKEN_VALUE}" for request in requests)
+
+
+def test_doctor_fails_an_unprotected_base_branch_and_a_workflow_that_runs_the_head(
+    tmp_path: Path,
+    isolated: Path,
+    github_api: Callable[[Mapping[str, Any]], list[httpx.Request]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classic = "ghp_DOCTOR0canary0123456789"
+    monkeypatch.setenv("GITHUB_TOKEN", classic)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "label.yml").write_text(
+        "on: pull_request_target\njobs:\n  label:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "        with: {ref: '${{ github.event.pull_request.head.sha }}'}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    github_api(
+        {
+            # GitHub lists the scopes of a classic token in every answer
+            GITHUB_API: (*WELL_SET_GITHUB[GITHUB_API], {"X-OAuth-Scopes": "repo"}),
+            GITHUB_RULES: (200, []),
+            f"{GITHUB_API}/branches/main": (200, {"name": "main", "protected": False}),
+        }
+    )
+    code, out = _doctor(tmp_path, FAKEFLOW + GITHUB_CONFIG, capsys)
+    assert code == 1
+    lines = _github_lines(out)
+    assert [(label, name) for label, name, _ in lines] == [
+        ("[ OK ]", "github"),
+        ("[WARN]", "github token"),
+        ("[ OK ]", "github repository"),
+        ("[FAIL]", "github base branch"),
+        ("[FAIL]", "github base branch"),
+        ("[FAIL]", "github base branch"),
+        ("[WARN]", "github base branch"),
+        ("[FAIL]", "github workflows"),
+    ]
+    assert lines[1][2].startswith("The GitHub token is a classic personal access token: its scope covers")
+    assert lines[3][2].startswith("The base branch main does not require a pull request with at least one")
+    assert lines[7][2].startswith("The workflow .github/workflows/label.yml runs on pull_request_target")
+    assert classic not in out and "ghp_" not in out
+
+
+def test_doctor_reports_what_it_could_not_check_on_github_as_warnings(
+    tmp_path: Path,
+    isolated: Path,
+    github_api: Callable[[Mapping[str, Any]], list[httpx.Request]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", GITHUB_TOKEN_VALUE)
+    requests = github_api({GITHUB_API: httpx.ConnectError("no route to host")})
+    code, out = _doctor(tmp_path, FAKEFLOW + GITHUB_CONFIG, capsys)
+    assert code == 0, out  # warnings only
+    lines = _github_lines(out)
+    assert [(label, name) for label, name, _ in lines] == [
+        ("[ OK ]", "github"),
+        ("[ OK ]", "github token"),
+        ("[WARN]", "github repository"),
+        ("[WARN]", "github base branch"),
+        ("[ OK ]", "github workflows"),
+    ]
+    assert "the GitHub API could not be reached (ConnectError)" in lines[2][2]
+    assert len(requests) == 1  # nothing more is sent after a transport error
+
+
+def test_doctor_calls_github_only_with_a_token_and_a_repository(
+    tmp_path: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_network() -> Any:
+        raise AssertionError("no GitHub request expected")
+
+    monkeypatch.setattr(doctor_cmd, "_github_transport", no_network)
+    code, out = _doctor(tmp_path, FAKEFLOW + "github: {repo: acme-health/etl}\n", capsys)
+    assert code == 0, out
+    assert _github_lines(out) == [
+        ("[WARN]", "github", "github.repo is acme-health/etl but no token is set; using PR.md")
+    ]
+
+
+def test_doctor_finds_the_github_repository_from_the_origin_remote(
+    tmp_path: Path,
+    isolated: Path,
+    github_api: Callable[[Mapping[str, Any]], list[httpx.Request]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dag_healer.repo.git import run_git
+
+    run_git(["init", "-q"], tmp_path)
+    run_git(["remote", "add", "origin", "https://github.com/acme-health/etl.git"], tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", GITHUB_TOKEN_VALUE)
+    requests = github_api(WELL_SET_GITHUB)
+    code, out = _doctor(tmp_path, FAKEFLOW + "github: {token: '${GITHUB_TOKEN}'}\n", capsys)
+    assert code == 0, out
+    assert _github_lines(out)[0] == (
+        "[ OK ]",
+        "github",
+        "pull requests on acme-health/etl (from the origin remote; token hidden)",
+    )
+    assert requests[0].url.raw_path == b"/repos/acme-health/etl"
+
+
+def test_doctor_survives_a_broken_github_setup_check(
+    tmp_path: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken(cfg: Any) -> Any:
+        raise RuntimeError(f"cannot use {cfg.github.token}")
+
+    monkeypatch.setenv("GITHUB_TOKEN", GITHUB_TOKEN_VALUE)
+    monkeypatch.setattr(doctor_cmd, "github_setup_checks", broken)
+    code, out = _doctor(tmp_path, FAKEFLOW + GITHUB_CONFIG, capsys)
+    assert code == 0, out  # one warning: what could not be checked never fails doctor
+    assert _github_lines(out)[-1] == (
+        "[WARN]",
+        "github setup",
+        "The GitHub setup could not be checked (RuntimeError). Check the network settings and github.repo, "
+        "then check the token, the base branch's rules and the workflows by hand.",
+    )
+    assert GITHUB_TOKEN_VALUE not in out and "cannot use" not in out  # the type only, never the message
 
 
 # --------------------------------------------------------------------------- contracts

@@ -132,6 +132,22 @@ exit code 0: 2 passed, 0 failed, 0 errors, 0 skipped, 2 collected in 0.0s
 2 passed
 ```
 
+## CI
+
+CI has not run for this change. Its commit carries \[skip ci\], so GitHub starts no workflow triggered by `push` or `pull_request` for it, and many other CI services skip it too: the model-written test and fix do not run in CI, with the repository's secrets, before a person has reviewed them.
+
+This branch is only in the local repository so far. Push it from there first (`git push --no-verify origin healer/customers_sync-transform-00000000`; the `push` and `pull_request` workflows do not run for that push either), then open the pull request with this description. The push and the pull request do start the workflows that the marker does not stop (`create` and `pull_request_target`): run `dag-healer doctor` with a GitHub token first, which reports those that can run this branch's code with the repository's secrets.
+
+After your review, start CI with an empty commit on the branch, from a clone of the repository (in a POSIX shell such as bash):
+
+```sh
+git fetch origin healer/customers_sync-transform-00000000
+commit=$(git commit-tree -p FETCH_HEAD -m "Run CI after review" "FETCH_HEAD^{tree}")
+git push --no-verify origin "$commit":refs/heads/healer/customers_sync-transform-00000000
+```
+
+The commit is made without checking the branch out, so none of your git hooks runs with this branch's code in your working tree: `git commit-tree` runs no hook, and `--no-verify` skips your pre-push hook. A base branch that requires the CI checks blocks the merge until they pass. When you merge, keep the skip marker out of the message of the commit that reaches the base branch (a squash merge copies the commit messages by default), or CI does not run there either.
+
 ## Notes
 
 - Branch `healer/customers_sync-transform-[number]` was pushed to the local repository.

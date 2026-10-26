@@ -86,6 +86,10 @@ github:
   repo: "${GITHUB_REPO}"         # owner/name; without repo and token fixes are written as PR.md
   pr_base: main
   token: "${GITHUB_TOKEN}"
+  # true: the fix's commit carries [skip ci], so push and pull_request workflows run on the
+  # healer branch only after a person has reviewed it; false only when CI on healer branches
+  # holds no secrets. See docs/github/README.md for the token, the base branch's rules and CI.
+  skip_ci: true
 
 llm:
   provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | fake (offline tests)

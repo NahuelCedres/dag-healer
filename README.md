@@ -68,7 +68,8 @@ setup, the checks to run and the commit convention
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 [docs/security.md](docs/security.md) describes the threat model, the known gaps and how to
-deploy dag-healer until they are closed.
+deploy dag-healer until they are closed. [docs/github/README.md](docs/github/README.md) sets up
+the GitHub token, the base branch's rules and CI for dag-healer's pull requests.
 
 ## License
 

@@ -28,6 +28,16 @@ Important properties:
   clone of a bind mount owned by another uid fails with "detected dubious ownership";
   without the hook settings, ``receive-pack`` would run the hooks of the *source*
   repository when the worker pushes the healer branch into it.
+* **Objects are read as they are stored.** Every git invocation also runs with
+  ``GIT_NO_REPLACE_OBJECTS=1`` and ``-c core.useReplaceRefs=false`` (before git 2.42, a
+  ``core.useReplaceRefs`` line in the clone's ``.git/config`` overrode the variable; a ``-c``
+  value overrides every file), with ``GIT_GRAFT_FILE`` naming a file that never exists
+  (:func:`no_grafts_file`: ``/dev/null/grafts``; on Windows, a file in the empty hooks
+  directory) and with ``-c core.commitGraph=false``. No replace ref (``refs/replace/``), graft
+  file (``.git/info/grafts``) or commit-graph file, which code that ran in the clone could
+  plant, makes a command see another commit, other parents or another tree than the objects
+  that ``git push`` sends: the check of a commit, the diff shown for it and the push read the
+  same commit.
 * Output is decoded as UTF-8 **without** newline translation, so diffs of CRLF files
   survive intact (``fix.patch`` must apply cleanly).
 * Tokens never appear on a command line or inside a URL: :meth:`Workspace.push` writes a
@@ -71,6 +81,12 @@ GIT_SAFE_CONFIG: tuple[str, ...] = (
 )
 #: Prefix of the private directory every git command uses as ``core.hooksPath``.
 NO_HOOKS_PREFIX = "dag-healer-no-hooks-"
+#: The name of the graft file every git command reads, in a place where it never exists
+#: (:func:`no_grafts_file`).
+NO_GRAFTS_NAME = "grafts"
+#: Replace refs off whatever the repository's configuration says, and no commit-graph file: a
+#: cache of each commit's parents and tree, which git trusts.
+_GIT_OBJECT_CONFIG: tuple[str, ...] = ("-c", "core.useReplaceRefs=false", "-c", "core.commitGraph=false")
 #: Extra presentation settings: never quote non-ASCII paths in status/diff output.
 _GIT_DISPLAY_CONFIG: tuple[str, ...] = ("-c", "core.quotepath=false")
 
@@ -114,6 +130,7 @@ _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SCP_LIKE_RE = re.compile(r"^(?:(?P<user>[^@/\s]+)@)?(?P<host>[^:/\s\\]+):(?P<path>[^\s]+)$")
 _REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _BRANCH_BAD_CHARS_RE = re.compile(r"[^A-Za-z0-9._/-]+")
+_FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 class GitError(RuntimeError):
@@ -173,9 +190,10 @@ def _remove_empty_hooks_dir() -> None:
 def empty_hooks_dir() -> Path:
     """Return the empty directory that every git command of the worker uses as ``core.hooksPath``.
 
-    A private ``tempfile.mkdtemp`` directory, created once per process and removed at exit. It
-    is checked to be an empty directory before each use and replaced (with a warning) when
-    something was planted in it or it was removed.
+    On Windows, ``GIT_GRAFT_FILE`` names a file in it (:func:`no_grafts_file`), which therefore
+    never exists. A private ``tempfile.mkdtemp`` directory, created once per process and removed
+    at exit. It is checked to be an empty directory before each use and replaced (with a
+    warning) when something was planted in it or it was removed.
     """
     global _no_hooks_dir, _no_hooks_cleanup_registered
     with _no_hooks_lock:
@@ -190,6 +208,18 @@ def empty_hooks_dir() -> Path:
             atexit.register(_remove_empty_hooks_dir)
             _no_hooks_cleanup_registered = True
         return _no_hooks_dir
+
+
+def no_grafts_file() -> str:
+    """The graft file of every git command (``GIT_GRAFT_FILE``): it never exists.
+
+    ``/dev/null/grafts``: ``/dev/null`` is no folder, so no file can be created there, and git
+    reads no graft and prints nothing when it cannot open it. On Windows, a file in the empty
+    hooks directory (:func:`empty_hooks_dir`), which is checked before each command.
+    """
+    if os.name == "nt":
+        return os.fspath(empty_hooks_dir() / NO_GRAFTS_NAME)
+    return os.path.join(os.devnull, NO_GRAFTS_NAME)
 
 
 def _hooks_settings() -> tuple[str, str]:
@@ -231,11 +261,14 @@ def git_environment(extra: Mapping[str, str | None] | None = None) -> dict[str, 
     """Return the environment used for git commands.
 
     Starts from ``os.environ``, removes variables that would point git at another
-    repository (``GIT_DIR``, ``GIT_WORK_TREE``, ...), disables terminal prompts and finally
-    applies ``extra`` (a ``None`` value removes the variable).
+    repository (``GIT_DIR``, ``GIT_WORK_TREE``, ...), disables terminal prompts, makes git
+    ignore replace refs and graft files (``GIT_NO_REPLACE_OBJECTS``, ``GIT_GRAFT_FILE``; see the
+    module docstring) and finally applies ``extra`` (a ``None`` value removes the variable).
     """
     env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = no_grafts_file()
     for key, value in (extra or {}).items():
         if value is None:
             env.pop(key, None)
@@ -253,7 +286,7 @@ def run_git(
     timeout: float | None = DEFAULT_GIT_TIMEOUT,
     redact: Iterable[str] = (),
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``git <GIT_SAFE_CONFIG> <no hooks, no fsmonitor> <args>`` in ``cwd``; return the process.
+    """Run ``git <GIT_SAFE_CONFIG> <no hooks, fsmonitor, replace refs, commit-graph> <args>`` in ``cwd``.
 
     Args:
         args: git arguments (the subcommand and its options); may start with extra
@@ -266,8 +299,8 @@ def run_git(
         redact: secrets replaced by ``***`` in the captured output and error messages.
 
     Returns:
-        A ``CompletedProcess`` whose ``stdout``/``stderr`` are ``str`` decoded as UTF-8
-        with newlines left untouched.
+        The finished process, a ``CompletedProcess`` whose ``stdout``/``stderr`` are ``str``
+        decoded as UTF-8 with newlines left untouched.
 
     Raises:
         GitError: git is missing, timed out, ``cwd`` does not exist, or (with ``check``)
@@ -275,7 +308,7 @@ def run_git(
     """
     secrets = [s for s in redact if s]
     hooks_path, fsmonitor = _hooks_settings()
-    prefix = ["git", *GIT_SAFE_CONFIG, "-c", hooks_path, "-c", fsmonitor]
+    prefix = ["git", *GIT_SAFE_CONFIG, "-c", hooks_path, "-c", fsmonitor, *_GIT_OBJECT_CONFIG]
     cmd = [*prefix, *(os.fspath(a) for a in args)]
     shown = _redact(" ".join(cmd[len(prefix) :]), secrets)
     log.debug("git %s (cwd=%s)", shown, cwd)
@@ -381,6 +414,13 @@ def _validate_branch(name: str) -> None:
     )
     if bad:
         raise GitError(f"invalid branch name: {name!r}")
+
+
+def _commit_source(commit: str) -> str:
+    """``commit`` as the source of a refspec: a full SHA-1 or SHA-256 object name only."""
+    if not _FULL_SHA_RE.match(commit):
+        raise GitError(f"not a full commit sha: {commit!r}")
+    return commit
 
 
 # --------------------------------------------------------------------------- workspace
@@ -547,15 +587,16 @@ class Workspace:
         for start in range(0, len(untracked), 200):
             self.git("add", "--intent-to-add", "--", *untracked[start : start + 200])
 
-    def diff(self, base: str = "HEAD") -> str:
-        """Return the unified diff of the working tree against ``base``.
+    def diff(self, base: str = "HEAD", target: str | None = None) -> str:
+        """Return the unified diff of the working tree (or of the commit ``target``) against ``base``.
 
-        New untracked (non-ignored) files are included: they are first registered with
-        ``git add --intent-to-add`` (this touches the index of the workspace only).
-        Output is suitable for ``git apply`` (fixed ``a/`` ``b/`` prefixes, no textconv,
-        no external diff, CRLF preserved).
+        Against the working tree, new untracked (non-ignored) files are included: they are
+        first registered with ``git add --intent-to-add`` (this touches the index of the
+        workspace only). Output is suitable for ``git apply`` (fixed ``a/`` ``b/`` prefixes,
+        no textconv, no external diff, CRLF preserved).
         """
-        self._intent_to_add_untracked()
+        if target is None:
+            self._intent_to_add_untracked()
         return self.git(
             *_GIT_DISPLAY_CONFIG,
             "diff",
@@ -565,16 +606,20 @@ class Workspace:
             "--src-prefix=a/",
             "--dst-prefix=b/",
             base,
+            *([target] if target is not None else []),
             "--",
         ).stdout
 
-    def diff_stats(self, base: str = "HEAD") -> tuple[int, int]:
+    def diff_stats(self, base: str = "HEAD", target: str | None = None) -> tuple[int, int]:
         """Return ``(files_changed, lines_changed)`` against ``base`` (added + deleted lines).
 
-        Untracked files count as new files; binary files count as one file and zero lines.
+        Of the working tree, or of the commit ``target``. Untracked files count as new files;
+        binary files count as one file and zero lines.
         """
-        self._intent_to_add_untracked()
-        out = self.git(*_GIT_DISPLAY_CONFIG, "diff", "--numstat", "--no-ext-diff", base, "--").stdout
+        if target is None:
+            self._intent_to_add_untracked()
+        commits = [base] if target is None else [base, target]
+        out = self.git(*_GIT_DISPLAY_CONFIG, "diff", "--numstat", "--no-ext-diff", *commits, "--").stdout
         files = 0
         lines = 0
         for row in out.splitlines():
@@ -593,7 +638,9 @@ class Workspace:
         """Stage every change (``git add -A``), commit it and return the new HEAD sha.
 
         The author and committer identity come from the arguments, so no ``user.name``
-        configuration is needed.
+        configuration is needed. The message is stored as given (``--cleanup=verbatim``):
+        ``commit.cleanup`` and ``core.commentChar`` in the environment's git configuration
+        cannot drop one of its lines as a comment.
 
         Raises:
             GitError: there is nothing to commit, or git fails.
@@ -608,7 +655,7 @@ class Workspace:
             "GIT_COMMITTER_NAME": author_name,
             "GIT_COMMITTER_EMAIL": author_email,
         }
-        self.git("commit", "--quiet", "-m", message, env=identity)
+        self.git("commit", "--quiet", "--cleanup=verbatim", "-m", message, env=identity)
         sha = self.head_sha()
         log.info("committed %s on %s in %s", sha[:12], self.current_branch(), self.path)
         return sha
@@ -627,7 +674,15 @@ class Workspace:
             return self.git("remote", "get-url", remote).stdout.strip()
         return remote
 
-    def push(self, remote: str, branch: str, *, token: str | None = None, force: bool = False) -> None:
+    def push(
+        self,
+        remote: str,
+        branch: str,
+        *,
+        token: str | None = None,
+        force: bool = False,
+        commit: str | None = None,
+    ) -> None:
         """Push local ``branch`` to ``remote`` (a remote name or URL) under the same name.
 
         With ``token``: ssh/scp-style GitHub URLs are converted to https, user info is
@@ -636,10 +691,13 @@ class Workspace:
         the command line, in the URL or in error messages. Without a token the ambient
         git credentials (ssh keys, helpers) are used. ``force`` overwrites the remote
         branch (only ever a healer branch: pushing to the base branch is refused).
+        ``commit`` (a full sha) pushes that commit as the branch instead of the branch's
+        current tip, so what was checked is what is pushed.
         """
         self._check_push_target(branch)
         target = self._resolve_remote(remote)
-        refspec = f"{'+' if force else ''}refs/heads/{branch}:refs/heads/{branch}"
+        source = _commit_source(commit) if commit is not None else f"refs/heads/{branch}"
+        refspec = f"{'+' if force else ''}{source}:refs/heads/{branch}"
         if not token:
             pack = ["--receive-pack", _local_receive_pack()] if _uses_local_transport(target) else []
             self.git("push", "--quiet", *pack, target, refspec)
@@ -657,22 +715,30 @@ class Workspace:
             self.git("-c", "credential.helper=", "push", "--quiet", target, refspec, env=env, redact=[token])
         log.info("pushed %s to %s", branch, target)
 
-    def push_to_path(self, repo_path: str | os.PathLike[str], branch: str, *, force: bool = False) -> None:
+    def push_to_path(
+        self,
+        repo_path: str | os.PathLike[str],
+        branch: str,
+        *,
+        force: bool = False,
+        commit: str | None = None,
+    ) -> None:
         """Push HEAD into the local repository ``repo_path`` as ``refs/heads/<branch>``.
 
         Runs ``git push <repo_path> HEAD:refs/heads/<branch>``: the branch is created (or
         fast-forwarded) in the target repository without touching its checked-out branch
         or working tree. Pushing to the base branch or to the branch currently checked out
-        in the target is refused.
+        in the target is refused. ``commit`` (a full sha) pushes that commit instead of HEAD.
         """
         _validate_branch(branch)
+        source = _commit_source(commit) if commit is not None else "HEAD"
         if self.base_branch and branch == self.base_branch:
             raise GitError(f"refusing to push to the base branch {branch!r}")
         target = Path(repo_path).resolve()
         checked_out = run_git(["symbolic-ref", "--quiet", "--short", "HEAD"], target, check=False)
         if checked_out.returncode == 0 and checked_out.stdout.strip() == branch:
             raise GitError(f"refusing to push to {branch!r}: it is checked out in {target}")
-        refspec = f"{'+' if force else ''}HEAD:refs/heads/{branch}"
+        refspec = f"{'+' if force else ''}{source}:refs/heads/{branch}"
         self.git("push", "--quiet", "--receive-pack", _local_receive_pack(), os.fspath(target), refspec)
         log.info("pushed %s into %s", branch, target)
 
@@ -845,6 +911,7 @@ __all__ = [
     "git_environment",
     "github_https_url",
     "is_git_repo",
+    "no_grafts_file",
     "origin_url",
     "parse_github_repo",
     "read_text",

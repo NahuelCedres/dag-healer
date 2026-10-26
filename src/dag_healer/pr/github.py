@@ -1,8 +1,14 @@
 """Minimal GitHub REST client: open (or find) the pull request of a healer branch.
 
-Only two endpoints are used (``POST /repos/{owner}/{repo}/pulls`` and
+Only two endpoints are used here (``POST /repos/{owner}/{repo}/pulls`` and
 ``GET /repos/{owner}/{repo}/pulls?head=owner:branch``). The token is sent as a bearer
-token header and never appears in exceptions or log records.
+token header and never appears in exceptions or log records: GitHub's error texts are
+redacted, and a request that fails before GitHub answers is named by its exception type
+only (httpx can quote the request's headers in its own messages).
+
+The read-only checks of how the repository and the token are set up (the token's kind and
+scopes, the base branch's rules, the workflows) live in :mod:`dag_healer.pr.github_checks`,
+which shares this module's request headers and error texts.
 """
 
 from __future__ import annotations
@@ -44,28 +50,45 @@ def _headers(token: str) -> dict[str, str]:
 
 
 def _json(response: httpx.Response) -> Any:
+    """The JSON of an answer; None when it has none (nesting too deep to decode included)."""
     try:
         return response.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
 def _error_text(response: httpx.Response, token: str) -> str:
     """Return GitHub's error message (``message`` + ``errors[].message``), token redacted."""
-    data = _json(response)
+    return _error_message(_json(response), response.text or "", response.reason_phrase, token)
+
+
+def _error_message(data: Any, text: str, reason: str, token: str) -> str:
+    """GitHub's error message from an answer's JSON ``data``, else its ``text`` or ``reason``.
+
+    The token is redacted first: the text is cut to 500 characters afterwards, so no part of
+    the token is left.
+    """
+
+    def redacted(value: str) -> str:
+        return value.replace(token, "***") if token else value
+
     parts: list[str] = []
     if isinstance(data, dict):
         if data.get("message"):
             parts.append(str(data["message"]))
-        for item in data.get("errors") or []:
+        errors = data.get("errors")
+        if not isinstance(errors, list):  # GitHub sends a list; anything else is one item
+            errors = [errors] if errors else []
+        for item in errors:
             if isinstance(item, dict):
-                text = item.get("message") or item.get("code")
-                if text:
-                    parts.append(str(text))
+                detail = item.get("message") or item.get("code")
+                if detail:
+                    parts.append(str(detail))
             elif item:
                 parts.append(str(item))
-    text = "; ".join(parts) or (response.text or "").strip()[:500] or response.reason_phrase
-    return text.replace(token, "***") if token else text
+    if parts:
+        return redacted("; ".join(parts))
+    return redacted(text).strip()[:500] or redacted(reason)
 
 
 def _describe_failure(response: httpx.Response, token: str, repo: str) -> GitHubError:
@@ -75,8 +98,9 @@ def _describe_failure(response: httpx.Response, token: str, repo: str) -> GitHub
         message = f"GitHub authentication failed (401): {detail}. Check GITHUB_TOKEN."
     elif status == 403:
         message = (
-            f"GitHub refused the request (403): {detail}. The token needs the 'repo' scope "
-            "(classic) or 'Pull requests: write' (fine-grained), or the rate limit was hit."
+            f"GitHub refused the request (403): {detail}. A fine-grained token needs Contents and "
+            "Pull requests: read and write on the repository (a classic token: the repo scope), or "
+            "the rate limit was hit."
         )
     elif status == 404:
         message = (
@@ -184,8 +208,9 @@ def create_pull_request(
                 )
             raise _describe_failure(response, token, repo)
     except httpx.HTTPError as exc:
-        detail = str(exc).replace(token, "***")
-        raise GitHubError(f"could not reach the GitHub API at {api_url}: {detail}") from exc
+        # The type only: httpx and h11 can quote the Authorization header (for example as the
+        # repr of an invalid header value), which a plain replace() of the token would miss.
+        raise GitHubError(f"could not reach the GitHub API at {api_url} ({type(exc).__name__})") from None
 
 
 __all__ = ["DEFAULT_API_URL", "GitHubError", "create_pull_request", "find_pull_request"]

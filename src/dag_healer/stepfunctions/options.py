@@ -82,7 +82,8 @@ LINK_PLACEHOLDERS = frozenset(
 
 
 class _Options(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # the text of a ValidationError never shows the rejected value (role_external_id is a secret)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
 def _blank_to_none(value: object) -> object:

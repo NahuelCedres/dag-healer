@@ -509,6 +509,9 @@ def test_full_flow_on_the_example_repo(bench: Bench, tmp_path: Path, monkeypatch
     repair_event = next(e for e in customers_events if e["kind"] == "repair")
     branch = repair_event["data"]["branch"]
     assert branch == f"healer/customers_sync-transform-{customers['id'][:8]}"
+    # CI has not run (the commit carries [skip ci]) and the branch is only in the local repository
+    assert "\n## CI\n" in pr_text and "## Before you merge" not in pr_text
+    assert f"Push it from there first (`git push --no-verify origin {branch}`;" in pr_text
     branches = run_git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], bench.repo).stdout
     assert branch in branches.split()
     assert "strptime" in (bench.repo / "src/etl/customers.py").read_text(

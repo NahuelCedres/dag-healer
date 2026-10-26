@@ -12,8 +12,21 @@
    ``repo.allowed_paths``, never in tests) must make the new test pass without breaking the
    pre-existing suite, within ``limits.max_diff_files`` / ``max_diff_lines``
    (up to ``limits.max_fix_attempts`` attempts; failed attempts are rolled back);
-4. commit, then push + GitHub pull request when a token and a repository are known,
-   otherwise push the branch into the source repository (best effort) and write
+4. check the final change once more: HEAD must still be the commit the branch started from,
+   and no path of the change (index, working tree and untracked files, both sides of a
+   rename) may be protected (:mod:`dag_healer.repo.protected_paths`, the policy the write
+   tools apply too, with what the protected links of the base commit lead to); otherwise
+   the repair fails and nothing is committed or pushed;
+5. commit (while ``github.skip_ci`` is on, the message carries :data:`SKIP_CI_LINE`, so the
+   repository's CI does not run the change before a person has reviewed it), then check the
+   commit itself: its only parent is the base commit, it adds or changes no symbolic link
+   and no gitlink, touches no protected path, stays within the diff limits and, with
+   ``skip_ci``, its stored message still opens with the skip line; otherwise the branch is
+   reset and nothing is pushed. Then, when a token and a repository are known, run the
+   read-only GitHub setup checks (:mod:`dag_healer.pr.github_checks`: the token, the base
+   branch's rules, the clone's workflows), push that commit and open the pull request,
+   whose description lists the problems found under "Before you merge" (they never block
+   it); otherwise push the commit into the source repository (best effort) and write
    ``PR.md`` + ``fix.patch`` under ``<healer_home>/prs/<incident_id>/``.
 
 ``limits.max_tokens_per_incident`` is enforced with a :class:`TokenBudget` shared by all
@@ -40,10 +53,10 @@ import difflib
 import fnmatch
 import logging
 import os
-import posixpath
 import re
 import textwrap
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import unicodedata
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal
@@ -61,6 +74,7 @@ from dag_healer.agent.tests_gen import (
 from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 from dag_healer.masking import mask_text
 from dag_healer.pr.github import GitHubError, create_pull_request
+from dag_healer.pr.github_checks import SetupFinding, check_github_setup, setup_failure, setup_findings
 from dag_healer.pr.prmd import render_pr_markdown, write_pr_artifacts
 from dag_healer.repo.git import (
     GitError,
@@ -75,6 +89,16 @@ from dag_healer.repo.git import (
     write_text_preserving_eol,
 )
 from dag_healer.repo.profile import detect_test_layout
+from dag_healer.repo.protected_paths import (
+    DATA_FILES,
+    compared_parts,
+    contracts_prefix,
+    is_data_file,
+    linked_paths,
+    protected_changes,
+    protected_reason,
+)
+from dag_healer.repo.protected_paths import normalise_prefix as _norm_prefix
 from dag_healer.repo.pytest_runner import PytestResult, run_pytest
 from dag_healer.repo.sandbox import build_sandbox, sandbox_launch_failure, sandbox_refusal
 
@@ -109,6 +133,23 @@ MAX_SEARCH_FILE_BYTES = 1_000_000
 MAX_TOOL_PYTEST_CHARS = 6_000
 MAX_STORED_PYTEST_CHARS = 20_000
 MAX_FEEDBACK_DIFF_CHARS = 4_000
+#: At most this many protected paths are named when the final check refuses a change.
+MAX_LISTED_PROTECTED_PATHS = 10
+#: git's modes of a symbolic link and of a gitlink (a submodule or an embedded repository).
+_LINK_MODE = "120000"
+_GITLINK_MODE = "160000"
+_HISTORY_CHANGED = "The clone's history changed during the repair (a commit was made outside dag-healer), so"
+_PROTECTED_ADVICE = (
+    " A fix never changes the paths that dag-healer protects (CI and git hook configuration, git "
+    "metadata, development environments, dag-healer's configuration, dependency manifests, lockfiles, "
+    "environment and data files, and what a protected link leads to); check repo.allowed_paths."
+)
+
+#: The paragraph that opens the body of a fix's commit message while ``github.skip_ci`` is on.
+#: GitHub then starts no ``push`` or ``pull_request`` workflow for the commit (the marker counts
+#: anywhere in the message), and CI services that read only the start of the message (CircleCI:
+#: the title and the first 250 characters of the body) see it too.
+SKIP_CI_LINE = "[skip ci] CI runs after a person has reviewed this change (see the pull request)."
 
 #: Directories never listed or searched.
 SKIP_DIRS = frozenset(
@@ -127,52 +168,11 @@ SKIP_DIRS = frozenset(
         ".vscode",
     }
 )
-#: File extensions treated as data: never read, never written by the agent.
-DATA_SUFFIXES = frozenset(
-    {
-        ".csv",
-        ".tsv",
-        ".parquet",
-        ".pq",
-        ".jsonl",
-        ".ndjson",
-        ".xlsx",
-        ".xls",
-        ".avro",
-        ".orc",
-        ".feather",
-        ".arrow",
-        ".pkl",
-        ".pickle",
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-        ".gz",
-        ".bz2",
-        ".zip",
-    }
-)
-#: Root folders the agent can never write; ``data``/``fixtures`` cannot be read either.
-DENIED_ROOTS = frozenset({".github", "data", "fixtures", "healer"})
+#: Root folders the agent can never read (it can write none of the protected paths either:
+#: :mod:`dag_healer.repo.protected_paths`).
 UNREADABLE_ROOTS = frozenset({"data", "fixtures"})
-LOCKFILES = frozenset(
-    {
-        "poetry.lock",
-        "pipfile.lock",
-        "uv.lock",
-        "pdm.lock",
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "cargo.lock",
-        "gemfile.lock",
-        "composer.lock",
-    }
-)
-MANIFESTS = frozenset({"pyproject.toml", "setup.py", "setup.cfg", "pipfile", "environment.yml", "tox.ini"})
-_MANIFEST_PATTERNS = ("requirements*.txt", "requirements*.in", "constraints*.txt")
 _TEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
+_BRACKETS_TO_PARENTHESES = str.maketrans("[]", "()")
 
 Phase = Literal["test", "fix"]
 
@@ -221,14 +221,6 @@ class RepairAborted(RuntimeError):
 # --------------------------------------------------------------------------- path rules
 
 
-def _norm_prefix(value: str) -> str:
-    cleaned = str(value).replace("\\", "/").strip()
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    cleaned = cleaned.strip("/")
-    return posixpath.normpath(cleaned) if cleaned else "."
-
-
 def _under(rel: str, prefix: str) -> bool:
     return prefix == "." or rel == prefix or rel.startswith(prefix + "/")
 
@@ -237,18 +229,24 @@ def _is_test_filename(name: str) -> bool:
     return name == "conftest.py" or any(fnmatch.fnmatchcase(name, p) for p in _TEST_FILE_PATTERNS)
 
 
-def _is_manifest(name: str) -> bool:
-    lowered = name.lower()
-    return lowered in MANIFESTS or any(fnmatch.fnmatchcase(lowered, p) for p in _MANIFEST_PATTERNS)
+def _listed(paths: Sequence[str]) -> str:
+    """At most :data:`MAX_LISTED_PROTECTED_PATHS` paths, comma-separated, then how many more."""
+    listing = ", ".join(paths[:MAX_LISTED_PROTECTED_PATHS])
+    if len(paths) > MAX_LISTED_PROTECTED_PATHS:
+        listing += f", and {len(paths) - MAX_LISTED_PROTECTED_PATHS} more"
+    return listing
 
 
-def _is_lockfile(name: str) -> bool:
-    lowered = name.lower()
-    return lowered in LOCKFILES or lowered.endswith(".lock")
+def _one_line(value: Any) -> str:
+    """A value from the failure as one line of plain text for the commit message and the PR title.
 
-
-def _is_data_file(name: str) -> bool:
-    return Path(name.lower()).suffix in DATA_SUFFIXES
+    Line breaks, separators and every other control or format character (Unicode categories C
+    and Z) become spaces and runs of spaces collapse, so the value can neither add lines nor
+    push the skip marker out of the paragraph that follows the title; square brackets become
+    parentheses, so the value cannot carry a CI skip marker such as ``[skip ci]`` either.
+    """
+    text = "".join(" " if unicodedata.category(char)[0] in "CZ" else char for char in str(value))
+    return " ".join(text.translate(_BRACKETS_TO_PARENTHESES).split())
 
 
 def _format_run(result: PytestResult, targets: Sequence[str] | None, *, limit: int) -> str:
@@ -266,6 +264,48 @@ def _format_run(result: PytestResult, targets: Sequence[str] | None, *, limit: i
     if len(tail) > limit:
         tail = "[... output truncated ...]\n" + tail[-limit:]
     return f"{summary}\n{tail}" if tail else summary
+
+
+class _CommittedLinks(Mapping[str, str]):
+    """The symbolic links of a commit: path -> target, each target read from git when asked for."""
+
+    def __init__(self, root: Path, objects: Mapping[str, str], env: Mapping[str, str] | None) -> None:
+        self._root = root
+        self._objects = dict(objects)  # path -> blob sha
+        self._env = env
+        self._targets: dict[str, str] = {}
+
+    def __getitem__(self, path: str) -> str:
+        if path not in self._targets:
+            blob = self._objects[path]
+            self._targets[path] = run_git(["cat-file", "blob", blob], self._root, env=self._env).stdout
+        return self._targets[path]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._objects)
+
+    def __len__(self) -> int:
+        return len(self._objects)
+
+
+def committed_links(root: str | Path, commit: str = "HEAD") -> Mapping[str, str]:
+    """The symbolic links of ``commit`` in the repository at ``root`` (path -> target as stored).
+
+    Empty when ``root`` is not the top of a git repository whose ``commit`` exists (git never
+    looks above ``root`` for one). Targets are read lazily, one ``git cat-file`` each.
+    """
+    path = Path(root)
+    env = {"GIT_CEILING_DIRECTORIES": os.fspath(path.parent)}  # never a repository above the clone
+    listed = run_git(["ls-tree", "-r", "-z", "--full-tree", commit], path, env=env, check=False)
+    if listed.returncode != 0:
+        return {}
+    objects: dict[str, str] = {}
+    for entry in listed.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        fields = meta.split()
+        if name and len(fields) == 3 and fields[0] == _LINK_MODE:
+            objects[name] = fields[2]
+    return _CommittedLinks(path, objects, env)
 
 
 def _tool_doc(summary: str, details: str, args: Sequence[tuple[str, str]], returns: str) -> str:
@@ -298,10 +338,19 @@ class RepairTools:
     raises on bad input. Paths are repo-relative; absolute paths, ``..`` and anything
     resolving outside the workspace are rejected. Phase ``"test"`` may write only under
     ``tests_dir``; phase ``"fix"`` only under ``cfg.repo.allowed_paths`` and never in
-    ``tests_dir`` or any test file. Both phases are denied ``healer.yaml``, ``healer/**``,
-    ``.github/**``, ``.git/**``, lockfiles, dependency manifests, ``.env*``, ``fixtures/**``,
-    ``data/**`` and data files; data files, ``.env*`` and ``healer.yaml`` cannot be read
-    either. Every write is recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
+    ``tests_dir`` or any test file. Both phases are denied every protected path
+    (:func:`dag_healer.repo.protected_paths.protected_reason`, compared case-insensitively, on
+    the path as written and on the path it reaches through a link inside the clone):
+    ``.git/**``, ``healer.yaml``, ``healer/**``, ``.github/**``, ``data/**``, ``fixtures/**``,
+    the contracts folder, other CI definitions (``.gitlab-ci.yml``, ``.circleci/**``,
+    ``Jenkinsfile``, ...), git hook managers (``.pre-commit-config.yaml``, ``.husky/**``, ...),
+    development environments (``.devcontainer/**``, ``.vscode/**``, ...), ``.gitattributes``,
+    ``.gitmodules``, ``CODEOWNERS``, ``.env*``, lockfiles, dependency manifests and data files,
+    and what a protected path that is a committed link leads to (``linked``: by default read
+    from the clone's ``HEAD``; ``.pre-commit-config.yaml -> src/ci/hooks.yaml`` protects
+    ``src/ci/hooks.yaml``). The tool descriptions name the main ones; a refused write says
+    why. Data files, ``.env*`` and ``healer.yaml`` cannot be read either. Every write is
+    recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
     Every pytest run happens in ``sandbox`` (default: the one ``cfg.repo.sandbox`` configures)
     with ``extra_env`` (the orchestrator's sandbox overrides). When the sandbox cannot start
     pytest, :attr:`sandbox_error` keeps the (masked) reason and no later run is attempted.
@@ -320,6 +369,7 @@ class RepairTools:
         max_test_runs: int = MAX_TEST_RUNS_PER_SESSION,
         extra_env: Mapping[str, str | None] | None = None,
         sandbox: Sandbox | None = None,
+        linked: Iterable[str] | None = None,
     ) -> None:
         if phase not in ("test", "fix"):
             raise ValueError(f"unknown repair phase: {phase!r}")
@@ -335,9 +385,8 @@ class RepairTools:
         self.max_writes = max_writes
         self.max_test_runs = max_test_runs
         self.allowed_paths = [_norm_prefix(p) for p in cfg.repo.allowed_paths if str(p).strip()]
-        contracts_dir = str(cfg.contracts.dir).replace("\\", "/")
-        relative_contracts = not Path(cfg.contracts.dir).is_absolute() and not contracts_dir.startswith("..")
-        self._contracts_prefix = _norm_prefix(contracts_dir) if relative_contracts else None
+        self._contracts_prefix = contracts_prefix(cfg.contracts.dir, cfg.repo_root)
+        self._linked: frozenset[str] | None = frozenset(linked) if linked is not None else None
         self.writes: list[WriteRecord] = []
         self.test_runs: list[PytestResult] = []
         self._originals: dict[str, bytes | None] = {}
@@ -411,8 +460,10 @@ class RepairTools:
         return rel, None
 
     def _read_denial(self, rel: str) -> str | None:
-        # Deny checks compare case-insensitively: on Windows/macOS ".GIT" is ".git".
-        parts = rel.lower().split("/")
+        # Deny checks compare the components as the protected-path policy does: case-folded as
+        # Windows and macOS fold names (".GIT" is ".git", "ſ" is "s") and without the trailing
+        # dots and spaces Windows drops (_resolve has already refused "..").
+        parts = compared_parts(rel) or ("",)
         name = parts[-1]
         if ".git" in parts:
             return f"Error: reading {rel} is denied (.git internals)."
@@ -420,7 +471,7 @@ class RepairTools:
             return f"Error: reading {rel} is denied (environment files may hold secrets)."
         if name == "healer.yaml":
             return f"Error: reading {rel} is denied (dag-healer configuration)."
-        if parts[0] in UNREADABLE_ROOTS or _is_data_file(name):
+        if parts[0] in UNREADABLE_ROOTS or is_data_file(name):
             return (
                 f"Error: reading {rel} is denied: data files must not be read. Use the masked sample "
                 "provided in the prompt instead."
@@ -430,32 +481,14 @@ class RepairTools:
     def _write_denial(self, rel: str) -> str | None:
         if rel == ".":
             return "Error: the path must name a file."
-        # Deny checks compare case-insensitively (".GIT" is ".git" on Windows/macOS); the
-        # allow checks (tests_dir in the test phase, allowed_paths) stay case-sensitive.
-        lowered_rel = rel.lower()
-        parts = lowered_rel.split("/")
+        # The protected-path policy compares case-insensitively (".GIT" is ".git" on Windows and
+        # macOS); the allow checks (tests_dir in the test phase, allowed_paths) stay case-sensitive.
+        # It applies to the path as written and to the path the write reaches through a link.
+        reason = self._protected(rel) or self._protected_target(rel)
+        if reason is not None:
+            hint = "; hard-code small inputs in the test instead" if reason == DATA_FILES else ""
+            return f"Error: writing {rel} is denied ({reason}){hint}."
         name = rel.split("/")[-1]
-        lowered = parts[-1]
-        contracts = self._contracts_prefix.lower() if self._contracts_prefix else None
-        if ".git" in parts:
-            return f"Error: writing {rel} is denied (.git internals)."
-        if (
-            lowered == "healer.yaml"
-            or parts[0] in DENIED_ROOTS
-            or (contracts and contracts != "." and _under(lowered_rel, contracts))
-        ):
-            return (
-                f"Error: writing {rel} is denied (protected path: healer config, contracts, CI, data or "
-                "fixtures)."
-            )
-        if lowered.startswith(".env"):
-            return f"Error: writing {rel} is denied (.env files)."
-        if _is_lockfile(name):
-            return f"Error: writing {rel} is denied (lockfiles are never changed)."
-        if _is_manifest(name):
-            return f"Error: writing {rel} is denied (dependency and packaging manifests are never changed)."
-        if _is_data_file(lowered):
-            return f"Error: writing {rel} is denied (data files); hard-code small inputs in the test instead."
         if self.phase == "test":
             if self.tests_dir == ".":
                 if not _is_test_filename(name):
@@ -469,9 +502,10 @@ class RepairTools:
                     "outside). Do not change application code yet."
                 )
             return None
-        # phase "fix"
-        tests_dir = self.tests_dir.lower()
-        if (tests_dir != "." and _under(lowered_rel, tests_dir)) or _is_test_filename(lowered):
+        # phase "fix": the tests are read-only, compared as the protected-path policy compares paths
+        folded = compared_parts(rel) or ("",)
+        tests = compared_parts(self.tests_dir) or ()
+        if (tests and folded[: len(tests)] == tests) or _is_test_filename(folded[-1]):
             return (
                 f"Error: in the fix phase tests are read-only ({rel}); change the application code, "
                 "not the test."
@@ -480,6 +514,31 @@ class RepairTools:
             allowed = ", ".join(f"{p}/" for p in self.allowed_paths) or "(none configured)"
             return f"Error: writing {rel} is denied: the fix may only change files under {allowed}."
         return None
+
+    def _linked_paths(self) -> frozenset[str]:
+        """What the protected links committed in the clone lead to (read once, from ``HEAD``)."""
+        if self._linked is None:
+            links = committed_links(self.root)
+            self._linked = linked_paths(links, contracts_dir=self._contracts_prefix)
+        return self._linked
+
+    def _protected(self, rel: str) -> str | None:
+        """Why the policy protects ``rel`` (:func:`protected_reason`), or None."""
+        return protected_reason(rel, contracts_dir=self._contracts_prefix, linked=self._linked_paths())
+
+    def _protected_target(self, rel: str) -> str | None:
+        """Why the path that a write to ``rel`` really reaches is protected, when it is another path.
+
+        A link inside the clone (``src/ci`` pointing at ``.github``) or another name of the same
+        folder leads a write elsewhere; :meth:`_resolve` has already refused targets outside it.
+        """
+        try:
+            real = (self.root / rel).resolve().relative_to(self.root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if real == rel:
+            return None
+        return self._protected(real)
 
     def _remember(self, rel: str, target: Path) -> None:
         if rel not in self._originals:
@@ -963,6 +1022,10 @@ class _Repair:
         self.budget = TokenBudget(cfg.limits.max_tokens_per_incident)
         self.result = RepairResult(status=REPAIR_FAILED)
         self.ws: Workspace | None = None
+        self.base_commit: str | None = None  # HEAD of the healer branch when it was created
+        self.contracts = contracts_prefix(cfg.contracts.dir, cfg.repo_root)
+        self.linked: frozenset[str] | None = None  # what protected links of the base commit lead to
+        self.setup_findings: list[SetupFinding] = []  # GitHub setup problems for "Before you merge"
         self.layout: TestLayout | None = None
         self.tests_dir = "tests"
         self.test_rel: str | None = None
@@ -1001,7 +1064,16 @@ class _Repair:
             tests_dir=self.tests_dir,
             extra_env=self.extra_env,
             sandbox=self.sandbox,
+            linked=self._linked_paths(),
         )
+
+    def _linked_paths(self) -> frozenset[str]:
+        """What the protected links of the base commit lead to (:func:`linked_paths`), read once."""
+        assert self.ws is not None
+        if self.linked is None:
+            links = committed_links(self.ws.path, self.base_commit or "HEAD")
+            self.linked = linked_paths(links, contracts_dir=self.contracts)
+        return self.linked
 
     def _check_sandbox(self) -> None:
         """Refuse to run any code, the existing suite included, without a usable test sandbox."""
@@ -1070,21 +1142,33 @@ class _Repair:
         )
 
     def _changed_paths(self) -> tuple[list[str], list[str]]:
-        """``(untracked files, paths differing from HEAD)`` of the workspace."""
+        """``(untracked files, paths differing from HEAD)`` of the workspace.
+
+        ``--no-renames`` lists both sides of a rename: a file moved behind the agent's back
+        under the name of a file it wrote must still come back.
+        """
         assert self.ws is not None
         untracked = self.ws.git("ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0")
-        changed = self.ws.git("diff", "--name-only", "-z", "HEAD", "--").stdout.split("\0")
+        changed = self.ws.git("diff", "--name-only", "--no-renames", "-z", "HEAD", "--").stdout.split("\0")
         return [p for p in untracked if p], [p for p in changed if p]
 
     def _discard_unexpected_changes(self, keep: set[str]) -> list[str]:
-        """Undo changes the agent did not make through its tools (pytest side effects, ...)."""
+        """Undo changes the agent did not make through its tools (pytest side effects, ...).
+
+        An untracked repository inside the clone (git lists only its folder, ``src/vendor/``)
+        is removed whole: the tools never write a ``.git`` folder, and ``git add`` would commit
+        it as a gitlink.
+        """
         assert self.ws is not None
         untracked, changed = self._changed_paths()
         discarded: list[str] = []
         for rel in untracked:
             if rel not in keep:
                 try:
-                    (self.ws.path / rel).unlink()
+                    if rel.endswith("/"):
+                        remove_tree(self.ws.path / rel)
+                    else:
+                        (self.ws.path / rel).unlink()
                     discarded.append(rel)
                 except OSError as exc:  # pragma: no cover - best effort
                     logger.warning("could not remove stray file %s: %s", rel, exc)
@@ -1190,6 +1274,7 @@ class _Repair:
         self.ws = Workspace.clone(source, self.workspace_path, branch=branch)
         name = self._unique_branch(branch_name(self.dag_id, self.task_id, self.incident_id))
         self.ws.create_branch(name)
+        self.base_commit = self.ws.head_sha()  # publish() refuses a history changed behind its back
         self.result.branch = name
 
         detected = detect_test_layout(self.ws.path)
@@ -1365,26 +1450,41 @@ class _Repair:
         return mask_text(f"{exc_type}: {message}".strip(": "))
 
     def _title(self) -> str:
+        """The commit title and pull request title: one line, never a CI skip marker."""
         target = repro_target(self.ctx)
-        where = target.get("symbol") or self.task_id
-        what = self.exception_type or "failure"
-        title = f"Fix {what} in {where} ({self.dag_id}.{self.task_id})"
+        where = _one_line(target.get("symbol") or self.task_id)
+        what = _one_line(self.exception_type or "failure")
+        title = f"Fix {what} in {where} ({_one_line(self.dag_id)}.{_one_line(self.task_id)})"
         return title if len(title) <= 100 else title[:97] + "..."
 
     def _commit_message(self) -> str:
+        """The fix's commit message; :data:`SKIP_CI_LINE` opens the body while ``github.skip_ci`` is on.
+
+        Values from the failure stay on their own line (:func:`_one_line`), so nothing can
+        come between the title and the marker paragraph.
+        """
         words = self.words
-        lines = [
-            self._title(),
-            "",
-            f"Reproducing test: {self.test_rel}",
-            f"Incident: {self.incident_id} ({words['pipeline']} {self.dag_id}, "
-            f"{words['step']} {self.task_id}, run {self.incident.get('run_id', '?')})",
+        lines = [self._title(), ""]
+        if self.cfg.github.skip_ci:
+            lines += [SKIP_CI_LINE, ""]
+        run_id = _one_line(self.incident.get("run_id", "?"))
+        lines += [
+            f"Reproducing test: {_one_line(self.test_rel)}",
+            f"Incident: {_one_line(self.incident_id)} ({words['pipeline']} {_one_line(self.dag_id)}, "
+            f"{words['step']} {_one_line(self.task_id)}, run {run_id})",
             "",
             "Generated by dag-healer",
         ]
         return "\n".join(lines)
 
-    def _render_pr(self, diff: str) -> str:
+    def _render_pr(
+        self, diff: str, *, branch_on_github: bool, branch_in_local_repository: bool = True
+    ) -> str:
+        """The pull request description (also PR.md): where the branch was pushed decides its CI section.
+
+        ``branch_on_github``: the branch was pushed to GitHub; ``branch_in_local_repository``:
+        otherwise, into the local repository (when neither, the change is only in ``fix.patch``).
+        """
         notes = list(self.notes)
         if self.agent_summary:
             notes.append(f"Repair agent summary: {self.agent_summary}")
@@ -1400,11 +1500,177 @@ class _Repair:
             notes=notes,
             branch=self.result.branch,
             vocabulary=self.vocabulary,
+            skip_ci=self.cfg.github.skip_ci,
+            branch_on_github=branch_on_github,
+            setup_findings=self.setup_findings,
+            branch_in_local_repository=branch_in_local_repository,
         )
 
+    def _final_change_paths(self) -> list[str]:
+        """Every path the commit can change: the index and the working tree against HEAD, untracked files.
+
+        ``--no-renames`` lists both sides of a rename, so a protected file cannot leave the
+        repository under another name.
+        """
+        assert self.ws is not None
+        outputs = (
+            self.ws.git("diff", "--name-only", "--no-renames", "-z", "HEAD", "--").stdout,
+            self.ws.git("diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--").stdout,
+            self.ws.git("ls-files", "--others", "--exclude-standard", "-z").stdout,
+        )
+        return sorted({path for output in outputs for path in output.split("\0") if path})
+
+    def _protected_listing(self, paths: Iterable[str]) -> str | None:
+        """``path (reason), ...`` for the protected ``paths`` (at most ten named), or None."""
+        protected = protected_changes(paths, contracts_dir=self.contracts, linked=self._linked_paths())
+        return _listed([f"{path} ({reason})" for path, reason in protected]) if protected else None
+
+    def _refuse_protected_changes(self) -> None:
+        """The last check before the commit, behind the write tools (second line of defence).
+
+        It catches what the tools could not: a configuration such as ``repo.allowed_paths:
+        ["."]`` with a bug in the tools, or a test run that changed the clone itself. HEAD must
+        still be the commit the branch started from (the index and the working tree are
+        compared with it), and no path of the final change may be protected
+        (:func:`dag_healer.repo.protected_paths.protected_reason`, case-insensitive, with what
+        the protected links of the base commit lead to). :meth:`_refuse_unsafe_commit` checks
+        the commit itself afterwards.
+
+        Raises:
+            RepairAborted: the clone's history changed, or the change touches protected paths.
+        """
+        assert self.ws is not None
+        if self.base_commit is not None and self.ws.head_sha() != self.base_commit:
+            raise RepairAborted(_HISTORY_CHANGED + " nothing was committed or pushed.")
+        listing = self._protected_listing(self._final_change_paths())
+        if listing is not None:
+            raise RepairAborted(
+                f"The final change touches protected paths, so nothing was committed or pushed: {listing}."
+                + _PROTECTED_ADVICE
+            )
+
+    def _commit_changes(self, commit: str) -> list[tuple[str, str, str]]:
+        """``(old mode, new mode, path)`` of every path ``commit`` changes against the base commit.
+
+        ``--no-renames`` lists both sides of a rename.
+        """
+        assert self.ws is not None and self.base_commit is not None
+        out = self.ws.git("diff-tree", "-r", "--no-renames", "-z", "--raw", self.base_commit, commit).stdout
+        fields = out.split("\0")
+        changes: list[tuple[str, str, str]] = []
+        for meta, path in zip(fields[0::2], fields[1::2], strict=False):
+            modes = meta.lstrip(":").split()
+            if meta.startswith(":") and len(modes) >= 2 and path:
+                changes.append((modes[0], modes[1], path))
+        return changes
+
+    def _commit_problem(self, commit: str) -> str | None:
+        """Why ``commit`` must not be pushed (see :meth:`_refuse_unsafe_commit`), or None."""
+        assert self.ws is not None and self.base_commit is not None
+        parents = self.ws.git("rev-list", "--parents", "--max-count=1", commit).stdout.split()[1:]
+        if parents != [self.base_commit]:
+            return _HISTORY_CHANGED + " the commit was undone and nothing was pushed."
+        changes = self._commit_changes(commit)
+        gitlinks = sorted({path for old, new, path in changes if _GITLINK_MODE in (old, new)})
+        if gitlinks:
+            return (
+                f"The fix's commit holds a git submodule or an embedded repository ({_listed(gitlinks)}), so "
+                "the commit was undone and nothing was pushed."
+            )
+        links = sorted({path for _old, new, path in changes if new == _LINK_MODE})
+        if links:
+            return (
+                f"The fix's commit adds or changes a symbolic link ({_listed(links)}), which a fix never "
+                "does, so the commit was undone and nothing was pushed."
+            )
+        listing = self._protected_listing(path for _old, _new, path in changes)
+        if listing is not None:
+            return (
+                "The fix's commit touches protected paths, so the commit was undone and nothing was "
+                f"pushed: {listing}." + _PROTECTED_ADVICE
+            )
+        files, lines = self.ws.diff_stats(self.base_commit, target=commit)
+        limits = self.cfg.limits
+        if files > limits.max_diff_files or lines > limits.max_diff_lines:
+            return (
+                f"The fix's commit exceeds the diff limits ({files} files, {lines} lines; limits "
+                f"{limits.max_diff_files} files, {limits.max_diff_lines} lines), so the commit was undone "
+                "and nothing was pushed."
+            )
+        if self.cfg.github.skip_ci and not self._message_opens_with_skip_line(commit):
+            return (
+                "The fix's commit message lost the line that keeps CI from running before the review "
+                "(the worker's git configuration changed the message), so the commit was undone and "
+                "nothing was pushed."
+            )
+        return None
+
+    def _message_opens_with_skip_line(self, commit: str) -> bool:
+        """True when the stored message of ``commit`` is the title, a blank line, :data:`SKIP_CI_LINE`."""
+        assert self.ws is not None
+        raw = self.ws.git("cat-file", "commit", commit).stdout
+        lines = raw.partition("\n\n")[2].split("\n")
+        return lines[:3] == [self._title(), "", SKIP_CI_LINE]
+
+    def _refuse_unsafe_commit(self, commit: str) -> None:
+        """Check the fix's commit itself before anything is pushed (third line of defence).
+
+        The checks before the commit look at the clone; this one looks at what is pushed, so it
+        also catches a file written between those checks and ``git add`` (a process that a test
+        run left behind). It reads the commit's objects as they are stored, which are what the
+        push sends: the worker's git ignores replace refs, graft files and the commit-graph
+        (:mod:`dag_healer.repo.git`). The commit's only parent must be the base commit; it may
+        add or change no symbolic link and no gitlink (a submodule, or a repository left inside
+        the clone), touch no protected path, exceed no diff limit, and, while ``github.skip_ci``
+        is on, its stored message must open with :data:`SKIP_CI_LINE` after the title. Otherwise
+        the branch is reset to the base commit (the change stays in the index and the working
+        tree).
+
+        Raises:
+            RepairAborted: the commit must not be pushed.
+        """
+        assert self.ws is not None and self.base_commit is not None
+        problem = self._commit_problem(commit)
+        if problem is None:
+            return
+        self.ws.git("reset", "--quiet", "--soft", self.base_commit)
+        raise RepairAborted(problem)
+
+    def _github_setup(self, repo: str, token: str) -> list[SetupFinding]:
+        """Run the read-only checks of the GitHub setup; their findings never block the pull request.
+
+        The token, the repository, the base branch's rules and the workflows of the clone are
+        checked (:func:`dag_healer.pr.github_checks.check_github_setup`); errors come first.
+        Every finding is logged as a warning.
+        """
+        assert self.ws is not None
+        try:
+            checks = check_github_setup(
+                repo=repo,
+                base=self.cfg.github.pr_base,
+                token=token,
+                skip_ci=self.cfg.github.skip_ci,
+                workflows_root=self.ws.path,
+                branch=self.result.branch,
+            )
+            findings = setup_findings(checks)
+        except Exception as exc:  # noqa: BLE001 - the checks never raise; if they do, one warning
+            findings = [setup_failure(exc)]
+        for finding in findings:
+            logger.warning(
+                "incident %s: GitHub setup (%s): %s", self.incident_id, finding.level, finding.text
+            )
+        return findings
+
     def publish(self) -> None:
-        """Commit, then open a GitHub PR or fall back to a local branch + PR.md / fix.patch."""
+        """Check and commit the change, then open a GitHub PR or fall back to a local branch + PR.md.
+
+        What is pushed is the commit :meth:`_refuse_unsafe_commit` checked (its sha, not the
+        branch's tip at push time), and the description and ``fix.patch`` show its diff.
+        """
         assert self.ws is not None and self.result.branch is not None
+        if self.base_commit is None:
+            self.base_commit = self.ws.head_sha()
         self._discard_unexpected_changes(self.kept_paths)
         files, lines = self.ws.diff_stats()
         limits = self.cfg.limits
@@ -1413,28 +1679,32 @@ class _Repair:
                 f"The final change exceeds the diff limits ({files} files, {lines} lines; limits "
                 f"{limits.max_diff_files} files, {limits.max_diff_lines} lines)."
             )
-        diff = self.ws.diff()
-        self.result.diff = diff
+        self._refuse_protected_changes()
         sha = self.ws.commit_all(self._commit_message(), author_name=AUTHOR_NAME, author_email=AUTHOR_EMAIL)
+        self.result.diff = diff = self.ws.diff(self.base_commit, target=sha)  # shown even when refused
+        self._refuse_unsafe_commit(sha)
         logger.info("incident %s: committed fix %s on %s", self.incident_id, sha[:12], self.result.branch)
 
         branch = self.result.branch
-        token = self.github_token or self.cfg.github.token
+        token = (self.github_token or self.cfg.github.token or "").strip() or None  # never a line break
         origin = origin_url(self.cfg.repo_root)
         repo_name = self.cfg.github.repo or (parse_github_repo(origin) if origin else None)
+        pushed = False
         if token and repo_name:
             remote = None
             if origin and parse_github_repo(origin) == repo_name:
                 remote = github_https_url(origin)
             remote = remote or f"https://github.com/{repo_name}.git"
+            self.setup_findings = self._github_setup(repo_name, token)
             try:
-                self.ws.push(remote, branch, token=token)
+                self.ws.push(remote, branch, token=token, commit=sha)
+                pushed = True
                 self.result.pr_url = create_pull_request(
                     repo=repo_name,
                     head=branch,
                     base=self.cfg.github.pr_base,
                     title=self._title(),
-                    body=self._render_pr(diff),
+                    body=self._render_pr(diff, branch_on_github=True),
                     token=token,
                 )
                 logger.info("incident %s: opened %s", self.incident_id, self.result.pr_url)
@@ -1449,8 +1719,10 @@ class _Repair:
             missing = "github.repo (or a GitHub origin remote)" if token else "a GitHub token"
             self.notes.append(f"No pull request was opened because {missing} is missing.")
 
+        in_local_repository = False
         try:
-            self.ws.push_to_path(self.cfg.repo_root, branch)
+            self.ws.push_to_path(self.cfg.repo_root, branch, commit=sha)
+            in_local_repository = True
             self.notes.append(f"Branch `{branch}` was pushed to the local repository.")
         except GitError as exc:
             self.notes.append(
@@ -1460,7 +1732,12 @@ class _Repair:
                 "incident %s: push to the source repository failed: %s", self.incident_id, mask_text(exc)
             )
         md_path, patch_path = write_pr_artifacts(
-            self.cfg.healer_home, self.incident_id, pr_md=self._render_pr(diff), patch=diff
+            self.cfg.healer_home,
+            self.incident_id,
+            pr_md=self._render_pr(
+                diff, branch_on_github=pushed, branch_in_local_repository=in_local_repository
+            ),
+            patch=diff,
         )
         self.result.pr_md_path = str(md_path)
         self.result.patch_path = str(patch_path)
@@ -1537,7 +1814,8 @@ def run_repair(
         ctx: The gathered :class:`~dag_healer.agent.context.IncidentContext` (masked).
         provider: The LLM provider that runs the tool sessions.
         workspace_root: Parent folder of the clone (default ``<healer_home>/work``).
-        github_token: Token for the push and the pull request (default ``cfg.github.token``).
+        github_token: Token for the read-only GitHub setup checks, the push and the pull
+            request (default ``cfg.github.token``).
         extra_env: The orchestrator's pytest sandbox overrides (the adapter's
             ``sandbox_env()``; ``None`` removes a variable), applied to every pytest run.
         sandbox: The test sandbox of every pytest run (default: the one ``cfg.repo.sandbox``
@@ -1565,6 +1843,7 @@ __all__ = [
     "MAX_TEST_ATTEMPTS",
     "REPAIRED",
     "REPAIR_FAILED",
+    "SKIP_CI_LINE",
     "RepairAborted",
     "RepairResult",
     "RepairTools",

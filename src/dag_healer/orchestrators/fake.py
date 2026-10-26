@@ -646,7 +646,8 @@ class FakeLinks:
 class FakeOptions(BaseModel):
     """``orchestrator.options`` of the ``fake`` type."""
 
-    model_config = ConfigDict(extra="forbid")
+    # the text of a ValidationError never shows the rejected value (token is a secret option)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     world: str | None = None
     base_url: str = DEFAULT_BASE_URL

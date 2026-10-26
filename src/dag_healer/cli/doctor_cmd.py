@@ -7,6 +7,15 @@ repository, contracts, store, UI bundle, LLM, test sandbox) come first, then the
 ``monitor.trigger``) and the adapter's own checks (``adapter.doctor_checks()``: for Airflow the
 API, the poller's login and the plugin entry point), then SMTP, secrets, ingest and GitHub.
 
+With a GitHub token and a repository (``github.repo`` or a GitHub ``origin`` remote), the
+read-only GitHub setup checks of :mod:`dag_healer.pr.github_checks` follow, one line per
+finding: ``github token``, ``github repository``, ``github base branch`` and ``github
+workflows`` (the ``.github/workflows`` files of ``repo.path``). An error there (a base branch
+that does not require a reviewed pull request or allows force pushes or deletion, a workflow
+that can run the healer branch's code with the repository's secrets) makes doctor exit 1; what
+could not be checked is a warning, and checks that fail unexpectedly are one ``github setup``
+warning. Without a token or a repository nothing is called.
+
 For the container backend the ``sandbox`` check starts one container of the configured image
 (no repository code in it) to prove that it runs as a non-root user, without network, with
 pytest importable. ``doctor`` and ``check`` warn about the ``process`` backend, which runs the
@@ -29,6 +38,8 @@ from dag_healer.cli._output import MASK, add_config_option, config_arg, error, l
 from dag_healer.cli.main import register_command
 
 if TYPE_CHECKING:
+    import httpx
+
     from dag_healer.config import HealerConfig
     from dag_healer.core.ports import OrchestratorAdapter
 
@@ -305,15 +316,85 @@ def check_ingest(cfg: HealerConfig) -> CheckResult:
     )
 
 
+def _github_repository(cfg: HealerConfig) -> str | None:
+    """``github.repo``, else the repository of a GitHub ``origin`` remote (as a repair finds it)."""
+    if cfg.github.repo:
+        return cfg.github.repo
+    from dag_healer.repo.git import origin_url, parse_github_repo
+
+    origin = origin_url(cfg.repo_root)
+    return parse_github_repo(origin) if origin else None
+
+
+def _github_transport() -> httpx.BaseTransport | None:
+    """The httpx transport of the GitHub setup checks (None: the network; tests replace it)."""
+    return None
+
+
 def check_github(cfg: HealerConfig) -> CheckResult:
-    """Pull requests need ``github.repo`` and a token; otherwise fixes become PR.md files."""
+    """Pull requests need a repository (``github.repo`` or a GitHub origin remote) and a token.
+
+    Otherwise fixes become PR.md files.
+    """
     if cfg.github.repo and cfg.github.token:
         return CheckResult("github", OK, f"pull requests on {cfg.github.repo} (token hidden)")
     if cfg.github.repo:
         return CheckResult(
             "github", WARN, f"github.repo is {cfg.github.repo} but no token is set; using PR.md"
         )
+    if cfg.github.token:
+        repo = _github_repository(cfg)
+        if repo:
+            return CheckResult(
+                "github", OK, f"pull requests on {repo} (from the origin remote; token hidden)"
+            )
     return CheckResult("github", OK, "no GitHub repo configured; fixes are written as PR.md + fix.patch")
+
+
+def github_setup_checks(cfg: HealerConfig) -> list[CheckResult]:
+    """The read-only GitHub setup checks, as ``github <check>`` lines (see the module docstring).
+
+    Nothing is called without a token and a repository: the ``github`` line already says that
+    fixes become PR.md files. A check without findings is one OK line with its summary; otherwise
+    each finding is a line of its own, an error or a warning, that says what to change.
+    """
+    token = cfg.github.token
+    repo = _github_repository(cfg) if token else None
+    if not token or not repo:
+        return []
+    from dag_healer.pr.github_checks import check_github_setup
+
+    checks = check_github_setup(
+        repo=repo,
+        base=cfg.github.pr_base,
+        token=token,
+        skip_ci=cfg.github.skip_ci,
+        workflows_root=cfg.repo_root,
+        transport=_github_transport(),
+        timeout=NETWORK_TIMEOUT_SECONDS,
+    )
+    results: list[CheckResult] = []
+    for check in checks:
+        name = f"github {check.name}"
+        if not check.findings:
+            results.append(CheckResult(name, OK, check.summary))
+        results += [CheckResult(name, finding.level, finding.text) for finding in check.findings]
+    return results
+
+
+def _github_setup(cfg: HealerConfig) -> list[CheckResult]:
+    """:func:`github_setup_checks`, guarded: a failure becomes one ``github setup`` warning.
+
+    The warning names the exception's type only: its message could quote the token (httpx
+    quotes an invalid header value in its own form, which a replace() of the token misses).
+    """
+    try:
+        return github_setup_checks(cfg)
+    except Exception as exc:  # a broken check must not hide the others
+        from dag_healer.pr.github_checks import setup_failure
+
+        finding = setup_failure(exc)
+        return [CheckResult(f"github {finding.check}", finding.level, finding.text)]
 
 
 # --------------------------------------------------------------------------- doctor
@@ -370,6 +451,7 @@ def run_checks(config_path: str | None = None) -> list[CheckResult]:
         _guarded("ingest", lambda: check_ingest(cfg)),
         _guarded("github", lambda: check_github(cfg)),
     ]
+    results += _github_setup(cfg)
     return results
 
 
@@ -449,7 +531,10 @@ def _configure(parser: argparse.ArgumentParser) -> None:
 
 register_command(
     "doctor",
-    help="Check configuration, store, UI bundle, test sandbox, Airflow API, SMTP and secrets.",
+    help=(
+        "Check configuration, store, UI bundle, test sandbox, Airflow API, SMTP, secrets and the "
+        "GitHub setup."
+    ),
     handler=_cmd_doctor,
     configure=_configure,
 )
@@ -480,5 +565,6 @@ __all__ = [
     "check_store",
     "effective_settings",
     "format_results",
+    "github_setup_checks",
     "run_checks",
 ]

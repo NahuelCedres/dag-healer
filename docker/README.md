@@ -122,7 +122,10 @@ Only `airflow-apiserver` and `healer-worker` also receive `HEALER_AIRFLOW_USERNA
 which has no business seeing those credentials. The scheduler only gets what the listener
 needs to post failure events: `HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The optional
 credentials are passed through from `docker/.env` or the shell and stay unset when they are
-not defined.
+not defined. For real pull requests, `GITHUB_TOKEN` is a fine-grained personal access token
+limited to the one repository in `GITHUB_REPO`: [docs/github/README.md](../docs/github/README.md)
+shows how to create it and protect the base branch, and `python scripts/tasks.py doctor` checks
+both.
 
 `healer-worker` additionally sets `HEALER_FAKE_LLM_DIR=/opt/airflow/repo/fixtures/fake_llm`,
 the git identity of its fix commits (`GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` `dag-healer`,

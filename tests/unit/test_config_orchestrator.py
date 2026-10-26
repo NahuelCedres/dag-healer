@@ -5,9 +5,10 @@
   repository, the demo ``healer.yaml``, the files other tests write, a file with every section
   set) give the ``dag-healer check`` YAML and the secret literals recorded with the phase-5
   ``config.py`` (``effective_settings.json``; re-record with ``HEALER_UPDATE_GOLDEN=1``).
-* The Airflow template is the phase-5 one plus a commented ``orchestrator:`` block and the
-  ``repo.sandbox`` block; the Step Functions template (section 9.14) is valid and shares the
-  common sections.
+* The Airflow template is the phase-5 one plus a commented ``orchestrator:`` block, the
+  ``repo.sandbox`` block and ``github.skip_ci`` (true, the default, so the effective settings
+  do not change); the Step Functions template (section 9.14) is valid and shares the common
+  sections.
 * ``orchestrator:``, ``serve:`` (auth backends, tokens as hashes only, RBAC rules), the
   ``monitor.dags``/``pipelines`` alias, the widened modes with ``MonitorConfig.wants`` and the
   secret options of the adapter (``SECRET_FIELDS`` extended at load time).
@@ -350,24 +351,35 @@ def _without_sandbox_block(text: str) -> str:
     return text[:start] + text[end:]
 
 
+def _without_skip_ci_block(text: str) -> str:
+    """The template without ``github.skip_ci``: its three comment lines and the setting."""
+    start = text.index("\n  # true: the fix's commit carries")
+    end = text.index("  skip_ci: true\n", start) + len("  skip_ci: true\n")
+    return text[: start + 1] + text[end:]
+
+
+def _phase5_view(text: str) -> str:
+    """The template without the blocks phase 5 did not have (the comment-only ones included)."""
+    return _without_orchestrator_block(_without_sandbox_block(_without_skip_ci_block(text)))
+
+
 def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> None:
     text = default_config_yaml()
     phase5 = (PHASE5 / "default_template.yaml").read_text(encoding="utf-8")
-    assert _without_orchestrator_block(_without_sandbox_block(text)) == phase5
+    assert _phase5_view(text) == phase5
     block = _orchestrator_block(text)
     assert all(line.startswith("#") for line in block)
     assert "# orchestrator:" in block
     raw = yaml.safe_load(text)
-    assert raw["repo"].pop("sandbox")["backend"] == "container"  # the block phase 5 did not have
+    assert raw["repo"].pop("sandbox")["backend"] == "container"  # the blocks phase 5 did not have
+    assert raw["github"].pop("skip_ci") is True
     assert raw == yaml.safe_load(phase5)
     assert default_config_yaml(orchestrator="airflow") == text
 
 
 def test_airflow_template_with_datasets_is_the_phase5_init_file_plus_the_block() -> None:
     text = default_config_yaml(repo_path=".", dags_dir="dags", tests_dir=None, datasets=EXAMPLE_DATASETS)
-    assert _without_orchestrator_block(_without_sandbox_block(text)) == (
-        PHASE5 / "init_example_repo.yaml"
-    ).read_text(encoding="utf-8")
+    assert _phase5_view(text) == (PHASE5 / "init_example_repo.yaml").read_text(encoding="utf-8")
 
 
 def test_commented_orchestrator_block_documents_the_defaults() -> None:

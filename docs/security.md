@@ -24,11 +24,18 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
   host's kernel, and the worker's access to the container engine is root-equivalent on a rootful
   engine's host (gap G1). The `process` backend, meant for development and tests, runs the code
   without any isolation.
+- By default, the repository's CI does not run the change until a person starts it after the
+  review: the fix's commit carries `[skip ci]` (4.5). Workflows that the marker does not stop
+  can still run it earlier (G2).
 - Masking reduces, but does not prevent, the flow of personal data and secrets to the model, the
   store, alerts and pull requests (G4, G5).
 - Deploy the worker as if it ran untrusted code, because it does: a dedicated host for the worker
   and its container engine, least-privilege credentials, restricted network egress and a GitHub
-  token that can reach only the one repository (section 6).
+  token that can reach only the one repository (section 6). `dag-healer doctor` and every pull
+  request report a token, base branch rules or workflows that fall short of that advice; GitHub
+  itself enforces only the token's scope and the repository's rules (G3). The pull request's
+  report comes after the workflows that the marker does not stop have run, so `doctor` must be
+  clean before the worker gets the token.
 
 ---
 
@@ -59,10 +66,13 @@ The path of one failure:
    - AMBIGUOUS: the incident waits for a person in the dag-healer views.
    - CODE: a repair. In a fresh clone, the model first writes one failing test, then a minimal
      fix, each in its own tool session. pytest runs both, in the test sandbox (4.3). The result
-     is committed on a `healer/...` branch. With a GitHub token and a repository (`github.repo`
-     or a GitHub `origin` remote), the branch is pushed and a pull request is opened. Otherwise,
-     or when the push or the pull request fails, the branch is pushed into the local repository,
-     and `PR.md` and `fix.patch` are written.
+     is checked against the protected paths (4.2) before and after it is committed on a
+     `healer/...` branch, by default with `[skip ci]` in the commit message (4.5). With a
+     GitHub token and a repository (`github.repo` or a GitHub `origin` remote), the worker
+     checks how the token and the repository are set up, pushes the branch and opens a pull
+     request that lists the problems it found. Otherwise, or when the push or the pull request
+     fails, the branch is pushed into the local repository, and `PR.md` and `fix.patch` are
+     written.
 5. **People act** from the UI: resolve an incident, retry the repair, retry the task or approve a
    contract. The API checks the user's Airflow permissions and queues a command in the store. The
    worker applies the command with its own credentials.
@@ -73,7 +83,7 @@ The path of one failure:
 
 | Asset | Where it lives | Impact if it leaks or is misused |
 |---|---|---|
-| GitHub token (`github.token`, usually `GITHUB_TOKEN`) | The worker's environment. git gets it through `GIT_ASKPASS`, the REST API through a header | Pushing to the DAG repository (any branch that the token's scope and the branch protection allow), opening pull requests, reading private code. A classic token with the `repo` scope reaches every repository the account can write to. |
+| GitHub token (`github.token`, usually `GITHUB_TOKEN`) | The worker's environment. git gets it through `GIT_ASKPASS`, the REST API through a header | Pushing to the DAG repository (any branch that the token's scope and the repository's rules allow), opening pull requests, reading private code. A classic token with the `repo` scope reaches every repository the account can write to. |
 | Anthropic API key (`ANTHROPIC_API_KEY`) | The worker's environment, read by the Anthropic SDK | Model usage billed to the owner's account. |
 | Airflow API credentials (`airflow.username`, `airflow.password`) | The worker's environment; exchanged for a JWT | Whatever the account's Airflow role allows. For an Admin: managing connections and variables, and clearing or triggering any run. |
 | Ingest token (`ingest.token`, `HEALER_INGEST_TOKEN`) | The api-server, and every task process that runs the listener | Posting failure hints (each one is confirmed through the Airflow API). |
@@ -100,7 +110,7 @@ follows from untrusted input.
 | Repository content (DAG files, modules, tests, committed data) | Repository committers | Sent to the model unmasked; imported and executed by pytest in the test sandbox |
 | Model output: the classification | The model, steered by the inputs above | Schema check, then the deterministic policy |
 | Model output: the diagnosis, evidence and fix summary, and the repair agent's final summary | Same | Masked, then the store, the UI, the alerts and the pull request |
-| Model output: tool calls, the generated test and the fix | Same | Path rules; written to the clone; **executed by pytest in the test sandbox** (4.3); committed, pushed and proposed as a pull request |
+| Model output: tool calls, the generated test and the fix | Same | Path rules, checked again before the commit (4.2); written to the clone; **executed by pytest in the test sandbox** (4.3); committed, pushed and proposed as a pull request |
 | People using the UI and the API | Authenticated Airflow users | Airflow permission checks, then commands in the store that the worker applies |
 | `healer.yaml` | Administrators, and every repository committer when the file is committed next to the DAGs | Trusted (section 7) |
 | The worker's environment, installed packages (the masking hook) | Administrators | Trusted (section 7) |
@@ -155,21 +165,87 @@ Enforced by the repair tools (`agent/repair.py`):
 - In the test phase, the agent may write only under the tests folder (only test files when the
   tests live at the repository root). In the fix phase, it may write only under
   `repo.allowed_paths` (default `src/` and `dags/`), and never in the tests folder, a test file or
-  `conftest.py`.
-- Never written in either phase: `healer.yaml`, `healer/**`, the contracts folder, `.github/**`,
-  `.git/**`, lockfiles, dependency manifests (`requirements*.txt`, `pyproject.toml`, `setup.py`,
-  `setup.cfg`, ...), `.env*`, `data/**`, `fixtures/**` and data files (`.csv`, `.parquet`,
-  `.jsonl`, `.pkl`, `.db`, archives, ...).
+  `conftest.py`. An entry of `repo.allowed_paths` that names a protected path (below), such as
+  `.github/`, `.circleci` or `data`, or the contracts folder of `contracts.dir` or a folder in it,
+  is a configuration error (an absolute `contracts.dir` is compared with an absolute `repo.path`
+  only; the repair protects the folder in every case). `.` stays allowed, and the protected
+  paths still apply inside it.
+- Never written in either phase, the protected paths (`repo/protected_paths.py`, one definition
+  for the tools, the final checks below and the configuration):
+  - dag-healer's own files: `healer.yaml` at any depth, `healer/**`, the contracts folder,
+    `data/**` and `fixtures/**`;
+  - CI definitions, at the root of the repository: `.github/**`, `.gitlab-ci.yml`,
+    `.gitlab-ci.yaml`, `.gitlab/**`, `.circleci/**`, `Jenkinsfile`, `azure-pipelines.yml`,
+    `azure-pipelines.yaml`, `.azure-pipelines/**`, `.buildkite/**`, `buildkite/**`,
+    `buildkite.yml`, `buildkite.yaml`, `buildkite.json`, `bitbucket-pipelines.yml`,
+    `.travis.yml`, `.drone.yml`, `.drone.yaml`, `.drone.star`, `.drone.jsonnet`,
+    `.woodpecker.yml`, `.woodpecker.yaml`, `.woodpecker/**`, `buildspec.yml`, `buildspec.yaml`,
+    `cloudbuild.yaml`, `cloudbuild.yml`, `cloudbuild.json`, `appveyor.yml`, `.appveyor.yml`,
+    `.cirrus.yml`, `.cirrus.star`, `.semaphore/**`, `.teamcity/**`, `.tekton/**`, `.build.yml`,
+    `.builds/**`, `.gitea/**` and `.forgejo/**`;
+  - git hook managers and the configuration their hooks run, at the root:
+    `.pre-commit-config.yaml`, `.pre-commit-config.yml`, `.husky/**`, `.huskyrc*`,
+    `.githooks/**`, `.git-hooks/**`, every file or folder whose name starts with `lefthook*` or
+    `.lefthook*` (lefthook reads `lefthook.yml`, `.lefthook-local.toml` and the like),
+    `.config/lefthook*`, `.overcommit.yml`, `.simple-git-hooks*` and `simple-git-hooks*`, and
+    the lint-staged and commitlint configuration that hooks often run: `.lintstagedrc*`,
+    `lint-staged.config.*`, `.commitlintrc*` and `commitlint.config.*`;
+  - development environments that run commands when someone opens the repository, at the
+    root: `.devcontainer/**`, `.devcontainer.json` (Codespaces runs their lifecycle commands
+    with the user's secrets), `.vscode/**` (tasks that run when the folder opens), `.gitpod.yml`
+    and `.gitpod.Dockerfile`;
+  - git internals and metadata, at any depth: `.git/**`, `.gitattributes`, `.gitmodules` and
+    `.lfsconfig`;
+  - `CODEOWNERS` at the root, in `docs/` and in `.github/`;
+  - lockfiles, dependency manifests (`requirements*.txt`, `pyproject.toml`, `setup.py`,
+    `setup.cfg`, `package.json`, ...), `.env*` and data files (`.csv`, `.parquet`, `.jsonl`,
+    `.pkl`, `.db`, archives, ...);
+  - what a protected path that is a symbolic link committed in the repository leads to inside
+    it, and the links on the way: with `.pre-commit-config.yaml -> src/ci/hooks.yaml`, the file
+    `src/ci/hooks.yaml`; with `.husky -> src/hooks`, everything under `src/hooks/`; a protected
+    link to the root protects everything. Hook managers and CI services that read a protected
+    file from a checkout read what its link leads to.
+
+  Paths are compared case-insensitively and without the trailing dots and spaces that Windows
+  drops from names, so `.GitHub/x` and `.github./x` are both `.github/x`, and `..` components
+  are resolved first (a path that leaves the repository is protected). Names are folded at least
+  as macOS and Windows fold them: `upper()` then `casefold()`, so `requirementſ.txt` (a long s)
+  is `requirements.txt` and `.gıthub` (a dotless i) is `.github`; folding more only protects
+  more. The write tools check both the path as written and the path that it reaches through a
+  symbolic link inside the clone, and read the links from the clone's `HEAD`. The tool
+  descriptions sent to the model name only the main protected paths; a refused write says why.
 - Never read or searched: `.git/**`, `.env*`, `healer.yaml`, `data/**`, `fixtures/**` and data
-  files. `read_file` checks these rules on the path as written, not on the target of a symbolic
-  link (G5).
+  files, compared as the protected paths are. `read_file` checks these rules on the path as
+  written, not on the target of a symbolic link (G5).
 - The work happens in a fresh clone of the committed history. The clone is deleted afterwards
   unless `debug` is on. Test runs work on a throw-away copy of the clone, never on the clone
   itself (4.3).
 - Files in the clone that the tools did not write are reverted before the size check and before
-  the commit. Files that git ignores and the clone's `.git` folder are not checked. This matters
-  under the `process` backend only, where the code that pytest runs can still reach the clone
-  (4.3).
+  the commit, both sides of a rename included: a tracked file moved to a path that the tools
+  also wrote comes back too, and a repository left inside the clone is removed. Files that git
+  ignores and the clone's `.git` folder are not checked. This matters under the `process`
+  backend only, where the code that pytest runs can still reach the clone (4.3).
+- **A final check before the commit.** After that revert and the diff limits, the worker lists
+  every path of the change (the index, the working tree and the untracked files, both sides of a
+  rename) and compares each one with the protected paths. It also checks that the clone's `HEAD`
+  is still the commit that the branch started from. If either check fails, the repair ends
+  `repair_failed` with the reason, and nothing is committed or pushed.
+- **A check of the commit itself.** Right after the commit, before anything is pushed, the
+  worker checks the commit, which is what it then pushes (by its sha, whatever the branch points
+  to by then): its only parent must be the commit that the branch started from; it may touch no
+  protected path (both sides of a rename), add or change no symbolic link and no gitlink (a
+  submodule, or a repository that `git add` found in the clone), and stay within the diff
+  limits; and while `github.skip_ci` is on, its stored message must open with the skip line
+  after the title (4.5). Otherwise the branch is reset to the commit that it started from, the
+  repair ends `repair_failed`, and nothing is pushed. This catches a file written between the
+  checks of the clone and the commit too. The check, the diff in the description and in
+  `fix.patch`, and the push read the commit's objects as they are stored: the worker's git
+  ignores replace refs, graft files and the commit-graph file (4.3), so none planted in the clone
+  can show the check another commit, other parents or another tree than the ones pushed. So the
+  protected paths hold for what is pushed, whatever wrote the change into the clone's files,
+  also with `repo.allowed_paths: ["."]` or a bug in the tools. They do not hold against code that
+  rewrites the clone's object files or its git configuration, which only the `process` backend
+  lets the code that pytest runs do (4.3).
 - The test must be collected and must fail before the fix. If a fix attempt changes the test,
   the test is restored and the attempt is rejected. The fix must make the test pass without
   adding failures to the existing suite.
@@ -182,12 +258,13 @@ Enforced by the repair tools (`agent/repair.py`):
     new run with fresh limits, and the classification is not counted against them.
 - Delivery: the worker pushes only `healer/...` branches, refuses to push to the branch it
   cloned, never force-pushes and never merges. A change reaches the base branch only when a person
-  merges the pull request.
+  merges the pull request (4.5).
 
 What remains: within these rules, the model chooses what the test and the fix contain. That code
-is executed (4.3), pushed to the repository where CI may run it (G2), and shown to a reviewer who
-may trust it. The path rules bind the model's file tools only. They do not bind the code that
-pytest runs: the test sandbox does (4.3).
+is executed (4.3), pushed to the repository, where CI runs it after a person has started it (or
+earlier, in the cases of G2), and shown to a reviewer who may trust it. The path rules bind the
+model's file tools and the commit only. They do not bind the code that pytest runs: the test
+sandbox does (4.3).
 
 ### 4.3 Running model-written code (the test sandbox)
 
@@ -230,6 +307,15 @@ Enforced for every backend (`repo/sandbox.py`, `repo/pytest_runner.py`, `repo/gi
   does nothing). So do the `upload-pack` and `receive-pack` that local clones and pushes
   start in the source repository. Hooks and fsmonitor commands planted in the clone or in the
   source repository never run.
+- **Objects as they are stored.** Every git command of the worker also runs with
+  `GIT_NO_REPLACE_OBJECTS=1` and `core.useReplaceRefs` set to `false` on its command line (before
+  git 2.42, a `core.useReplaceRefs` line in the clone's configuration overrode the variable),
+  with `GIT_GRAFT_FILE` naming a file that never exists (`/dev/null/grafts`: `/dev/null` is no
+  folder, so no file can be created there; on Windows, a file in that empty folder) and with
+  `core.commitGraph` set to `false`. A replace ref (`refs/replace/`), a graft file
+  (`.git/info/grafts`) or a commit-graph file can each make git show another commit, other
+  parents or another tree than the objects that `git push` sends; planted in the clone, none of
+  them changes what the worker checks, shows or pushes (4.2).
 - **Environment scrub.** The test process does not inherit:
   - the Anthropic, GitHub and SMTP credentials, and every `HEALER_*` and `DAG_HEALER_*` setting;
   - Airflow's metadata database, API authentication, secrets backend, Celery, SMTP and e-mail
@@ -329,10 +415,13 @@ What remains:
   user, with the worker's network access and file system (G1, G11):
   - it can read the worker's environment from `/proc/<parent pid>/environ` on Linux, including
     every credential that the scrub removed from its own environment;
-  - it can change the clone before the worker commits it, including the clone's git
-    configuration. Apart from hooks and fsmonitor, the worker's git still uses that
-    configuration, including the programs that it names, such as a filter driver or
-    `gpg.program`;
+  - it can change the clone before and after the worker commits it: its files, its git
+    configuration and its object files. The worker's git ignores the clone's hooks, fsmonitor,
+    replace refs, graft file and commit-graph, but still uses the rest of its configuration,
+    including the programs that it names, such as a filter driver or `gpg.program`, and the
+    rewriting of the URL that a push goes to (`url.<base>.insteadOf`). It also reads the object
+    files as they are, so code that rewrites them can make the check of the commit (4.2) read
+    other content than the one that the push delivers;
   - it can plant git hooks in the source repository. dag-healer's own git commands ignore them,
     but a person or another tool that runs git there later runs them;
   - it can write wherever the worker can, including the repository working tree, `healer.yaml`
@@ -368,9 +457,16 @@ Enforced:
   tell the model not to try to recover masked values.
 - **Pull request body and PR.md** (`pr/prmd.py`):
   - the error summary, the diagnosis, the pytest output and the notes are masked again;
+  - the problems of the GitHub setup checks (4.5) are plain text: each one is put on one line
+    and its Markdown characters are escaped, what is wrong cut at 400 characters and what to
+    change kept whole (dag-healer's own text; only past 600 characters would it be cut), and
+    at most 20 are listed;
   - code goes into fences longer than any run of backticks it contains, so it cannot break out of
     its block;
-  - long sections are truncated; the full change stays on the branch and in `fix.patch`;
+  - long sections are truncated, and the whole description stays below 65,000 characters
+    (GitHub refuses a body over 65,536): the diff, the test, the pytest output, the diagnosis,
+    the notes and the error shrink further, in that order, while "Before you merge" and "CI"
+    always stay complete; the full change stays on the branch and in `fix.patch`;
   - `PR.md` and `fix.patch` are written under `<healer_home>/prs/<incident_id>/` (the incident id
     must be a safe file name);
   - the API serves `PR.md` only from that folder, as `text/markdown` with
@@ -379,11 +475,19 @@ Enforced:
   flagged as masked, and its cells are scrubbed again. HTML templates are autoescaped.
 - **The GitHub token** is sent only in the `Authorization` header of REST calls and to git
   through `GIT_ASKPASS`. It never appears on a command line or in a URL. It is replaced by `***`
-  in git output and in GitHub error messages.
+  in git output and in GitHub error messages, before a long one is cut. A REST call that fails
+  before GitHub answers is reported by the exception's type only, because the HTTP library can
+  quote the `Authorization` header in its message. `github.token` loses the whitespace around
+  it when the configuration is loaded (a secret file often ends with a line break), and must
+  then be printable ASCII, or the configuration is refused without echoing it. The setup checks
+  (4.5) name only its kind, told from its prefix (classic, fine-grained, OAuth, GitHub App
+  installation or GitHub App user), never the token or any part of it.
 - **Configuration.** The secret fields are `airflow.password`, `notify.email.password`,
   `github.token`, `ingest.token`, the adapter's secret options and a password inside `store.url`.
   They are meant to be `${ENV}` references. `dag-healer doctor` and `dag-healer check` warn about
-  literal values, and `check` prints the configuration with secrets masked.
+  literal values, and `check` prints the configuration with secrets masked. When `healer.yaml`
+  is not valid YAML, the error names the line, the column and the problem only: PyYAML's own
+  message quotes the line, which may hold a literal secret.
 - **The UI** renders model text as plain text, never as HTML.
 
 What remains: files named in a traceback are read without the deny rules and sent unmasked (G4).
@@ -400,27 +504,151 @@ Data that leaves the deployment:
 
 ### 4.5 GitHub token scope and the repository
 
+[`docs/github/README.md`](github/README.md) describes the matching setup on GitHub: the token,
+the rules of the base branch, how CI runs after review and what `dag-healer doctor` reports.
+
 Enforced:
 
-- The token is used for two things only:
+- The token is used for three things only:
   - `git push` of the `healer/...` branch, through a `GIT_ASKPASS` helper that reads the token
     from the environment of that one git process. Credential helpers are disabled for that push,
     so the token is never stored.
   - The GitHub REST endpoints that open or find a pull request. dag-healer never calls a merge
     endpoint.
+  - The read-only requests of the setup checks (below).
 - With a token, the branch is pushed to `https://github.com/<owner>/<name>.git`, built from
   `github.repo` or from a GitHub `origin` remote. Any user info in the URL is dropped.
 - The worker refuses to push to the branch it cloned and never force-pushes.
-- Without a token or a repository, nothing is pushed over the network. The branch is pushed into
-  the local repository, and `PR.md` and `fix.patch` are written.
+- **CI after review** (`agent/repair.py`, `pr/prmd.py`, `repo/git.py`). With
+  `github.skip_ci: true`, the default, the message of the fix's commit opens its first paragraph
+  after the title with
+  `[skip ci] CI runs after a person has reviewed this change (see the pull request).` It does so
+  whether the branch goes to GitHub or only into the local repository, which a person may push
+  later. GitHub then starts no workflow triggered by `push` or `pull_request` for that push, or
+  for the pull request while that commit is its head, and many other CI services skip the commit
+  too.
+  - The worker commits with `--cleanup=verbatim`, so `commit.cleanup` and `core.commentChar` in
+    its git configuration cannot drop the marker line as a comment, and the check of the commit
+    (4.2) refuses a stored message that does not open with it: nothing is pushed then.
+  - The pull request description and `PR.md` get a "CI" section. It says that CI has not run and
+    how to start it after the review: an empty commit made with `git commit-tree` on top of the
+    fetched branch and pushed with `git push --no-verify`. The branch is never checked out, so
+    none of the reviewer's git hooks runs with its code in the working tree (`commit-tree` runs
+    no hook, `--no-verify` skips pre-push). It also says that a base branch that requires the CI
+    checks blocks the merge until they pass, and that the marker must stay out of the commit
+    that reaches the base branch. When the branch is only in the local repository, the section
+    says to push it with `--no-verify` and to run `dag-healer doctor` with a token first, because
+    the push and the pull request start the workflows that the marker does not stop. When it
+    could not be pushed even there, and only `fix.patch` holds the change, the section says to
+    commit the patch with `git commit --no-verify` and a message whose body opens with the
+    marker, before the push.
+  - dag-healer's own text in the description, the problems found by the setup checks included,
+    never spells a skip marker literally. The parts that come from the model or the repository
+    (the diagnosis, the notes, the test, the diff and the pytest output) are not filtered.
+  - The values from the failure in the commit message and in the pull request title (the
+    exception type, the symbol, the ids and the test path) are put on one line, with square
+    brackets turned into parentheses, so they can neither add a marker nor push it out of the
+    paragraph after the title.
+  - With `github.skip_ci: false`, the message carries no marker and the description has no CI
+    section.
+- **Setup checks** (`pr/github_checks.py`). With a token and a repository, after the commit and
+  before the push, the worker checks how the token, the repository and its workflows are set up.
+  It sends only `GET` requests, only to `api.github.com`, and never follows a redirect or a link
+  from an answer: `/repos/{owner}/{repo}`, `/installation/repositories` (GitHub App tokens
+  only), `/repos/{owner}/{repo}/rules/branches/{branch}` and the rulesets behind those rules,
+  and, when the rules leave a requirement unmet, the branch and its classic protection. Each
+  answer is read uncompressed and up to 2 MB, within twice the request timeout (5 seconds per
+  operation, 3 under `doctor`); all the requests of one run share six times that timeout. It
+  reads the workflow files of the clone (`.github/workflows/*.yml` and `*.yaml`) from disk,
+  with PyYAML's pure-Python safe loader. YAML aliases and merge keys can make a small file
+  huge, so each file has a budget: its loading may build 100,000 mapping entries in all, the
+  ones that merge keys copy included, and its analysis may read 100,000 nodes, list and
+  mapping items and string characters in all. A string or a container that several jobs share
+  counts once for each of them, and a job condition once for each event that it is read for.
+  The loading and the analysis each also stop after 2 seconds, and numbers and dates are loaded
+  as the text they are written in: the scan never reads them, and PyYAML builds some of them in
+  quadratic time (a YAML 1.1 base-60 integer such as `1:9:9:9`, integer keys whose hashes
+  collide). The merge keys are merged in linear time too. In practice, the analysis of a
+  workflow file of more than about 100 KB exceeds the budget too. It follows no symbolic link,
+  and it reports symbolic links, files over 1 MB, the files beyond 2 MB of workflow files in all
+  or beyond the first 200, files that cannot be read, that are not UTF-8, not valid YAML or too
+  large or complex to load or analyse as not checked, never as OK. `dag-healer doctor` runs the
+  same checks, on the workflow files of `repo.path`.
+  - Errors: a base branch that does not require a pull request with at least one approving
+    review, that allows force pushes, or that can be deleted; a `pull_request_target` workflow
+    that refers to the pull request's head, whatever its activity `types` (`review_requested`
+    fires when GitHub requests the code owners' review as the pull request opens, a bot can add a
+    label before anyone has reviewed the pull request, and closing it is how a reviewer rejects
+    it); a `create` workflow that uses secrets or write permissions.
+  - Warnings: a classic personal access token or an OAuth token (their scope covers every
+    repository the account can write to), a GitHub App user token (it acts for its user on every
+    repository that the App is installed on and the user can access), or a token whose kind its
+    prefix does not tell; the `workflow` scope, or admin or delete scopes; scopes that could not
+    be read, for classic, OAuth and unknown tokens; a GitHub App installation that reaches more
+    than one repository; an admin account behind the token; with `skip_ci`, a base branch that
+    requires no status checks; a ruleset that the token's account can bypass, rulesets whose
+    answer was lost, unreadable or an error other than a refusal, and the rulesets beyond the
+    first 10 that hold a required rule, which are not read; classic branch protection that the
+    token cannot read; a `create` workflow; with `skip_ci: false`, a `push` or `pull_request`
+    workflow that runs for healer branches and uses secrets or write permissions; workflow files
+    that were not checked.
+  - What the workflow scan recognises: a head reference is `github.event.pull_request.head`
+    (and anything under it), `github.head_ref`, `GITHUB_HEAD_REF`,
+    `github.event.pull_request.merge_commit_sha`, a `refs/pull/` ref, `pull/<number>/head` or
+    `pull/<number>/merge`, or `gh pr checkout`; a workflow uses secrets or write permissions when
+    an expression names a secret other than `secrets.GITHUB_TOKEN`, a job passes
+    `secrets: inherit`, or the workflow or a job sets `permissions: write-all` or a permission to
+    `write` (`id-token: write` included, which gives OIDC tokens for cloud credentials). A job
+    that calls a reusable workflow of the same folder counts what that workflow does. A job
+    condition skips a job only in the exact forms that
+    [`docs/github/README.md`](github/README.md) shows, as the whole condition or one of its
+    top-level `&&` conditions.
+  - A check that cannot run (a network error, a timeout, an answer that comes too slowly, a 403
+    or 404 answer, an answer it does not understand or that is too large) is one warning that
+    says what was not checked, never an OK; so are the scopes that an answer does not list and
+    the rulesets whose answer was lost, unreadable or an error other than a refusal (a server
+    error, a rate limit, whether GitHub answers 429 or 403, a redirect). A check that fails
+    unexpectedly is one warning of its own, and the other checks, the local workflow scan
+    included, still run; when the checks cannot start at all, one `setup` warning takes their
+    place (`github setup` under `doctor`), named by the exception's type only. Only a ruleset
+    that GitHub refuses to show (a 403 or 404 answer, unless it is the rate limit's: an
+    organization ruleset, for example), or whose answer does not say whether the token's account
+    can bypass it, adds nothing.
+  - The findings never block: the branch is pushed and the pull request opened as before. The
+    description lists them first, right after its opening note, under "Before you merge",
+    errors first, each with what to change. `doctor` prints one line per finding and exits 1 on
+    an error.
+- Without a token or a repository, nothing is pushed over the network and the setup checks send
+  no request. The branch is pushed into the local repository, and `PR.md` and `fix.patch` are
+  written, without a "Before you merge" section.
 
 What remains:
 
-- dag-healer enforces these restrictions in its own code. GitHub enforces only the token's scope
-  and the repository's rules. A leaked token (G1) can do everything its scope allows (G3).
-- The `healer/...` branch is pushed to the repository itself, not to a fork. Workflows triggered
-  by `push` or `pull_request` on that branch run the model-written code in CI, with the
-  repository's secrets, before review (G2).
+- GitHub enforces only the token's scope and the repository's rules (G3). The setup checks
+  report a classic or OAuth token, a GitHub App user token, a GitHub App installation that
+  reaches more than the one repository, an admin account and a base branch that a change can
+  reach without review, but they cannot change any of them, and the pull request is opened
+  anyway. For a fine-grained token they check the kind only: GitHub does not tell which
+  repositories it reaches or which permissions it holds (Workflows, Administration: write), so
+  its OK line says nothing about them. A leaked token (G1) can do everything its scope allows.
+- **The report comes after the fact.** The `create` workflows start when the branch is pushed
+  and the `pull_request_target` ones when the pull request opens, before anyone reads its
+  "Before you merge" section. `dag-healer doctor` is the only warning ahead of time: make its
+  `github ...` lines clean before the worker gets the token.
+- The marker stops only `push` and `pull_request` workflows. `pull_request_target` and `create`
+  workflows, and those of other events, still run. The checks read only the workflow files of
+  `.github/workflows/`, not the reusable workflows of other repositories, the actions that the
+  workflows use or the scripts that they run, and recognise only the head references, the
+  credentials and the job conditions listed above (G2).
+- With `github.skip_ci: false`, CI runs the change with the repository's secrets before review.
+  So does a reviewer who starts CI without reading the change (G2).
+- By default, a squash merge copies the commit messages, the marker included, into the commit
+  that reaches the base branch. The base branch's CI then skips that commit, unless the person
+  who merges deletes the marker from the message. A merge message that copies the pull request
+  description can also carry a marker that the model wrote into the diagnosis, the notes, the
+  test or the diff.
+- The checks are a snapshot taken before the push. A rule, a workflow or a token that changes
+  later shows up only in the next pull request or the next `doctor` run.
 
 ### 4.6 Access to the UI and the API
 
@@ -485,9 +713,9 @@ easily untrusted input reaches them:
 
 | ID | Severity | Gap |
 |---|---|---|
-| G2 | High | Healer branches run in the repository's CI before review |
-| G3 | High | Only the token's scope limits what the GitHub token can do |
+| G3 | High | Only the token's scope and the repository's rules limit what the GitHub token can do |
 | G1 | Medium | Model-written code runs in containers that share the host kernel |
+| G2 | Medium | Some CI workflows can still run healer branches before review |
 | G4 | Medium | Files named in a traceback are read and sent as they are |
 | G5 | Medium | Masking is pattern-based, and code is never masked |
 | G6 | Medium | The worker trusts every command in the store |
@@ -521,10 +749,11 @@ Under the `process` backend, none of this isolation applies, and G1 is Critical.
 the worker's OS user, with the worker's network access (the Airflow API and metadata database,
 internal services, the internet and cloud metadata endpoints). On Linux, it can read the worker's
 environment, including every credential that the scrub removed, from
-`/proc/<parent pid>/environ`. It can change the clone and its git configuration before the worker
-commits, and write wherever the worker can: the repository working tree (in the development
-stack, the folder that Airflow loads DAGs from), `healer.yaml`, `HEALER_HOME` (the SQLite store,
-the PR artifacts) and the data files that the repair tools refuse to read.
+`/proc/<parent pid>/environ`. It can change the clone, its git configuration and its object files
+before and after the worker commits (4.3), and write wherever the worker can: the repository
+working tree (in the development stack, the folder that Airflow loads DAGs from), `healer.yaml`,
+`HEALER_HOME` (the SQLite store, the PR artifacts) and the data files that the repair tools refuse
+to read.
 
 - Until fixed: keep the container backend everywhere but in development and tests, and follow
   section 6: a host or VM dedicated to the worker and its engine, preferably a rootless engine, a
@@ -533,29 +762,73 @@ the PR artifacts) and the data files that the repair tools refuse to read.
   Kata Containers, or sandbox backends that run each test run in its own VM or task (ECS/Fargate
   `RunTask`, a Kubernetes Job) behind the same sandbox interface.
 
-**G2 (High): healer branches run in the repository's CI before review.** The `healer/...` branch
-is pushed to the repository itself, not to a fork, and the pull request is opened from it. On
-GitHub, workflows triggered by `push` or `pull_request` for a branch of the same repository run
-with the repository's secrets. Any such workflow runs the model-written test and fix before a
-person has looked at them. dag-healer does not see or change the target repository's CI.
+**G2 (Medium): some CI workflows can still run healer branches before review.** The
+`healer/...` branch is pushed to the repository itself, not to a fork, and the pull request is
+opened from it. On GitHub, the workflows that run for a branch of the same repository get the
+repository's secrets. By default (`github.skip_ci: true`), the fix's commit carries
+`[skip ci]`, so GitHub starts no workflow triggered by `push` or `pull_request` for it: those run
+only once a person starts CI after the review (4.5). What remains:
 
-- Until fixed: exclude `healer/**` from workflows that use secrets (`branches-ignore`), keep
-  deployment secrets in environments that require a reviewer, or run without a GitHub token
+- **Workflows that the marker does not stop.** A `pull_request_target` workflow runs with the
+  repository's secrets whatever the commit message says. If it checks out or runs the pull
+  request's head, it runs the model-written code with them. A `create` workflow runs when the
+  branch is pushed, with the branch's code checked out by default. `dag-healer doctor` and the
+  pull request report both (4.5): an error for a `pull_request_target` workflow that refers to
+  the head, whatever its activity types, and for a `create` workflow that uses secrets or write
+  permissions, OIDC included, a warning for any other `create` workflow. The pull request's
+  report comes after those workflows have run, so only `doctor` warns ahead of time. The scan
+  reads only the files in `.github/workflows/` (following the reusable workflows of that folder
+  that a job calls), not the reusable workflows of other repositories, the actions or the
+  scripts that the workflows run, and it recognises only the head references, the credentials
+  and the job conditions that 4.5 and [`docs/github/README.md`](github/README.md) list: a
+  workflow that reaches the head another way is not reported, and one that skips healer
+  branches with another condition is reported anyway. Workflows triggered by `workflow_run`,
+  `pull_request_review`, `pull_request_review_comment`, `issue_comment`, `workflow_dispatch`,
+  `merge_group` or `schedule` ignore the marker too, and are not checked.
+- **`github.skip_ci: false`.** CI runs as soon as the branch is pushed. `doctor` and the pull
+  request warn about every `push` or `pull_request` workflow that runs for healer branches and
+  uses secrets or write permissions (the default permissions of `GITHUB_TOKEN`, set in the
+  repository's settings, are not read).
+- **The reviewer.** Starting CI takes one empty commit. A reviewer who pushes it without reading
+  the change runs the change with the repository's secrets. The commands that the pull request
+  shows never check the branch out, so the reviewer's own git hooks do not run its code; a
+  reviewer who checks it out anyway runs the post-checkout hook with it.
+- Until fixed: keep `github.skip_ci: true`, and start CI only after the review. Leave healer
+  branches out of `pull_request_target` and `create` workflows with a job condition:
+  `if: ${{ !startsWith(github.head_ref, 'healer/') }}` for pull request events, and
+  `if: ${{ !startsWith(github.ref, 'refs/heads/healer/') }}` for `create` and `push`. Under
+  `push`, `branches-ignore: ['healer/**']` leaves the branch out too. Under `pull_request` and
+  `pull_request_target`, on the other hand, `branches` and `branches-ignore` filter the base
+  branch, the one that the pull request targets, so they do not leave out a healer pull request.
+  Keep deployment secrets in environments that require a reviewer. Or run without a GitHub token
   (PR.md mode).
-- Possible fix: an option to push to a fork.
+- Possible fix: an option to push to a fork. The `pull_request` workflows of a pull request from
+  a fork get no secrets (`pull_request_target` workflows still do).
 
-**G3 (High): only the token's scope limits what the GitHub token can do.** The worker's code
-pushes only `healer/...` branches and only opens pull requests. GitHub itself enforces only the
-token's scope and the repository's rules, and the token sits in the worker's environment, which
-code that escapes the test sandbox can reach (G1). A token with write access to the repository
-contents can push to any unprotected branch, the base branch included. The development
-`docker/.env.example` asks for a classic token with the `repo` scope, which covers every
-repository the account can write to.
+**G3 (High): only the token's scope and the repository's rules limit what the GitHub token can
+do.** The worker's code pushes only `healer/...` branches and only opens pull requests. GitHub
+itself enforces only the token's scope and the repository's rules, and the token sits in the
+worker's environment, which code that escapes the test sandbox can reach (G1). A token with
+write access to the repository contents can push to any branch that no rule protects, the base
+branch included. A classic token with the `repo` scope covers every repository its account can
+write to. dag-healer cannot enforce the scope or the rules, so it reports them (4.5):
+`dag-healer doctor` and every pull request warn about a classic or OAuth token, a GitHub App
+user token, the `workflow` scope, admin or delete scopes, a GitHub App installation that
+reaches more than one repository and an admin account behind the token. They report as errors
+a base branch that does not require a pull request with an approving review, or that allows
+force pushes or deletion. These reports never stop the pull request. For a fine-grained token,
+GitHub tells neither which repositories it reaches nor which permissions it holds, so
+`doctor`'s OK line for it checks its kind only.
 
-- Until fixed: use a fine-grained personal access token or a GitHub App installation token,
-  limited to the one repository, with "Contents: read and write" and "Pull requests: read and
-  write". Protect the base branch with a ruleset or branch protection: require a pull request with
-  an approving review, and block force pushes and deletion.
+- Until fixed: use a fine-grained personal access token limited to the one repository, with
+  "Contents: read and write", "Pull requests: read and write" and no other permission than
+  "Metadata: read", which GitHub adds by itself (in particular no "Workflows" and no
+  "Administration"), or a GitHub App installed on that repository only, for an account with at
+  most the Write role. Protect the base branch with the ruleset of
+  [`docs/github/base-branch-ruleset.json`](github/base-branch-ruleset.json) (a pull request with
+  an approving review, no force pushes, no deletion, no bypass) and add the CI's checks as
+  required status checks. [`docs/github/README.md`](github/README.md) describes each step, and
+  `dag-healer doctor` checks the result.
 
 **G4 (Medium): files named in a traceback are read and sent as they are.** To show the model the
 code around a failure, the worker reads every repository file that a traceback frame names and
@@ -737,11 +1010,26 @@ These recommendations close or reduce the gaps above until the code does.
    the Airflow metadata database, other internal services and the cloud metadata endpoints
    (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`, `metadata.google.internal`), unless the
    worker itself needs them (G1).
-4. **GitHub** (G2, G3):
-   - use a fine-grained token or a GitHub App, limited to the one repository, with "Contents"
-     and "Pull requests" set to read and write;
-   - protect the base branch;
-   - keep CI secrets away from workflows that run on `healer/**`;
+4. **GitHub** (G2, G3), as [`docs/github/README.md`](github/README.md) describes:
+   - use a fine-grained personal access token limited to the one repository, with "Contents"
+     and "Pull requests" set to read and write, "Metadata: read" (which GitHub adds by itself)
+     and no other permission: no "Workflows" and no "Administration". Or use a GitHub App
+     installed on that repository only. Create the token for an account of its own with at
+     most the Write role (a GitHub App acts as its own account): the pull requests are opened by
+     that account, and GitHub does not let the author of a pull request approve it;
+   - protect the base branch with
+     [`docs/github/base-branch-ruleset.json`](github/base-branch-ruleset.json), and add the CI's
+     checks as required status checks, so that nothing is merged before CI has run. GitHub
+     shows classic branch protection only to an admin of the repository or to a GitHub App with
+     "Administration: read", so the checks cannot read it with the token advised here: check it
+     by hand, or use the ruleset;
+   - keep `github.skip_ci: true`, and start CI on a healer branch only after you have read the
+     change;
+   - leave healer branches out of `pull_request_target` and `create` workflows with the job
+     conditions of G2, and keep deployment secrets in environments that require a reviewer;
+   - run `dag-healer doctor` before the worker gets the token, and after every change to the
+     token, the rules or the workflows: its `github ...` lines must be OK. The pull request's
+     own report comes after the `create` and `pull_request_target` workflows have run;
    - or run without a token, and apply `fix.patch` yourself.
 5. **Airflow** (G7): give the worker a dedicated account with the smallest role that works, never
    Admin.
@@ -771,7 +1059,8 @@ These recommendations close or reduce the gaps above until the code does.
     is not local.
 12. **Debug** (G16): keep `debug` and `HEALER_DEBUG` off in production.
 13. **Review** every healer pull request like an outside contribution, the test as well as the
-    fix. Watch for file, network, subprocess or environment access in either.
+    fix. Watch for file, network, subprocess or environment access in either. Read its "Before
+    you merge" section first, and start CI only once you have read the change.
 14. **The development stack** under `docker/` uses fixed, publicly known secrets and gives the
     worker the Airflow `admin` account. It also mounts the host's container engine socket into
     `healer-worker`, so that the worker can start the test sandbox, which makes that container
@@ -785,8 +1074,9 @@ These recommendations close or reduce the gaps above until the code does.
 - Administrators who control `healer.yaml`, the worker's environment, the installed packages
   (including a masking hook), the sandbox image and the deployment are trusted.
 - `dag-healer init` suggests committing `healer.yaml` next to the DAGs. Then every committer can
-  change dag-healer's settings, such as the masking rules, the allowed paths, and where pull
-  requests and alerts go. So can code that escapes the test sandbox (G1). The API rereads the file
+  change dag-healer's settings, such as the masking rules, the allowed paths, where pull
+  requests and alerts go, and whether CI runs on healer branches before review
+  (`github.skip_ci`). So can code that escapes the test sandbox (G1). The API rereads the file
   at most every 10 seconds.
 - Repository committers get the same trust as in the Airflow deployment itself: their code
   already runs in Airflow, and it also runs in the test sandbox during repairs.

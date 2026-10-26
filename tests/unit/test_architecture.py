@@ -14,6 +14,11 @@
   ``repo/git.py`` only. It runs the engine CLI through ``subprocess`` (no container SDK) and
   reads ``repo.sandbox`` through a protocol; ``repo/pytest_runner.py`` imports it, never the
   other way round, and ``config.py`` never imports it at module level.
+* The protected-path policy (``repo/protected_paths.py``) is core and the standard library
+  only, so ``config.py`` can validate ``repo.allowed_paths`` with it without a cycle; it does
+  so lazily. The read-only GitHub setup checks (``pr/github_checks.py``) are core and get
+  every setting from their callers: they never import the configuration, the agent, the
+  worker or the CLI, directly or through another module.
 * A text guard: no Airflow REST client call outside ``airflow/`` and ``cli/doctor_cmd.py``
   (``scripts/`` is not part of the package).
 
@@ -26,7 +31,9 @@ compat import nothing heavy) and ``test_package.py`` (the task-runner import gra
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -45,6 +52,7 @@ CORE_PACKAGES = ("agent", "worker", "store", "contracts", "alerts", "pr", "api")
 CORE_MODULES = (
     "repo/git.py",
     "repo/profile.py",
+    "repo/protected_paths.py",
     "repo/pytest_runner.py",
     "repo/sandbox.py",
     "masking.py",
@@ -82,6 +90,14 @@ SERVE_EXTRA_LAZILY: dict[str, str] = {
 SANDBOX_MODULE = "repo/sandbox.py"
 SANDBOX_MAY_IMPORT = frozenset({f"{PACKAGE}.repo.git"})
 SANDBOX_MAY_IMPORT_FOR_TYPE_CHECKING = frozenset({f"{PACKAGE}.config"})
+
+#: The protected-path policy: one definition for the write tools, the final check before the
+#: commit and ``repo.allowed_paths``. The standard library only, since ``config.py`` uses it.
+PROTECTED_PATHS_MODULE = "repo/protected_paths.py"
+#: The read-only GitHub setup checks, and what they never import: their callers (a repair and
+#: ``doctor``) hand them every setting.
+GITHUB_CHECKS_MODULE = "pr/github_checks.py"
+GITHUB_CHECKS_NEVER_IMPORT = (f"{PACKAGE}.config", f"{PACKAGE}.agent", f"{PACKAGE}.worker", f"{PACKAGE}.cli")
 
 #: Calls of the Airflow REST client (``dag_healer.airflow.client.AirflowClient``).
 AIRFLOW_CLIENT_CALL = re.compile(
@@ -423,6 +439,77 @@ def test_the_runner_builds_on_the_sandbox_and_the_configuration_imports_it_lazil
         if _within(item.module, f"{PACKAGE}.repo.sandbox") and not item.lazy and not item.type_checking
     ]
     assert eager == []
+
+
+# =========================================================================== protected paths, GitHub checks
+
+
+def _loaded_by(module: str) -> set[str]:
+    """The modules that ``import <module>`` adds in a fresh interpreter, indirect imports included."""
+    code = (
+        f"import json, sys; before = set(sys.modules); import {module}; "
+        "print(json.dumps(sorted(set(sys.modules) - before)))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    return set(json.loads(result.stdout))
+
+
+def test_the_protected_path_policy_imports_the_standard_library_only() -> None:
+    found = imports_of(PACKAGE_DIR / PROTECTED_PATHS_MODULE)
+    bad = [
+        f"line {item.line}: {item.module}"
+        for item in found
+        if item.module.split(".")[0] not in sys.stdlib_module_names
+    ]
+    assert bad == []
+    assert "fnmatch" in {item.module for item in found}  # the guard sees its imports
+
+
+def test_the_configuration_imports_the_protected_path_policy_lazily() -> None:
+    """Inside the ``repo.allowed_paths`` validator: at module level, every configuration load
+    would also load ``dag_healer.repo`` (the DAG scanner)."""
+    config = imports_of(PACKAGE_DIR / "config.py")
+    found = [item for item in config if _within(item.module, f"{PACKAGE}.repo")]
+    assert f"{PACKAGE}.repo.protected_paths" in {item.module for item in found}
+    eager = [f"line {item.line}: {item.module}" for item in found if not item.lazy and not item.type_checking]
+    assert eager == []
+
+
+def test_the_protected_path_policy_never_leads_back_to_the_configuration() -> None:
+    """No cycle: what the policy loads, through ``dag_healer.repo`` included, is the core and the
+    standard library."""
+    loaded = _loaded_by(f"{PACKAGE}.repo.protected_paths")
+    assert f"{PACKAGE}.repo.protected_paths" in loaded
+    assert f"{PACKAGE}.config" not in loaded
+    third_party = [
+        name
+        for name in loaded
+        if name.split(".")[0] not in sys.stdlib_module_names and not _within(name, PACKAGE)
+    ]
+    assert third_party == []
+
+
+def test_the_github_checks_never_import_the_configuration_the_agent_or_the_cli() -> None:
+    found = imports_of(PACKAGE_DIR / GITHUB_CHECKS_MODULE)
+    bad = [
+        f"line {item.line}: {item.module}"
+        for item in found
+        if forbidden_for_the_core(item.module)
+        or any(_within(item.module, name) for name in GITHUB_CHECKS_NEVER_IMPORT)
+    ]
+    assert bad == []
+    assert f"{PACKAGE}.pr.github" in {item.module for item in found}  # the guard sees its imports
+
+
+def test_the_github_checks_load_none_of_it_through_another_module() -> None:
+    loaded = _loaded_by(f"{PACKAGE}.pr.github_checks")
+    assert f"{PACKAGE}.pr.github" in loaded  # the guard sees the package's own modules
+    bad = sorted(
+        name
+        for name in loaded
+        if forbidden_for_the_core(name) or any(_within(name, other) for other in GITHUB_CHECKS_NEVER_IMPORT)
+    )
+    assert bad == []
 
 
 # =========================================================================== Airflow client calls

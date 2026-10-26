@@ -21,7 +21,15 @@ own default applies.
 the adapter (absent: Airflow, configured by the ``airflow:`` section as before),
 ``serve:`` configures the standalone host ``dag-healer serve`` and ``repo.sandbox``
 where a repair runs pytest. The three are left out of dumps while they hold their
-defaults, so ``dag-healer check`` prints an existing ``healer.yaml`` exactly as before.
+defaults, so ``dag-healer check`` prints an existing ``healer.yaml`` exactly as before;
+``github.skip_ci`` (default true) is left out the same way.
+
+``repo.allowed_paths`` cannot name a path that a fix never changes (the policy of
+:mod:`dag_healer.repo.protected_paths`), the contracts folder of ``contracts.dir`` included;
+``.`` stays allowed, and the policy still applies inside it. ``github.token`` loses the
+whitespace around it and must be printable ASCII. A rejected value is never part of an error:
+pydantic's ``ValidationError`` of every model hides it from its text (``hide_input_in_errors``),
+since it may be a secret, and :class:`ConfigError` names only where and why.
 """
 
 from __future__ import annotations
@@ -234,9 +242,14 @@ def _lookup_field(model: type[BaseModel], key: Any) -> FieldInfo | None:
 # Models
 # --------------------------------------------------------------------------- #
 class _Model(BaseModel):
-    """Base model: unknown keys are errors; unset ``${VAR}`` values fall back gracefully."""
+    """Base model: unknown keys are errors; unset ``${VAR}`` values fall back gracefully.
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    The text of a ``ValidationError`` never holds the rejected value (it may be a token or a
+    password): ``str()`` and ``repr()`` show where and why only. ``errors()`` still carries it
+    under ``"input"``, so nothing logs or shows that list as it is.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, hide_input_in_errors=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -404,6 +417,23 @@ class RepoConfig(_Model):
     def _allowed_list(cls, value: Any) -> Any:
         return _as_list(value)
 
+    @field_validator("allowed_paths")
+    @classmethod
+    def _not_protected(cls, value: list[str]) -> list[str]:
+        """No entry may name a path that a fix never changes (``.`` allows the rest)."""
+        from dag_healer.repo.protected_paths import allowed_path_reason
+
+        for entry in value:
+            if not str(entry).strip():
+                continue
+            reason = allowed_path_reason(str(entry))
+            if reason is not None:
+                raise ValueError(
+                    f"{entry!r} cannot be an allowed path ({reason}); a fix never changes it. "
+                    "'.' allows every path that is not protected"
+                )
+        return value
+
 
 class AirflowConfig(_Model):
     """How the worker reaches the Airflow REST API (v2)."""
@@ -544,11 +574,30 @@ class NotifyConfig(_Model):
 
 
 class GithubConfig(_Model):
-    """GitHub pull requests (without repo + token fixes are written as PR.md)."""
+    """GitHub pull requests (without repo + token fixes are written as PR.md).
+
+    ``skip_ci`` (default true) puts ``[skip ci]`` in the commit message of every fix, so the
+    repository's CI runs on the healer branch only after a person has reviewed the change;
+    false is meant for repositories whose CI on healer branches holds no secrets. Dumps leave
+    it out while it is true, so an existing ``healer.yaml`` dumps exactly as before.
+
+    ``token`` loses the whitespace around it (a secret read from a file often ends with a
+    line break), and must then be printable ASCII without spaces, as every GitHub token is:
+    a control character would end up quoted in an HTTP library's error message.
+    """
 
     repo: str | None = None
     pr_base: str = "main"
     token: str | None = None
+    skip_ci: bool = True
+
+    @model_serializer(mode="wrap")
+    def _leave_out_default_skip_ci(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Dump as usual, without ``skip_ci`` while it holds its default (an older dump stays the same)."""
+        data = handler(self)
+        if isinstance(data, dict) and "skip_ci" in data and _holds_default(self, "skip_ci"):
+            del data["skip_ci"]
+        return data
 
     @field_validator("repo")
     @classmethod
@@ -566,6 +615,21 @@ class GithubConfig(_Model):
         if not _GITHUB_REPO.match(repo):
             raise ValueError("expected 'owner/name'")
         return repo
+
+    @field_validator("token")
+    @classmethod
+    def _token_text(cls, value: str | None) -> str | None:
+        """Strip the whitespace around the token; refuse any other non-printable character."""
+        if value is None or not value.strip():
+            return None
+        token = value.strip()
+        if not all("!" <= char <= "~" for char in token):
+            # Never echo the value: the message ends up in logs and in doctor's output.
+            raise ValueError(
+                "the token holds a space, a control character or a non-ASCII character; a GitHub "
+                "token is printable ASCII only (check the variable or the file it comes from)"
+            )
+        return token
 
 
 class LlmConfig(_Model):
@@ -966,6 +1030,28 @@ class HealerConfig(_Model):
             raise ValueError(f"unsupported config version {value}; expected {SUPPORTED_VERSION}")
         return value
 
+    @model_validator(mode="after")
+    def _allowed_paths_leave_out_the_contracts(self) -> HealerConfig:
+        """``repo.allowed_paths`` cannot name the contracts folder (``contracts.dir``) or a folder in it.
+
+        An absolute ``contracts.dir`` is compared with an absolute ``repo.path`` only (a relative
+        one is resolved later); the repair protects the folder in every case.
+        """
+        from dag_healer.repo.protected_paths import allowed_path_reason, contracts_prefix
+
+        repo_path = Path(self.repo.path).expanduser()
+        prefix = contracts_prefix(self.contracts.dir, repo_path if repo_path.is_absolute() else None)
+        if prefix is None or prefix == ".":
+            return self
+        for entry in self.repo.allowed_paths:
+            if str(entry).strip() and allowed_path_reason(str(entry), contracts_dir=prefix) is not None:
+                raise ValueError(
+                    f"repo.allowed_paths: {entry!r} cannot be an allowed path (it is the contracts folder "
+                    f"of contracts.dir, {self.contracts.dir!r}, or inside it); a fix never changes it. "
+                    "'.' allows every path that is not protected"
+                )
+        return self
+
     @model_serializer(mode="wrap")
     def _leave_out_default_sections(self, handler: SerializerFunctionWrapHandler) -> Any:
         """Dump as usual, without ``orchestrator``/``serve`` while they hold their defaults.
@@ -1124,10 +1210,26 @@ def _orchestrator_secret_options(section: OrchestratorConfig) -> tuple[str, ...]
 # --------------------------------------------------------------------------- #
 # Loading
 # --------------------------------------------------------------------------- #
+#: Prefixes of credentials (GitHub and Anthropic) that a key of healer.yaml is never shown with.
+_CREDENTIAL_KEY_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sk-ant-")
+
+
+def _shown_key(part: Any) -> str:
+    """One part of an error location, safe to show.
+
+    A credential pasted where a key belongs (a known prefix, or longer than 40 characters)
+    is cut to its first four characters: an unknown key is named in the error otherwise.
+    """
+    text = str(part)
+    if len(text) > 40 or text.lower().startswith(_CREDENTIAL_KEY_PREFIXES):
+        return text[:4] + "..."
+    return text
+
+
 def _format_validation_error(exc: ValidationError, source: Path | None) -> str:
     lines = []
     for error in exc.errors():
-        location = ".".join(str(part) for part in error["loc"]) or "<root>"
+        location = ".".join(_shown_key(part) for part in error["loc"]) or "<root>"
         if error["type"] == "extra_forbidden":
             message = "unknown key (top-level keys starting with 'x-' are allowed for notes)"
         else:
@@ -1170,6 +1272,45 @@ def config_from_mapping(
     return config
 
 
+#: A quoted value in a PyYAML problem: a character, a token such as ``'<stream end>'``, or a name
+#: from the file (an alias, an anchor, a tag).
+_YAML_QUOTED = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
+
+
+def _yaml_quoted(match: re.Match[str]) -> str:
+    """A quoted character (``'\\t'``) or token (``'<stream end>'``) as it is, a longer name as ``'...'``."""
+    quoted = match.group()
+    inside = quoted[1:-1]
+    return quoted if len(inside) <= 6 or (inside.startswith("<") and inside.endswith(">")) else "'...'"
+
+
+def _yaml_error(path: Path, exc: yaml.YAMLError) -> str:
+    """``Invalid YAML in <path>, line L, column C: <problem>``, without the text of the file.
+
+    PyYAML's own message quotes the lines it stopped at, which may hold a literal secret (a
+    ``github.token`` written in the file). Only what it found wrong and where are kept, and a
+    quoted alias, anchor or tag name is left out of that too; a quoted character stays.
+    """
+
+    def at(mark: yaml.Mark | None) -> str:
+        return f"line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+
+    def said(text: str | None) -> str:
+        return _YAML_QUOTED.sub(_yaml_quoted, " ".join((text or "").split()))
+
+    if isinstance(exc, yaml.MarkedYAMLError):
+        problem, mark = (exc.problem, exc.problem_mark) if exc.problem else (exc.context, None)
+        where = at(mark or exc.context_mark)
+        text = f"Invalid YAML in {path}{', ' + where if where else ''}: {said(problem) or type(exc).__name__}"
+        if exc.problem and exc.context:
+            context_at = at(exc.context_mark)
+            text += f" ({said(exc.context)}{' at ' + context_at if context_at else ''})"
+        return text
+    if isinstance(exc, yaml.reader.ReaderError):  # a character or a byte that YAML does not allow
+        return f"Invalid YAML in {path}, position {exc.position}: {said(exc.reason)}"
+    return f"Invalid YAML in {path}: {type(exc).__name__}"
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1178,7 +1319,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Invalid YAML in {path}: {exc}") from None
+        raise ConfigError(_yaml_error(path, exc)) from None
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -1261,8 +1402,8 @@ def _yaml_str(value: str | Path | None) -> str:
 
 
 # The templates are str.format strings: literal braces are doubled. The Airflow template is the
-# phase-5 one plus the commented ``orchestrator:`` block and ``repo.sandbox``; both share the
-# sections between ``classification:`` and ``masking:``.
+# phase-5 one plus the commented ``orchestrator:`` block, ``repo.sandbox`` and ``github.skip_ci``;
+# both share the sections between ``classification:`` and ``masking:``.
 _AIRFLOW_HEAD = """\
 # dag-healer configuration (healer.yaml), generated by `dag-healer init`.
 # Review it and commit it next to your DAGs.
@@ -1353,6 +1494,10 @@ github:
   repo: "${{GITHUB_REPO}}"         # owner/name; without repo and token fixes are written as PR.md
   pr_base: main
   token: "${{GITHUB_TOKEN}}"
+  # true: the fix's commit carries [skip ci], so push and pull_request workflows run on the
+  # healer branch only after a person has reviewed it; false only when CI on healer branches
+  # holds no secrets. See docs/github/README.md for the token, the base branch's rules and CI.
+  skip_ci: true
 
 llm:
   provider: "${{HEALER_LLM_PROVIDER:-anthropic}}"   # anthropic | fake (offline tests)

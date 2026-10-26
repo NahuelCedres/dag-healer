@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 from typing import Any, get_args
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from dag_healer.config import (
     ConfigError,
+    GithubConfig,
     HealerConfig,
     SandboxConfig,
     config_candidates,
@@ -344,6 +347,249 @@ def test_bad_files_raise_config_error(isolated: Path, text: str) -> None:
     path = write_yaml(isolated / "healer.yaml", text)
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+FICTIONAL_TOKEN = "ghp_FICTIONAL0123456789abcdefFICTIONAL"
+
+
+@pytest.mark.parametrize(
+    ("line", "where"),
+    [
+        pytest.param(f"\ttoken: {FICTIONAL_TOKEN}", "line 4, column 1: found character '\\t'", id="tab"),
+        pytest.param(
+            f'  token: "{FICTIONAL_TOKEN}""', "line 5, column 1: found unexpected end of stream", id="quote"
+        ),
+        pytest.param(
+            f"  token: *{FICTIONAL_TOKEN}", "line 4, column 10: found undefined alias '...'", id="alias"
+        ),
+        pytest.param(f"  token: !{FICTIONAL_TOKEN} x", "line 4, column 10: could not determine", id="tag"),
+    ],
+)
+def test_invalid_yaml_never_quotes_the_file(isolated: Path, line: str, where: str) -> None:
+    """PyYAML's message quotes the line it stopped at, a literal token included: only where and why stay."""
+    path = write_yaml(isolated / "healer.yaml", f"version: 1\ngithub:\n  repo: acme-health/etl\n{line}\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert message.startswith(f"Invalid YAML in {path.resolve()}, {where}")
+    assert "FICTIONAL" not in message and "ghp_" not in message
+    assert "\n" not in message
+
+
+@pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        pytest.param(
+            ".github/", "protected path: healer config, contracts, CI, data or fixtures", id="github"
+        ),
+        pytest.param(
+            ".GitHub/workflows", "protected path: healer config, contracts, CI, data or fixtures", id="case"
+        ),
+        pytest.param("data", "protected path: healer config, contracts, CI, data or fixtures", id="data"),
+        pytest.param(
+            "healer/contracts", "protected path: healer config, contracts, CI, data or fixtures", id="healer"
+        ),
+        pytest.param(".circleci", "CI configuration", id="circleci"),
+        pytest.param("Jenkinsfile", "CI configuration", id="jenkins"),
+        pytest.param("./.husky/", "git hook configuration", id="husky"),
+        pytest.param(".gitmodules", "git metadata", id="gitmodules"),
+        pytest.param("CODEOWNERS", "code owners", id="codeowners"),
+        pytest.param(".git/hooks", ".git internals", id="git"),
+        pytest.param("src\\.env", ".env files", id="env"),
+    ],
+)
+def test_allowed_paths_cannot_name_a_protected_path(entry: str, reason: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"repo": {"allowed_paths": ["src/", entry]}})
+    assert (
+        f"  - repo.allowed_paths: Value error, {entry!r} cannot be an allowed path ({reason}); a fix never "
+        "changes it. '.' allows every path that is not protected"
+    ) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(".", id="dot"),
+        pytest.param("./", id="dot-slash"),
+        pytest.param("/", id="slash"),
+        pytest.param("src/", id="src"),
+        pytest.param("docs/", id="docs"),
+        pytest.param("src/.github", id="nested-github"),
+        pytest.param("  ", id="blank"),
+    ],
+)
+def test_allowed_paths_that_are_not_protected_are_kept_as_written(entry: str) -> None:
+    assert config_from_mapping({"repo": {"allowed_paths": [entry, "dags/"]}}).repo.allowed_paths == [
+        entry,
+        "dags/",
+    ]
+
+
+# --------------------------------------------------------------------------- github
+def test_github_skip_ci_defaults_to_true_and_is_dumped_only_when_false() -> None:
+    cfg = HealerConfig()
+    assert cfg.github.skip_ci is True
+    assert "skip_ci" not in cfg.model_dump()["github"]
+    assert "skip_ci" not in json.loads(cfg.model_dump_json())["github"]
+    off = config_from_mapping({"github": {"skip_ci": False}})
+    assert off.model_dump(mode="json")["github"] == {
+        "repo": None,
+        "pr_base": "main",
+        "token": None,
+        "skip_ci": False,
+    }
+    assert config_from_mapping(off.model_dump(mode="json")).github.skip_ci is False  # the dump loads back
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(False, False, id="false"),
+        pytest.param("false", False, id="text-false"),
+        pytest.param("${HEALER_SKIP_CI:-false}", False, id="env-fallback"),
+        pytest.param(True, True, id="true"),
+        pytest.param("${HEALER_SKIP_CI}", True, id="env-unset"),
+        pytest.param(None, True, id="empty"),
+    ],
+)
+def test_github_skip_ci_values(value: Any, expected: bool) -> None:
+    assert config_from_mapping({"github": {"skip_ci": value}}, env={}).github.skip_ci is expected
+
+
+def test_github_skip_ci_must_be_a_boolean() -> None:
+    with pytest.raises(ConfigError, match="github.skip_ci: Input should be a valid boolean"):
+        config_from_mapping({"github": {"skip_ci": "sometimes"}})
+
+
+@pytest.mark.parametrize("orchestrator", ["airflow", "stepfunctions"])
+def test_the_templates_document_github_skip_ci(orchestrator: str) -> None:
+    text = default_config_yaml(orchestrator=orchestrator)
+    block = text.split("\ngithub:\n", 1)[1].split("\n\n", 1)[0]
+    assert block.splitlines() == [
+        '  repo: "${GITHUB_REPO}"         # owner/name; without repo and token fixes are written as PR.md',
+        "  pr_base: main",
+        '  token: "${GITHUB_TOKEN}"',
+        "  # true: the fix's commit carries [skip ci], so push and pull_request workflows run on the",
+        "  # healer branch only after a person has reviewed it; false only when CI on healer branches",
+        "  # holds no secrets. See docs/github/README.md for the token, the base branch's rules and CI.",
+        "  skip_ci: true",
+    ]
+    raw = yaml.safe_load(text)
+    assert raw["github"]["skip_ci"] is True
+    cfg = config_from_mapping(raw, env={})
+    assert cfg.github.skip_ci is True and "skip_ci" not in cfg.model_dump()["github"]
+
+
+@pytest.mark.parametrize(
+    ("contracts", "entry"),
+    [
+        pytest.param("contracts", "contracts/", id="folder"),
+        pytest.param("./contracts/", "contracts/orders", id="inside"),
+        pytest.param("src/contracts", "SRC/Contracts", id="case"),
+    ],
+)
+def test_allowed_paths_cannot_name_the_contracts_folder(contracts: str, entry: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"repo": {"allowed_paths": ["src/", entry]}, "contracts": {"dir": contracts}})
+    assert (
+        f"repo.allowed_paths: {entry!r} cannot be an allowed path (it is the contracts folder of "
+        f"contracts.dir, {contracts!r}, or inside it); a fix never changes it."
+    ) in str(excinfo.value)
+
+
+def test_an_absolute_contracts_folder_is_compared_with_an_absolute_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "contracts").mkdir(parents=True)
+    data = {
+        "repo": {"path": str(repo), "allowed_paths": ["contracts/"]},
+        "contracts": {"dir": str(repo / "contracts")},
+    }
+    with pytest.raises(ConfigError, match="cannot be an allowed path"):
+        config_from_mapping(data)
+    outside = {**data, "contracts": {"dir": str(tmp_path / "shared" / "contracts")}}
+    assert config_from_mapping(outside).repo.allowed_paths == ["contracts/"]
+    whole = {**data, "repo": {"path": str(repo), "allowed_paths": ["."]}}
+    assert config_from_mapping(whole).repo.allowed_paths == ["."]  # the folder stays protected inside
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("github_pat_TEST\n", "github_pat_TEST", id="lf"),
+        pytest.param("ghp_TEST\r\n", "ghp_TEST", id="crlf"),
+        pytest.param("  ghs_TEST\t", "ghs_TEST", id="spaces"),
+        pytest.param("   ", None, id="blank"),
+        pytest.param("", None, id="empty"),
+    ],
+)
+def test_github_token_loses_the_whitespace_around_it(value: str, expected: str | None) -> None:
+    assert config_from_mapping({"github": {"token": value}}).github.token == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("ghp_TE\nST", id="lf-inside"),
+        pytest.param("ghp_TE\rST", id="cr-inside"),
+        pytest.param("ghp_TE ST", id="space-inside"),
+        pytest.param("ghp_T\u00c9ST", id="non-ascii"),
+        pytest.param("ghp_TEST\x00", id="nul"),
+    ],
+)
+def test_github_token_must_be_printable_ascii(value: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"github": {"token": value}})
+    message = str(excinfo.value)
+    assert "github.token: Value error, the token holds a space, a control character or a non-ASCII" in message
+    assert "ghp_" not in message and "ST" not in message.split("github.token:", 1)[1]  # never echoed
+
+
+@pytest.mark.parametrize(
+    ("data", "where"),
+    [
+        pytest.param({"github": {"token": "ghp_SECRET value"}}, "github.token", id="token"),
+        pytest.param({"airflow": {"password": ["SECRET-password"]}}, "airflow.password", id="password"),
+        pytest.param({"ingest": {"token": {"value": "SECRET-token"}}}, "ingest.token", id="ingest"),
+        pytest.param({"github": {"tokn": "ghp_SECRET"}}, "github.tokn", id="unknown-key"),
+    ],
+)
+def test_a_rejected_value_never_appears_in_the_validation_error(data: dict[str, Any], where: str) -> None:
+    """pydantic writes the rejected value into the text of its error unless the model hides it."""
+    with pytest.raises(ValidationError) as excinfo:
+        HealerConfig.model_validate(data)
+    text = f"{excinfo.value}\n{excinfo.value!r}"
+    assert where in text and "SECRET" not in text
+    with pytest.raises(ConfigError) as loaded:
+        config_from_mapping(data)
+    assert f"  - {where}: " in str(loaded.value) and "SECRET" not in str(loaded.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("ghp_SECRETfictional0123456789abcdefghij", id="classic"),
+        pytest.param("github_pat_SECRET" + "x" * 70, id="fine-grained"),
+        pytest.param("SECRET" * 8, id="long"),
+    ],
+)
+def test_a_credential_written_as_a_key_is_not_shown(key: str) -> None:
+    with pytest.raises(ConfigError) as loaded:
+        config_from_mapping({"github": {key: "value"}})
+    message = str(loaded.value)
+    assert f"  - github.{key[:4]}...: unknown key" in message and "SECRET" not in message
+
+
+def test_a_section_validated_alone_hides_the_rejected_token_too() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        GithubConfig.model_validate({"token": "ghp_SECRET\nvalue"})
+    assert "SECRET" not in f"{excinfo.value}\n{excinfo.value!r}"
+    assert "the token holds a space, a control character or a non-ASCII character" in str(excinfo.value)
+
+
+def test_github_token_from_the_environment_is_stripped() -> None:
+    cfg = config_from_mapping({"github": {"token": "${GITHUB_TOKEN}"}}, env={"GITHUB_TOKEN": "ghp_TEST\n"})
+    assert cfg.github.token == "ghp_TEST" and cfg.uses_env_reference("github.token")
 
 
 def test_github_repo_normalisation_and_hook_format() -> None:
