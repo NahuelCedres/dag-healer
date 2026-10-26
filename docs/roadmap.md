@@ -17,14 +17,25 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
 - The AWS Step Functions adapter, with an example repository that deploys with AWS SAM ([examples/stepfunctions_repo](../examples/stepfunctions_repo/README.md)).
 - "Retry task" also re-runs the tasks after the failed one that failed or were blocked by it.
 - Model-written tests and fixes run in a container sandbox without network, credentials or host paths (G1). Stronger backends, such as ECS/Fargate tasks or Kubernetes Jobs, can come later.
+- The repository's CI runs a `healer/` branch only after a person has reviewed it: the fix's commit carries `[skip ci]` (G2). dag-healer checks the GitHub token, the base branch's rules and the repository's workflows, read-only, and reports what is missing in `dag-healer doctor` and at the top of every pull request (G3). [docs/github/README.md](github/README.md) has a ready-made ruleset and the setup steps.
 
 ## Now
 
-- Security hardening before the first pilots (see [docs/security.md](security.md)):
-  - keep CI secrets away from `healer/` branches until a person reviews them (G2);
-  - enforce the branch rules on GitHub instead of only in dag-healer, and use a token limited to one repository (G3).
+- Claude through Amazon Bedrock, with the AWS credentials of the worker's host, for example an EC2 instance role, instead of an API key.
 - Documentation for both orchestrators (step 9 of section 12.1): writing an adapter, deploying on AWS, and upgrading the store.
 - A test of the Step Functions adapter in a real AWS account, with the example repository.
+
+## Next: talking to the agent
+
+1. **Feedback on a fix.**
+   - The note of "Retry repair" reaches the agent.
+   - "Request changes" on an open pull request: a person says what is wrong and what they expect. The agent adds a commit to the same branch, with a new failing test when the feedback is about behaviour. The fixed rules still apply. After about three rounds, a person takes over.
+   - Later: the same from a GitHub review or a Slack thread, accepted only from people who can write to the repository.
+2. **A chat on every incident.**
+   - Ask why dag-healer decided something: it answers with the evidence and the rules it cited.
+   - Discuss the fix, or a rule that belongs in the context.
+   - The chat proposes and a person confirms: a new attempt, another classification, a contract change, or a pull request to the context files. Nothing runs because of text alone.
+   - The conversation goes to the decision log.
 
 ## Next: reliable on-call
 
