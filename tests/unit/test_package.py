@@ -106,6 +106,7 @@ def test_pyproject_declares_entry_points() -> None:
         project["entry-points"]["airflow.plugins"]["dag_healer"] == "dag_healer.airflow.plugin:HealerPlugin"
     )
     assert project["optional-dependencies"]["airflow"] == ["apache-airflow>=3.1"]
+    assert project["optional-dependencies"]["postgres"] == ["psycopg2-binary>=2.9"]
     assert data["tool"]["hatch"]["version"]["path"] == "src/dag_healer/_version.py"
     assert data["build-system"]["build-backend"] == "hatchling.build"
 
