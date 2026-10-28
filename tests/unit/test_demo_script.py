@@ -63,6 +63,16 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def test_the_docstring_names_what_picks_the_llm_provider(demo: ModuleType) -> None:
+    doc = " ".join((demo.__doc__ or "").split())
+    assert (
+        "``HEALER_LLM_PROVIDER`` (from ``docker/.env`` or the shell) picks the worker's LLM provider" in doc
+    )
+    assert "Without ``ANTHROPIC_API_KEY``" not in doc  # the key alone never switches the provider
+    compose = (REPO_ROOT / "docker" / "compose.yaml").read_text(encoding="utf-8")
+    assert "HEALER_LLM_PROVIDER: ${HEALER_LLM_PROVIDER:-fake}" in compose  # "fake by default"
+
+
 # --------------------------------------------------------------------------- healer.yaml
 
 

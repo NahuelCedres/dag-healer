@@ -28,11 +28,13 @@ You need:
 
 dag-healer is not on PyPI yet: install it from a checkout of this repository. The checkout holds
 the pre-built UI bundles, so you do not need Node.js. Install it in the same pip call as the
-Airflow version you run (`airflow version` prints it), so that pip never moves Airflow:
+Airflow version you run (`airflow version` prints it), so that pip never moves Airflow. The
+`postgres` extra adds the driver of the store's PostgreSQL database (step 4), which the api-server
+reads too:
 
 ```bash
 git clone https://github.com/NahuelCedres/dag-healer.git
-pip install "apache-airflow==3.3.2" ./dag-healer
+pip install "apache-airflow==3.3.2" "./dag-healer[postgres]"
 ```
 
 Install it wherever Airflow runs:
@@ -52,7 +54,7 @@ pip wheel --no-deps -w dist ./dag-healer
 ```dockerfile
 FROM apache/airflow:3.3.2
 COPY dist/dag_healer-0.1.0-py3-none-any.whl /tmp/
-RUN pip install --no-cache-dir "apache-airflow==3.3.2" /tmp/dag_healer-0.1.0-py3-none-any.whl
+RUN pip install --no-cache-dir "apache-airflow==3.3.2" "/tmp/dag_healer-0.1.0-py3-none-any.whl[postgres]"
 ```
 
 The plugin registers itself through the `airflow.plugins` entry point: nothing goes into the
@@ -61,8 +63,9 @@ The plugin registers itself through the `airflow.plugins` entry point: nothing g
 Healer incidents tab on each DAG and a Healer incident tab on each task instance.
 
 With the FAB auth manager, only the Admin and Op roles can read the list of plugins by default,
-and the Airflow UI builds the dag-healer views from that list. Give the read permission to the
-other roles that should see them:
+and the Airflow UI builds the dag-healer views from that list. The api-server logs a reminder when
+it loads the plugin under FAB. Give the read permission to the other roles that should see the
+views:
 
 ```bash
 airflow roles add-perms Viewer User --resource Plugins --action can_read
@@ -108,8 +111,13 @@ Tests:         no test suite found; dag-healer will create tests/ when it propos
 Store:         postgresql+psycopg2://healer:***@db.acme-health.internal/healer (created at schema v2)
 Code files:    unchanged (7 Python files verified)
 
-Contracts are drafts: nothing is enforced until a human approves them (dag-healer contracts approve <dag_id>)
+Draft contracts are not enforced until a human approves them. Review each draft, then approve it under your own name:
+  dag-healer contracts approve lab_results_daily --by NAME
 ```
+
+The last line is the command that approves a draft (step 6), ready to run from the folder where
+you ran `init`, with `-c PATH` when that folder does not lead to the `healer.yaml`: put your name
+in place of `NAME`.
 
 `init` never imports or changes your code: it parses the DAG files without running them, and
 checks at the end that no Python file has changed. It:
@@ -128,6 +136,7 @@ checks at the end that no Python file has changed. It:
 | `--samples DIR` | Profile the files of `DIR` instead of the repository's, matched by relative path, then by file name, for example a copy of one day's input files |
 | `--force` | Replace the existing draft contracts |
 | `--repo PATH`, `-c PATH` | Another repository, another `healer.yaml` |
+| `--orchestrator stepfunctions` | Write the AWS Step Functions template instead of Airflow's when there is no `healer.yaml` yet ([AWS Step Functions](#aws-step-functions)) |
 
 A note such as `unresolved dataset ...` names an input that `init` could not resolve from the
 code: add its locator under `datasets.<dag_id>.<task_id>` in `healer.yaml`, then run `init`
@@ -250,12 +259,16 @@ worker's host (for example an EC2 instance role) and no API key, set the provide
 Run the worker on a host or VM of its own, as a dedicated user, and never inside the Airflow
 scheduler or workers: it runs model-written code in its sandbox and holds the credentials below
 ([docs/security.md](security.md), section 6). It needs no Airflow, because it talks to Airflow
-through the REST API. Install dag-healer there, with the driver of the store's database:
+through the REST API. Install dag-healer there, with the `postgres` extra, the driver of the
+store's database:
 
 ```bash
 python3 -m venv /opt/dag-healer
-/opt/dag-healer/bin/pip install ./dag-healer psycopg2-binary
+/opt/dag-healer/bin/pip install "./dag-healer[postgres]"
 ```
+
+The extra installs psycopg2: keep `+psycopg2` in the store's URL, as below. A URL without a
+driver, `postgresql://...`, gets psycopg 3 from SQLAlchemy 2.1 and later.
 
 Give the worker a git checkout of the repository with `healer.yaml` (the `repo.path` of step 3),
 the `docker` or `podman` CLI with access to its engine, and this environment:
@@ -266,7 +279,7 @@ the `docker` or `podman` CLI with access to its engine, and this environment:
 | `HEALER_DATABASE_URL` | The store, the same as the api-server's, for example `postgresql+psycopg2://healer:<password>@db.acme-health.internal/healer` |
 | `HEALER_API_URL` | The Airflow api-server, for example `https://airflow.acme-health.internal` |
 | `HEALER_AIRFLOW_USERNAME`, `HEALER_AIRFLOW_PASSWORD` | The worker's Airflow account |
-| `ANTHROPIC_API_KEY` | The Anthropic API key |
+| `ANTHROPIC_API_KEY` | The Anthropic API key (or `ANTHROPIC_AUTH_TOKEN`, a bearer token) |
 | `HEALER_SANDBOX_IMAGE` | The sandbox image |
 | `GITHUB_REPO`, `GITHUB_TOKEN` | Optional: pull requests |
 | `HEALER_SMTP_HOST`, `HEALER_SMTP_PORT`, `HEALER_SMTP_FROM`, `HEALER_ALERT_TO`, ... | Optional: the alert e-mails of `notify.email` |
@@ -286,10 +299,12 @@ transition: run it under your service manager. `dag-healer worker --once` runs o
 exits, with exit code 1 when that iteration hit errors. `dag-healer incidents list` shows the
 incidents from the command line.
 
-On its first poll, the worker looks back 24 hours, so the failures of the last day become
-incidents too (it triages at most `limits.max_incidents_per_hour`, 10 by default, in any hour; the
-others wait). To ignore them, run `dag-healer store reset --yes` once, before the worker's first
-start: it empties the store and makes the poll start now.
+On its first poll, the worker looks back `monitor.first_poll_lookback_hours`, 24 hours in the
+`healer.yaml` that `init` writes, so the failures of the last day become incidents too (it
+triages at most `limits.max_incidents_per_hour`, 10 by default, in any hour; the others wait). To
+start with the failures that happen from then on, set it to `0` before the worker's first start.
+The setting only shapes that first poll; afterwards, `dag-healer store reset --yes` empties the
+store and makes the poll start again from that moment.
 
 Keep the checkout on the base branch and up to date: the worker reads the contracts from it, and
 every repair starts from its committed history.
@@ -299,7 +314,8 @@ every repair starts from its committed history.
 `dag-healer doctor` checks the environment that runs it: run it on the worker's host, with the
 worker's environment, after every change. Each line is one check: `[ OK ]`, `[WARN]` (it works,
 with a limitation), `[FAIL]` (an error: doctor exits 1) or `[SKIP]` (not used by this
-configuration). Secrets are never printed. For Acme Health's worker:
+configuration, or not visible from this environment). Secrets are never printed. For Acme Health's
+worker:
 
 ```text
 dag-healer doctor (0.1.0)
@@ -313,38 +329,38 @@ dag-healer doctor (0.1.0)
 [ OK ] orchestrator        Apache Airflow (type airflow, instance airflow)
 [ OK ] airflow api         https://airflow.acme-health.internal/api/v2/monitor/health: metadatabase=healthy, scheduler=healthy, triggerer=healthy, dag_processor=healthy
 [ OK ] airflow auth        token issued for user 'dag-healer'
-[ OK ] airflow plugin      entry point dag_healer.airflow.plugin:HealerPlugin
+[SKIP] airflow plugin      Airflow is not installed here, so doctor cannot tell whether Airflow loaded the plugin (run: airflow plugins, where Airflow runs; it lists dag_healer)
 [ OK ] smtp                smtp.acme-health.internal:587 reachable; alerts to data-oncall@acme-health.example
 [ OK ] secrets             no literal secrets in the configuration
-[WARN] ingest              HEALER_INGEST_TOKEN not set; listener events are rejected (REST polling still works)
+[SKIP] ingest              no ingest token in this environment: the worker does not use one (the api-server and Airflow's task processes need HEALER_INGEST_TOKEN)
 [ OK ] github              pull requests on acme-health/etl (token hidden)
 [ OK ] github token        a fine-grained personal access token
 [ OK ] github repository   the token's account is not an admin of acme-health/etl
 [ OK ] github base branch  main requires a pull request with an approving review and blocks force pushes and deletion, and requires status checks
 [ OK ] github workflows    4 workflow files checked
 
-18 ok, 1 warning(s), 0 error(s), 0 skipped
+17 ok, 0 warning(s), 0 error(s), 2 skipped
 ```
 
-The `ingest` warning is expected here: the ingest token belongs to the api-server and the task
-processes, not to the worker.
+The `airflow plugin` and `ingest` lines are about Airflow's own environment, which doctor does not
+see from the worker's host: there they are skipped, and say what to check in Airflow instead.
 
 | Line | What it checks | What to do when it is not OK |
 |---|---|---|
 | `config` | `healer.yaml` was found (`-c`, `HEALER_CONFIG`, `$AIRFLOW_HOME/healer.yaml`, `./healer.yaml`) and is valid | A warning means that none was found and the defaults apply: set `HEALER_CONFIG`, or run `dag-healer init`. An error names the invalid setting |
 | `repository` | `repo.path` and its DAG folder exist | Fix `repo.path` (relative to `healer.yaml`) or `repo.dags_dir` |
 | `contracts` | The approved, draft, stale and invalid contracts of `contracts.dir` | A warning for a missing or empty folder (run `dag-healer init`), while no contract is approved (nothing is enforced), for stale contracts (edited after their approval) and for invalid files (ignored): approve the contracts (step 6), approve the stale ones again, or fix the files |
-| `store` | The store answers a query | Check `HEALER_DATABASE_URL`, the database driver and the network. The SQLite note means that the store works for one process on one machine only |
+| `store` | The store answers a query | Check `HEALER_DATABASE_URL`, the database driver (the `postgres` extra, for `postgresql+psycopg2://` URLs) and the network. The SQLite note means that the store works for one process on one machine only |
 | `ui bundle` | The bundle of the views is in the installed package | Install dag-healer from a checkout that holds `src/dag_healer/api/static/main.umd.cjs`, or build it with `python scripts/tasks.py ui` |
-| `llm` | With `anthropic`, `ANTHROPIC_API_KEY` is set. With `bedrock`, the model and the region are valid and AWS credentials resolve. No request is sent and no value is shown | Set what the line names in the worker's environment; for Amazon Bedrock, see [docs/bedrock.md](bedrock.md) |
+| `llm` | The provider that the worker runs (`HEALER_LLM_PROVIDER`, else `llm.provider`) can be used: with `anthropic`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set; with `bedrock`, the model and the region are valid and AWS credentials resolve. No request is sent and no value is shown | Set what the line names in the worker's environment; for Amazon Bedrock, see [docs/bedrock.md](bedrock.md) |
 | `sandbox` | The engine answers and holds the image, and a probe container runs as a non-root user, without network, with pytest | The line says what to fix: no image is set, the `docker` or `podman` CLI is missing, the engine cannot be reached (start it, or give the worker access to it: `DOCKER_HOST` or `CONTAINER_HOST`, the socket and its group), the image is missing (build it on that engine) or runs as root, or the probe found a network or no pytest. A warning means `backend: process`, which isolates nothing |
 | `orchestrator` | The orchestrator adapter loads and supports `monitor.modes` and `monitor.trigger` | Fix the setting that the line names |
 | `airflow api` | `GET <airflow.api_url>/api/v2/monitor/health` answers within 3 seconds | Check `HEALER_API_URL` and the network. A warning means that an Airflow component is not healthy |
 | `airflow auth` | The worker's Airflow account gets a token (`POST /auth/token`) | A warning means that the user name or the password is not set, so the worker cannot poll. An error means that Airflow refused the account. Skipped when REST polling is off or the API cannot be reached |
-| `airflow plugin` | The plugin's entry point is installed in this environment | On the worker's host this only says that dag-healer is installed; `airflow plugins`, in Airflow's environment, shows that Airflow has loaded it |
+| `airflow plugin` | Where Airflow is installed, the plugin's entry point is installed next to it. Skipped where Airflow is not, such as on the worker's host | `airflow plugins`, in Airflow's environment, shows that Airflow has loaded the plugin. A warning means that Airflow cannot load it: install dag-healer there (step 1). With the FAB auth manager, roles other than Admin and Op see the views only with the `Plugins: can_read` permission (step 1); the line says so when this environment sets FAB |
 | `smtp` | The SMTP server accepts a connection | Check `HEALER_SMTP_HOST` and `HEALER_SMTP_PORT`. Skipped while `notify.email.host` is empty (no e-mail alerts) |
 | `secrets` | No secret in `healer.yaml` is a literal value | Replace each value that the line names with an `${ENV}` reference |
-| `ingest` | An ingest token is set in this environment | The api-server and the task processes need `HEALER_INGEST_TOKEN`; the worker does not. Without it there, Airflow's listener events are refused, and the worker still finds the failures by polling. Skipped when the listener and callback modes are off |
+| `ingest` | Whether this environment holds an ingest token | The api-server and the task processes need `HEALER_INGEST_TOKEN`; the worker does not, so the line is skipped where Airflow is not installed. A warning, where Airflow is installed, means that the api-server refuses the listener's events: the worker still finds the failures by polling. Skipped too when the listener and callback modes are off |
 | `github` | Where fixes go: pull requests on a repository, or `PR.md` and `fix.patch` files | A warning means a repository without a token, so fixes are written as `PR.md` files: set `GITHUB_TOKEN` for pull requests |
 | `github token`, `github repository`, `github base branch`, `github workflows`, `github setup` | With a token, read-only checks of the token, the repository, the base branch's rules and the workflows | See ["What doctor reports"](github/README.md#what-doctor-reports) in the GitHub guide |
 
@@ -427,18 +443,23 @@ keep it on your machine.
 
 dag-healer also watches AWS Step Functions state machines whose steps are Python Lambda
 functions. Without Airflow's UI, `dag-healer serve` is the console: the same views and API, on a
-host of its own. Install both extras:
+host of its own. Install its extras, with `postgres` for the store that the worker and `serve`
+share:
 
 ```bash
-pip install "./dag-healer[aws,serve]"
+pip install "./dag-healer[aws,serve,postgres]"
 ```
 
-- `dag-healer init` writes the Airflow template. Start from the `healer.yaml` of the example
-  repository instead: `orchestrator.type: stepfunctions`, the pipelines and their state machines,
-  and `monitor.modes: [poll, queue]`. With that file in place, `init` drafts the contracts of the
-  pipelines (`repo.dags_dir` is then the folder of the state machine definitions).
+- `dag-healer init --orchestrator stepfunctions` writes the Step Functions template:
+  `orchestrator.type: stepfunctions`, the pipelines and their state machines, and
+  `monitor.modes: [poll, queue]`, with example values to replace (the region, the instance and
+  the pipelines), and `repo.dags_dir: statemachine`, the folder of the state machine definitions
+  (`--dags-dir` sets another). Once your values are in, run `dag-healer init` again: it drafts the
+  contracts of the pipelines. The `healer.yaml` of the example repository is a complete one.
 - The worker reads executions, their histories and the Lambda logs with the default boto3
-  credential chain, or with the `profile` or `role_arn` of `orchestrator.options`.
+  credential chain, or with the `profile` or `role_arn` of `orchestrator.options`. Its first poll
+  looks back `orchestrator.options.lookback_hours` (24 by default; at least 1), unless
+  `monitor.first_poll_lookback_hours` is set (`0` included).
 - `dag-healer serve` listens on `serve.host` and `serve.port` (default `127.0.0.1:8090`), with the
   views at `/plugin/healer`, and shares the store with the worker. `serve.auth.backend` signs
   people in: `dev`, a fixed local user, works on a loopback address only; for a team, use `token`,

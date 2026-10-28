@@ -34,8 +34,10 @@ Airflow listener creates incidents, the REST poll is off), ``--timeout`` (second
 the incidents, default 600). Exit code 0 when the three incidents end as expected.
 
 Standard library only; works on Windows, macOS and Linux (paths with spaces included).
-Without ``ANTHROPIC_API_KEY`` the worker uses the offline "fake" LLM provider, which replays
-``example_existing_repo/fixtures/fake_llm``.
+``HEALER_LLM_PROVIDER`` (from ``docker/.env`` or the shell) picks the worker's LLM provider:
+``fake`` by default, the offline provider that replays ``example_existing_repo/fixtures/fake_llm``,
+or ``anthropic`` (with ``ANTHROPIC_API_KEY``) or ``bedrock`` for real diagnoses (see
+``docker/README.md``).
 """
 
 from __future__ import annotations

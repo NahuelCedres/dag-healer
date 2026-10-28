@@ -7,6 +7,7 @@ import importlib.util
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -109,6 +110,20 @@ def test_pyproject_declares_entry_points() -> None:
     assert project["optional-dependencies"]["postgres"] == ["psycopg2-binary>=2.9"]
     assert data["tool"]["hatch"]["version"]["path"] == "src/dag_healer/_version.py"
     assert data["build-system"]["build-backend"] == "hatchling.build"
+
+
+def test_the_postgres_extra_holds_the_driver_that_the_store_urls_of_the_guide_name() -> None:
+    """The guide's store URLs name the psycopg2 driver, which ``psycopg2-binary`` (the ``postgres``
+    extra) installs. A URL without a driver would depend on SQLAlchemy's version (psycopg 3 from
+    2.1 on; Airflow 3.3 runs 2.0, where it is psycopg2), so the guide says to keep it."""
+    from sqlalchemy.engine import make_url
+
+    guide = (REPO_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+    assert set(re.findall(r"postgresql(?:\+\w+)?://(?!\.\.\.)", guide)) == {"postgresql+psycopg2://"}
+    assert make_url("postgresql+psycopg2://healer@db/healer").get_driver_name() == "psycopg2"
+    assert "keep `+psycopg2` in the store's URL" in " ".join(guide.split())
+    assert "psycopg2-binary" not in guide  # installed through the extra, never by name
+    assert guide.count('"./dag-healer[postgres]"') >= 1 and '"./dag-healer[aws,serve,postgres]"' in guide
 
 
 # --------------------------------------------------------------------------- import weight
