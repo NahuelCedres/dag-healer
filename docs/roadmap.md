@@ -18,12 +18,38 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
 - "Retry task" also re-runs the tasks after the failed one that failed or were blocked by it.
 - Model-written tests and fixes run in a container sandbox without network, credentials or host paths (G1). Stronger backends, such as ECS/Fargate tasks or Kubernetes Jobs, can come later.
 - The repository's CI runs a `healer/` branch only after a person has reviewed it: the fix's commit carries `[skip ci]` (G2). dag-healer checks the GitHub token, the base branch's rules and the repository's workflows, read-only, and reports what is missing in `dag-healer doctor` and at the top of every pull request (G3). [docs/github/README.md](github/README.md) has a ready-made ruleset and the setup steps.
+- Claude through Amazon Bedrock, with the AWS credentials of the worker's host, for example an EC2 instance role, instead of an API key ([docs/bedrock.md](bedrock.md)).
+- An installation guide ([docs/installation.md](installation.md)), and releases to PyPI with trusted publishing ([docs/releasing.md](releasing.md)).
 
 ## Now
 
-- Claude through Amazon Bedrock, with the AWS credentials of the worker's host, for example an EC2 instance role, instead of an API key.
+- The first alpha on PyPI, 0.1.0.
 - Documentation for both orchestrators (step 9 of section 12.1): writing an adapter, deploying on AWS, and upgrading the store.
-- A test of the Step Functions adapter in a real AWS account, with the example repository.
+- Tests in a real AWS account: the Step Functions adapter with the example repository, and Claude on Amazon Bedrock with the live test.
+
+## Next: context
+
+- **Organization Context and ETL Information.**
+  - Two kinds of Markdown file in the repository:
+    - `healer/organization.md` holds what the whole organization knows: what the business does, its systems and their owners, a glossary, and the rules for every pipeline.
+    - `healer/etl/<pipeline>.md` holds what one pipeline needs.
+  - Each file has a front matter with its owner and review date, and its rules have stable IDs such as `ORG-1` or `LAB-1`, for example "LAB-1: a finalized lab result always has a value; a preliminary one may be empty".
+  - dag-healer reads them from the default branch, refuses files that contain secrets, and caps their size.
+- **Cited, never obeyed blindly.**
+  - Incidents and pull requests list the rules applied, and dag-healer checks that every cited ID exists.
+  - Context can make a verdict more cautious, but it never overrides the fixed rules.
+  - A fix that would break a rule stops and asks a person.
+- **Suggestions, not edits.**
+  - dag-healer suggests additions: from a person's decision for that pipeline, and from patterns across pipelines for the Organization Context.
+  - A person merges each suggestion.
+  - dag-healer never edits these files.
+- **Decision log.**
+  - Every decision is recorded, with who made it and why: a fixed rule, the model with its confidence, or a person.
+  - Planned: a daily summary posted to Slack or email.
+- **The console leads with the decision.**
+  - A waiting incident opens with the question in plain words, and shows the consequences before you confirm.
+  - A queued action can be cancelled.
+  - Every incident says what decided it.
 
 ## Next: talking to the agent
 
@@ -69,30 +95,6 @@ The steps of the orchestrator work are tracked in section 12.1 of [docs/architec
    - A producer team inside the organization gets a direct message in its own terms.
    - An external producer, such as a client hospital or a vendor, is never contacted. On-call and the person who owns that relationship get a draft to forward instead.
    - Email and Slack come first.
-
-## Next: context
-
-- **Organization Context and ETL Information.**
-  - Two kinds of Markdown file in the repository:
-    - `healer/organization.md` holds what the whole organization knows: what the business does, its systems and their owners, a glossary, and the rules for every pipeline.
-    - `healer/etl/<pipeline>.md` holds what one pipeline needs.
-  - Each file has a front matter with its owner and review date, and its rules have stable IDs such as `ORG-1` or `LAB-1`, for example "LAB-1: a finalized lab result always has a value; a preliminary one may be empty".
-  - dag-healer reads them from the default branch, refuses files that contain secrets, and caps their size.
-- **Cited, never obeyed blindly.**
-  - Incidents and pull requests list the rules applied, and dag-healer checks that every cited ID exists.
-  - Context can make a verdict more cautious, but it never overrides the fixed rules.
-  - A fix that would break a rule stops and asks a person.
-- **Suggestions, not edits.**
-  - dag-healer suggests additions: from a person's decision for that pipeline, and from patterns across pipelines for the Organization Context.
-  - A person merges each suggestion.
-  - dag-healer never edits these files.
-- **Decision log.**
-  - Every decision is recorded, with who made it and why: a fixed rule, the model with its confidence, or a person.
-  - Planned: a daily summary posted to Slack or email.
-- **The console leads with the decision.**
-  - A waiting incident opens with the question in plain words, and shows the consequences before you confirm.
-  - A queued action can be cancelled.
-  - Every incident says what decided it.
 
 ## Later: more sources
 
