@@ -12,6 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from dag_healer.config import (
+    MAX_LOOKBACK_HOURS,
     ConfigError,
     GithubConfig,
     HealerConfig,
@@ -955,6 +956,27 @@ def test_monitor_dags_accepts_a_single_string() -> None:
     assert config_from_mapping({"monitor": {"dags": "sales_*"}}).monitor.dags == ["sales_*"]
 
 
+def test_first_poll_lookback_hours_is_unset_by_default_and_dumped_only_when_set() -> None:
+    cfg = config_from_mapping({})
+    assert cfg.monitor.first_poll_lookback_hours is None  # the feed's own first window
+    assert "first_poll_lookback_hours" not in cfg.model_dump()["monitor"]  # older dumps stay the same
+    for hours in (0, 24, MAX_LOOKBACK_HOURS):
+        cfg = config_from_mapping({"monitor": {"first_poll_lookback_hours": hours}})
+        assert cfg.monitor.first_poll_lookback_hours == hours
+        assert cfg.model_dump()["monitor"]["first_poll_lookback_hours"] == hours
+        assert config_from_mapping(cfg.model_dump(mode="json")).monitor == cfg.monitor  # the dump loads back
+    env = {"HEALER_FIRST_POLL": "6"}
+    reference = {"monitor": {"first_poll_lookback_hours": "${HEALER_FIRST_POLL}"}}
+    assert config_from_mapping(reference, env=env).monitor.first_poll_lookback_hours == 6
+    assert config_from_mapping(reference, env={}).monitor.first_poll_lookback_hours is None  # unset reference
+
+
+@pytest.mark.parametrize("hours", [-1, MAX_LOOKBACK_HOURS + 1, "a day", 1.5])
+def test_first_poll_lookback_hours_rejects_what_is_no_number_of_hours(hours: Any) -> None:
+    with pytest.raises(ConfigError, match="monitor.first_poll_lookback_hours"):
+        config_from_mapping({"monitor": {"first_poll_lookback_hours": hours}})
+
+
 def test_healer_home_resolution(healer_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = HealerConfig()
     assert cfg.healer_home == healer_env
@@ -1008,7 +1030,9 @@ def test_default_template_round_trips(isolated: Path, monkeypatch: pytest.Monkey
     assert cfg.secret_literals() == []
     assert cfg.store.url is None and cfg.github.token is None and cfg.ingest.token is None
     assert cfg.repo.sandbox == SandboxConfig()  # no HEALER_SANDBOX_IMAGE in the environment
-    assert cfg.model_dump(exclude={"repo"}) == HealerConfig().model_dump(exclude={"repo"})
+    assert cfg.monitor.first_poll_lookback_hours == 24  # written out: the first window of before
+    defaults = HealerConfig(monitor={"first_poll_lookback_hours": 24})
+    assert cfg.model_dump(exclude={"repo"}) == defaults.model_dump(exclude={"repo"})
 
     monkeypatch.setenv("HEALER_SMTP_HOST", "mailpit")
     monkeypatch.setenv("HEALER_SMTP_PORT", "1025")

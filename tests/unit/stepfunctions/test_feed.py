@@ -281,6 +281,26 @@ def test_lookback_hours_shorten_the_first_window(aws: Aws, feed_of: Callable[...
     assert [failure.ref.run_id for failure in page.failures] == [SALES_RUN]
 
 
+def test_the_cursor_of_a_first_poll_lookback_bounds_the_first_window(
+    aws: Aws, feed_of: Callable[..., SfnFeed]
+) -> None:
+    """``monitor.first_poll_lookback_hours: 2``: the core's cursor starts the window where
+    ``lookback_hours: 2`` would (``lookback_hours`` is still 24 here)."""
+    from types import SimpleNamespace
+
+    from dag_healer.worker.pipeline import first_poll_cursor
+
+    aws.list(SALES_SM, "FAILED", load_json("api/detection/list_executions_sales_two_days.json"))
+    aws.no_executions(SALES_SM, "TIMED_OUT")
+    aws.history(execution_arn(SALES_SM, SALES_RUN), history_events("sales_keyerror_after_retries.json"))
+    feed = feed_of(pipelines={"sales_daily_etl": {"state_machine": SALES_SM}})
+    cursor = first_poll_cursor(SimpleNamespace(monitor=SimpleNamespace(first_poll_lookback_hours=2)), NOW)
+    assert cursor is not None
+    page = feed.poll(cursor=cursor, is_monitored=watch_all)
+    assert [failure.ref.run_id for failure in page.failures] == [SALES_RUN]
+    assert page.cursor[NOT_BEFORE_KEY] == cursor[NOT_BEFORE_KEY]
+
+
 def test_paging_follows_next_tokens_while_the_window_lasts(aws: Aws, feed_of: Callable[..., SfnFeed]) -> None:
     first, second = (listing(SALES_SM)["executions"][0] for _ in range(2))
     second = {**second, "name": "sales-2026-10-02-early", "stopDate": "2026-10-02T05:10:00.000Z"}

@@ -492,6 +492,22 @@ def reset_state(cfg: HealerConfig, now: datetime | None = None) -> datetime:
     return moment
 
 
+def first_poll_cursor(cfg: HealerConfig, now: datetime) -> dict[str, Any] | None:
+    """The cursor of an instance's first poll when ``monitor.first_poll_lookback_hours`` is set.
+
+    ``{"watermark": start, "not_before": start}`` with ``start`` N hours before ``now``: every
+    built-in feed then lists the failures updated since ``start``, and never one from before it
+    (the floor :func:`reset_state` writes, at ``now``). ``None`` when the setting is unset: the
+    feed's own first window applies (24 hours for Airflow, ``options.lookback_hours`` for Step
+    Functions).
+    """
+    hours = getattr(getattr(cfg, "monitor", None), "first_poll_lookback_hours", None)
+    if hours is None:
+        return None
+    start = ((ensure_utc(now) or utcnow()) - timedelta(hours=hours)).isoformat()
+    return {CURSOR_WATERMARK: start, CURSOR_NOT_BEFORE: start}
+
+
 def set_watermark(cfg: HealerConfig, value: datetime) -> None:
     """Persist the watermark of the configured instance's poll cursor (its floor is kept)."""
     moment = ensure_utc(value) or utcnow()
@@ -657,7 +673,9 @@ def _reconcile_poll(
 
     Keys the store already has are skipped before anything else is asked of the orchestrator;
     a failure without an error text gets its summary and signature from the attempt's log (the
-    phase-5 REST poll). The cursor advances only after a successful listing.
+    phase-5 REST poll). The cursor advances only after a successful listing. An instance without
+    a cursor gets :func:`first_poll_cursor` first, stored at once, so the start of its first
+    window stays where it was even when that listing fails.
     """
     feed = adapter.feed
     if feed is None:
@@ -666,6 +684,17 @@ def _reconcile_poll(
     key = store_repo.cursor_key(adapter.instance)
     with session_factory() as session:
         cursor = _read_cursor(session, cfg, instance=adapter.instance, kind=adapter.type)
+        if cursor is None:
+            cursor = first_poll_cursor(cfg, now)
+            if cursor is not None:
+                store_repo.kv_set(session, key, cursor)
+                logger.info(
+                    "dag-healer worker: first poll of %s: failures updated since %s "
+                    "(monitor.first_poll_lookback_hours: %s)",
+                    adapter.instance,
+                    cursor[CURSOR_WATERMARK],
+                    cfg.monitor.first_poll_lookback_hours,
+                )
     stats.since = _window_start(feed, cursor, now)
 
     def is_monitored(pipeline_id: str) -> bool:
@@ -1563,6 +1592,7 @@ __all__ = [
     "default_session_factory",
     "evidence_violations",
     "failure_signature",
+    "first_poll_cursor",
     "get_not_before",
     "get_watermark",
     "load_state",

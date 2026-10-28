@@ -362,6 +362,18 @@ def _without_skip_ci_block(text: str) -> str:
     return text[: start + 1] + text[end:]
 
 
+#: The line of ``monitor.first_poll_lookback_hours`` (24: the first window phase 5 always had).
+FIRST_POLL_LINE = (
+    "  first_poll_lookback_hours: 24  # hours of past failures the worker's first poll lists "
+    "(0: only new ones)\n"
+)
+
+
+def _without_first_poll_line(text: str) -> str:
+    assert text.count(FIRST_POLL_LINE) == 1
+    return text.replace(FIRST_POLL_LINE, "")
+
+
 #: The ``llm`` lines that changed since phase 5, and their phase-5 text.
 PHASE5_LLM_LINES = {
     '  provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | bedrock | fake (offline tests)': (
@@ -393,7 +405,7 @@ def _without_bedrock_lines(text: str) -> str:
 def _phase5_view(text: str) -> str:
     """The template without the blocks phase 5 did not have (the comment-only ones included)."""
     without_new_blocks = _without_sandbox_block(_without_skip_ci_block(_without_bedrock_lines(text)))
-    return _without_orchestrator_block(without_new_blocks)
+    return _without_orchestrator_block(_without_first_poll_line(without_new_blocks))
 
 
 def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> None:
@@ -405,6 +417,7 @@ def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> Non
     assert "# orchestrator:" in block
     raw = yaml.safe_load(text)
     assert raw["repo"].pop("sandbox")["backend"] == "container"  # the blocks phase 5 did not have
+    assert raw["monitor"].pop("first_poll_lookback_hours") == 24
     assert raw["github"].pop("skip_ci") is True
     assert raw["llm"].pop("model") == "${HEALER_LLM_MODEL:-claude-opus-5-5}"
     expected = yaml.safe_load(phase5)

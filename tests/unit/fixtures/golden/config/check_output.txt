@@ -21,6 +21,7 @@ monitor:
   - rest
   - listener
   poll_interval_seconds: 30
+  first_poll_lookback_hours: 24
   trigger: final_failure
 contracts:
   dir: healer/contracts

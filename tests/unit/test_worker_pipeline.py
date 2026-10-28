@@ -1370,6 +1370,69 @@ def test_the_poll_cursor_is_kept_in_healer_kv(cfg: HealerConfig) -> None:
     assert not pipeline.state_path(cfg).exists()  # the phase-5 state file is only ever read
 
 
+@pytest.mark.parametrize("hours", [0, 6])
+def test_the_first_poll_looks_back_first_poll_lookback_hours(
+    tmp_path: Path, healer_env: Path, hours: int
+) -> None:
+    cfg = make_cfg(tmp_path, monitor={"first_poll_lookback_hours": hours})
+    start = NOW - timedelta(hours=hours)
+    assert pipeline.first_poll_cursor(cfg, NOW) == {
+        "watermark": start.isoformat(),
+        "not_before": start.isoformat(),
+    }
+    client = FakeAirflowClient()
+    client.add_failure("etl", RUN_1, "run", SIMPLE_LOG)
+    stats = reconcile(cfg, None, client, now=NOW)
+    assert stats.errors == [] and stats.since == start and client.list_calls == [start]
+    assert (get_watermark(cfg), get_not_before(cfg)) == (NOW, start)  # the start is a floor
+
+    later = NOW + timedelta(minutes=5)
+    reconcile(cfg, None, client, now=later)
+    assert client.list_calls[-1] == max(NOW - timedelta(seconds=60), start)  # the overlap never passes it
+
+
+def test_first_poll_lookback_hours_only_shapes_the_first_window(tmp_path: Path, healer_env: Path) -> None:
+    unset = make_cfg(tmp_path / "unset")
+    assert pipeline.first_poll_cursor(unset, NOW) is None  # the feed's own 24 hours, as before
+    client = FakeAirflowClient()
+    reconcile(unset, None, client, now=NOW)
+    assert client.list_calls == [NOW - pipeline.INITIAL_LOOKBACK] and get_not_before(unset) is None
+
+    cfg = make_cfg(tmp_path / "set", monitor={"first_poll_lookback_hours": 0})
+    set_watermark(cfg, NOW - timedelta(hours=3))  # the worker polled before: its cursor is kept
+    client = FakeAirflowClient()
+    reconcile(cfg, None, client, now=NOW)
+    assert client.list_calls == [NOW - timedelta(hours=3, seconds=60)] and get_not_before(cfg) is None
+
+
+def test_the_first_window_stays_put_when_its_listing_fails(tmp_path: Path, healer_env: Path) -> None:
+    cfg = make_cfg(tmp_path, monitor={"first_poll_lookback_hours": 0})
+    client = FakeAirflowClient()
+    client.list_error = AirflowAPIError("Airflow is down", status_code=503)
+    stats = reconcile(cfg, None, client, now=NOW)
+    assert stats.errors and (get_watermark(cfg), get_not_before(cfg)) == (NOW, NOW)  # stored before listing
+
+    client.list_error = None
+    client.add_failure("etl", RUN_1, "run", SIMPLE_LOG)  # failed while Airflow could not be listed
+    later = NOW + timedelta(hours=1)
+    stats = reconcile(cfg, None, client, now=later)
+    assert client.list_calls[-1] == NOW and len(stats.created) == 1
+
+
+def test_first_poll_lookback_hours_bounds_the_first_window_of_any_feed(
+    tmp_path: Path, healer_env: Path
+) -> None:
+    cfg = make_cfg(
+        tmp_path, orchestrator={"type": "fake"}, monitor={"modes": ["poll"], "first_poll_lookback_hours": 1}
+    )
+    world = FakeWorld(clock=lambda: NOW)
+    world.add_pipeline("etl", file="dags/etl.py", steps={"run": TaskInfo("run", "python")})
+    world.fail("etl", RUN_1, "run", text=SIMPLE_LOG, at=NOW - timedelta(hours=2))
+    world.fail("etl", RUN_2, "run", text=SIMPLE_LOG, at=NOW - timedelta(minutes=30))
+    stats = reconcile(cfg, None, None, now=NOW, adapter=FakeAdapter(cfg, world=world))
+    assert stats.errors == [] and [incident.run_id for incident in _incidents(cfg)] == [RUN_2]
+
+
 def test_a_phase5_state_file_is_imported_once(tmp_path: Path, healer_env: Path) -> None:
     corrupt = make_cfg(tmp_path / "corrupt")
     pipeline.state_path(corrupt).write_text("{not json", encoding="utf-8")

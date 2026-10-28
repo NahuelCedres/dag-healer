@@ -49,6 +49,7 @@ monitor:
   dags: ["*"]                    # fnmatch patterns; prefix a pattern with "!" to exclude DAGs
   modes: [rest, listener]        # rest: poll failed task instances; listener: push from task runners
   poll_interval_seconds: 30
+  first_poll_lookback_hours: 24  # hours of past failures the worker's first poll lists (0: only new ones)
   trigger: final_failure         # final_failure | every_failure (also tries that will be retried)
 
 contracts:
