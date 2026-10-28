@@ -1,0 +1,202 @@
+name: Release
+
+# Publishes dag-healer to TestPyPI and then to PyPI when a tag v<version> is pushed. Only such tags
+# start it: never a branch (healer/... included) or a pull request. Uploads use trusted publishing
+# (OIDC), so no PyPI token is stored anywhere, and each one waits for a reviewer of its environment.
+# docs/releasing.md has the one-time setup and the release steps.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Nothing by default: each job asks for what it needs.
+permissions: {}
+
+# A newer run for the same tag (deleted and pushed again at another commit) cancels the older one,
+# which built the old commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  build:
+    name: Build the distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Do not ask before downloading the pnpm version pinned in ui/package.json.
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before anything is installed. hatchling reads the version from the same line.
+      - name: Check that the tag matches __version__
+        id: version
+        run: |
+          file=src/dag_healer/_version.py
+          version="$(sed -nE 's/^__version__ = "([^"]+)"$/\1/p' "$file")"
+          if [ -z "$version" ]; then
+            echo "::error file=$file::no line __version__ = \"<version>\" found"
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/tags/v$version" ]; then
+            echo "::error file=$file::The tag $GITHUB_REF_NAME does not match __version__ = \"$version\" at its commit: tag the commit that bumps __version__, or name the tag v$version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "The tag v$version matches __version__ = \"$version\""
+      # The UI build and the wheel check are those of the "UI bundle and wheel" job of ci.yml:
+      # change both workflows together.
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          # No cache in a release build.
+          package-manager-cache: false
+      - name: Enable corepack (pnpm from ui/package.json)
+        run: corepack enable
+      # pnpm install --frozen-lockfile, pnpm build (the Airflow plugin bundle) and pnpm
+      # build:standalone (the dag-healer serve page), then copy ui/dist/main.umd.cjs and
+      # ui/dist/standalone/ into src/dag_healer/api/static/ (over the committed bundles), where
+      # the sdist and the wheel take them from.
+      - name: Build the UI bundles
+        run: python scripts/tasks.py ui --local
+      - name: Compare the fresh bundles with the committed ones
+        run: |
+          changed="$(git status --porcelain -- src/dag_healer/api/static)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "::warning::the UI bundles committed at this tag differ from a fresh build of ui/: the release ships the fresh build. Run 'python scripts/tasks.py ui' and commit src/dag_healer/api/static/ on main"
+          fi
+      # Pinned on purpose: update them by hand (docs/releasing.md).
+      - name: Install the build tools
+        run: python -m pip install build==1.6.1 twine==7.0.0
+      # The sdist from the checkout, then the wheel from the sdist. hatch_build.py refuses a wheel
+      # without main.umd.cjs.
+      - name: Build the sdist and the wheel
+        run: python -m build
+      # Exactly one sdist and one wheel, named after __version__. A version that is not in its
+      # normalized form (PEP 440) gets other file names and fails here.
+      - name: Check the distribution files
+        shell: python
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          expected = sorted([f"dag_healer-{version}-py3-none-any.whl", f"dag_healer-{version}.tar.gz"])
+          found = sorted(path.name for path in Path("dist").iterdir())
+          if found != expected:
+              raise SystemExit(
+                  f"dist/ holds {found} instead of {expected}. "
+                  f"Is __version__ = {version!r} in its normalized form (PEP 440)?"
+              )
+          print("dist/: " + ", ".join(found))
+      # Both bundles byte-identical to ui/dist, no stale standalone file, and their sizes.
+      - name: Check that the wheel ships the new bundles
+        shell: python
+        run: |
+          import gzip
+          import zipfile
+          from pathlib import Path
+
+          static = "dag_healer/api/static/"
+          dist = Path("ui/dist")
+          built = {"main.umd.cjs": dist / "main.umd.cjs"}
+          for path in sorted((dist / "standalone").rglob("*")):
+              if path.is_file():
+                  built[path.relative_to(dist).as_posix()] = path
+          if "standalone/index.js" not in built:
+              raise SystemExit("pnpm build:standalone did not produce ui/dist/standalone/index.js")
+
+          wheel = next(Path("dist").glob("dag_healer-*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+              for name, path in built.items():
+                  if static + name not in names:
+                      raise SystemExit(f"{wheel.name} does not ship {static}{name}")
+                  if archive.read(static + name) != path.read_bytes():
+                      raise SystemExit(f"{wheel.name} ships a {static}{name} not built from ui/")
+          stale = sorted(
+              name[len(static):]
+              for name in names
+              if name.startswith(static + "standalone/") and name[len(static):] not in built
+          )
+          if stale:
+              raise SystemExit(f"{wheel.name} ships standalone files the build did not produce: {stale}")
+
+          def size(paths):
+              data = b"".join(path.read_bytes() for path in paths)
+              return f"{len(data)} bytes, {len(gzip.compress(data, mtime=0))} gzipped"
+
+          standalone = [path for name, path in built.items() if name.startswith("standalone/")]
+          print(f"{wheel.name} ships the bundles built from ui/:")
+          print(f"  main.umd.cjs: {size([built['main.umd.cjs']])}")
+          print(f"  standalone/: {size(standalone)} in {len(standalone)} file(s)")
+      - name: twine check
+        run: python -m twine check --strict dist/*
+      - name: Upload the distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # The upload jobs check nothing out: they publish the files of the build job as they are. Their
+  # environments hold no secrets; PyPI and TestPyPI trust this workflow file and the environment.
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/dag-healer/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write # the OIDC token that TestPyPI exchanges for a short-lived upload token
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      # A file already on TestPyPI (from an earlier run of the same version) is skipped.
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build, publish-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dag-healer/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write # the OIDC token that PyPI exchanges for a short-lived upload token
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
