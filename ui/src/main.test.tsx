@@ -30,18 +30,28 @@ describe("bundle globals", () => {
 });
 
 describe("views", () => {
-  it("renders the nav page", async () => {
-    mockApi([]);
+  it("renders the console on the nav page", async () => {
+    mockApi([
+      { handler: () => ({ incidents: [], total: 0 }), path: "incidents" },
+      { handler: () => ({ dags: [] }), path: "dags" },
+    ]);
     render(<HealerNav />);
-    expect(screen.getByRole("heading", { name: "Healer" })).toBeInTheDocument();
-    expect(await screen.findByText("No incidents recorded yet.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "What failed, and what dag-healer did about it" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("No incidents yet")).toBeInTheDocument();
   });
 
   it("renders the DAG panel from props", async () => {
-    mockApi([]);
+    mockApi([
+      {
+        handler: () => ({ can_edit: true, contract: null, incidents: [], monitored: true }),
+        path: "dags/sales_daily_etl/incidents",
+      },
+    ]);
     render(<HealerDagIncidents dagId="sales_daily_etl" />);
-    expect(screen.getByRole("heading", { name: "Healer incidents" })).toBeInTheDocument();
-    expect(await screen.findByText("sales_daily_etl")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "sales_daily_etl" })).toBeInTheDocument();
+    expect(await screen.findByText(/No incidents: no task of this DAG has failed/u)).toBeInTheDocument();
   });
 
   it("asks for a task instance when the context has none", () => {

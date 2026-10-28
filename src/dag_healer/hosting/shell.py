@@ -19,7 +19,7 @@ the server runs is picked up; until it exists each route answers 503 with
 
 Responses carry :data:`SHELL_HEADERS`: ``Cache-Control: no-store`` and the security headers.
 The Content-Security-Policy allows scripts from this origin only (the shell has no inline
-script) and inline styles, which Emotion and the CSS the bundle injects need.
+script) and inline styles, which the CSS the bundle injects needs.
 """
 
 from __future__ import annotations

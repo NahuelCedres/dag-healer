@@ -192,6 +192,8 @@ export interface ColumnRuleView {
 }
 
 export interface ContractDatasetView {
+  /** Whether columns the contract does not list are accepted (left out when true, the default). */
+  allow_extra_columns?: boolean;
   columns: Array<ColumnRuleView>;
   locator: { path: string; type: string };
   name: string;
@@ -227,6 +229,32 @@ export interface MeResponse {
   host?: "airflow_plugin" | "standalone";
   orchestrator?: MeOrchestrator | null;
   user: Record<string, unknown> | string | null;
+}
+
+/** `GET /setup`: what the human actions lead to in this deployment (no secret). */
+export interface SetupResponse {
+  alerts: {
+    /** Recipients of the email channel (`notify.email.to`); empty without email. */
+    email: Array<string>;
+    /** The incident events that send alerts (`notify.events`). */
+    events: Array<string>;
+  };
+  contracts_dir: string;
+  /** `classification.min_confidence`: the confidence the model needs to decide on its own. */
+  min_confidence: number;
+  repairs: {
+    allowed_paths: Array<string>;
+    base_branch: string;
+    max_diff_files: number;
+    max_diff_lines: number;
+    pr_base: string;
+    /** `github.repo` (owner/name), when set. */
+    repository: string | null;
+    skip_ci: boolean;
+    tests_dir: string | null;
+    /** Whether this process has a GitHub token (the token itself is never sent). */
+    token_configured: boolean;
+  };
 }
 
 export interface IncidentListResponse {
@@ -502,6 +530,9 @@ const noteBody = (note?: string): { note?: string } => {
 /** `GET /me`: the signed-in user, the public base URL and, outside Airflow, the host and orchestrator. */
 export const getMe = (signal?: AbortSignal) => apiFetch<MeResponse>("me", { signal });
 
+/** `GET /setup`: alert recipients, how a fix is delivered, its limits and the classification threshold. */
+export const getSetup = (signal?: AbortSignal) => apiFetch<SetupResponse>("setup", { signal });
+
 export interface IncidentQuery {
   dagId?: string;
   limit?: number;
@@ -558,6 +589,13 @@ export const getTaskInstanceIncident = (
 /** `GET /dags/{dag_id}/contract` (404 when the DAG has no contract). */
 export const getContract = (dagId: string, signal?: AbortSignal) =>
   apiFetch<ContractView>(`dags/${seg(dagId)}/contract`, { signal });
+
+/** `GET /dags/{dag_id}/contract.yaml`: the contract file as written in the repository (404 without one). */
+export const getContractFile = (dagId: string, signal?: AbortSignal) =>
+  apiFetch<string>(`dags/${seg(dagId)}/contract.yaml`, {
+    headers: { Accept: "application/yaml, text/plain;q=0.9, */*;q=0.1" },
+    signal,
+  });
 
 /** `POST .../resolve`: a human decides the incident is a data problem, a code bug, or noise. */
 export const resolveIncident = (dagId: string, incidentId: string, resolution: Resolution, note?: string) =>

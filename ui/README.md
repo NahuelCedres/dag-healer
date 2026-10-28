@@ -1,6 +1,6 @@
 # dag-healer-ui
 
-The React UI of dag-healer. The same views ship in two bundles:
+The React UI of dag-healer: the console. The same views ship in two bundles:
 
 - the **Airflow plugin bundle** (`main.umd.cjs`): it runs **inside the Airflow 3 UI** as a React plugin
   (`react_apps`) and talks to the healer API that the same plugin mounts on the Airflow API server under `/healer`;
@@ -8,19 +8,50 @@ The React UI of dag-healer. The same views ship in two bundles:
   the views without Airflow (for example for AWS Step Functions). See [Standalone host](#standalone-host).
 
 The project was bootstrapped with the official Airflow tool (`dev/react-plugin-tools/bootstrap.py` from
-`apache/airflow`, tag `3.3.2`) and keeps its toolchain: Vite 8 (library mode), React 19, Chakra UI v3, TypeScript,
-ESLint, Prettier and Vitest.
+`apache/airflow`, tag `3.3.2`) and keeps its toolchain: Vite 8 (library mode), React 19, TypeScript, ESLint, Prettier
+and Vitest. The console draws its own markup and styles (`src/console/console.css`): no component library, so both
+bundles stay small and the look is the same in both hosts.
+
+## The console
+
+The design is calm: muted colours, colour only on small state markers (a dot, a pill, a diff line), no glows or
+pulses, a dark and a light theme. Contracts and decisions are explained in plain words, next to the YAML and the
+identifiers they come from. `docs/design/console/DESIGN_BRIEF.md` describes it.
+
+- **The shell** (the Healer page, and every page of `dag-healer serve`): a sidebar with the incidents by what they
+  need (Needs you, In progress, Done), the work area and a collapsible side panel. Its place is in the URL
+  (`?dag=<id>&incident=<id>`, `?view=pipelines&pipeline=<id>`, `?group=needs`), so every view can be linked and
+  Back works.
+- **The inbox** lists every incident of every pipeline this dag-healer serves, with group filters, a pipeline and a
+  category filter and a search over pipelines, steps, errors and runs.
+- **An incident** leads with what it needs. One that waits for a person opens with the question in plain words and
+  its answers (resolve as data or as code, retry, ignore, retry repair, approve the contract); each answer shows
+  what dag-healer will do, who gets an alert and which files change before it is confirmed (`GET /setup` says it for
+  this deployment). "Decided by" says whether a fixed rule, the model (with its confidence) or a person decided.
+  Then the evidence (what happened, each broken contract rule in plain words next to the lines of its YAML file, the
+  masked sample), the fix (the test, the test results before and after, the diff, the pull request or PR.md and the
+  CI note of PR.md) and, in the side panel, the details, the alerts and the timeline.
+- **The pipelines** list every pipeline with its contract status and open incidents; one pipeline shows its recent
+  incidents and its contract in plain words or as its file, with the approval when it is due.
+- **The Airflow DAG and task tabs** embed a pipeline and an incident in Airflow's own page, without the sidebar.
+- **Keyboard and screen readers:** a skip link, landmarks and headings; focus moves to the heading of each new view,
+  into a confirmation's heading when it opens, to the queued notice once an action is sent, and back to the opener
+  when a dialog closes (dialogs trap Tab and leave the page behind inert). `]` shows or hides the side panel (⌥ and
+  AltGr work, it is ignored while typing, and it can be turned off); the panel's state and that setting are kept per
+  viewer in localStorage.
+- **Themes:** inside Airflow the console follows Airflow's light or dark mode (the class Airflow puts on `<html>`);
+  on `dag-healer serve` the viewer picks system, light or dark.
 
 ## How Airflow loads it
 
 The plugin (`dag_healer.airflow.plugin.HealerPlugin`) registers three `react_apps` that share one bundle,
 `healer/static/main.umd.cjs?v=<version>` (relative, so it resolves against `<base href>` and works under a sub-path):
 
-| `react_apps` name (= label) | Destination     | URL route                                                       | View                              |
-| --------------------------- | --------------- | --------------------------------------------------------------- | --------------------------------- |
-| `Healer`                    | `nav`           | `/plugin/healer`                                                | `src/views/HealerPage.tsx`        |
-| `Healer incidents`          | `dag`           | `/dags/<dag_id>/plugin/healer-dag`                              | `src/views/DagPanel.tsx`          |
-| `Healer incident`           | `task_instance` | `/dags/<dag_id>/runs/<run_id>/tasks/<task_id>/plugin/healer-ti` | `src/views/TaskInstancePanel.tsx` |
+| `react_apps` name (= label) | Destination     | URL route                                                       | View                                       |
+| --------------------------- | --------------- | --------------------------------------------------------------- | ------------------------------------------ |
+| `Healer`                    | `nav`           | `/plugin/healer`                                                | the console shell (`src/console/Console`)  |
+| `Healer incidents`          | `dag`           | `/dags/<dag_id>/plugin/healer-dag`                              | the pipeline (`src/console/Pipelines`)     |
+| `Healer incident`           | `task_instance` | `/dags/<dag_id>/runs/<run_id>/tasks/<task_id>/plugin/healer-ti` | the incident (`src/console/IncidentPage`)  |
 
 The Airflow host `import()`s the bundle once per URL and then reads `globalThis[<react_apps name>]`; the same name
 is the label Airflow shows in the navigation and on the tabs. So `src/main.tsx` assigns `globalThis["Healer"]`,
@@ -37,9 +68,8 @@ Bundle contract (see `vite.config.ts`):
 - `react`, `react-dom`, `react-router-dom` and `react/jsx-runtime` are **external**, mapped to the globals the host
   exposes: `React`, `ReactDOM`, `ReactRouterDOM`, `ReactJSXRuntime`. Never bundle React: two copies of React break
   hooks.
-- CSS is injected by JS (`vite-plugin-css-injected-by-js`).
-- Theme: `ChakraProvider` uses `globalThis.ChakraUISystem` (provided by the host) and falls back to the local
-  default system during development.
+- CSS is injected by JS (`vite-plugin-css-injected-by-js`). Every rule is scoped under `.dhc`, the root of the views,
+  so nothing leaks into the Airflow UI.
 
 ### Context resolution
 
@@ -65,18 +95,16 @@ FastAPI `detail` message): `UnauthorizedError` (401), `ForbiddenError` (403), `N
 (409), `ApiError` (any other status) and `NetworkError` (status 0).
 
 The views use plain React state and effects (`src/hooks/usePolledResource.ts`, not the host's react-query): they
-refresh every 10 s, every 5 s while a queued command or contract approval is pending, and pause while the tab is
-hidden. A 401 shows "Your Airflow session expired — reload the page"; a 403 on a DAG shows "You do not have access to
-this DAG."; a 404 (for example an older plugin without a route) renders an empty state. Links to Airflow pages
-(`src/links.ts`) are built relative to `document.baseURI` with URL-encoded segments (run ids contain `:` and `+`).
+refresh every 10 s, every 5 s while a queued command or contract approval is pending or an incident is in progress,
+and pause while the tab is hidden. A 401 shows "Your Airflow session expired — reload the page"; a 403 on a DAG shows
+"You do not have access to this DAG."; a 404 renders an empty state. Links to Airflow pages (`src/links.ts`) are built
+relative to `document.baseURI` with URL-encoded segments (run ids contain `:` and `+`).
 
-State-changing actions (resolve as data / code, ignore, retry repair, retry task, approve contract) open a
-confirmation dialog with an optional note (and the incident's `action_warnings` for that action), POST the command,
-show "Queued — the worker will apply it shortly" and poll until the incident's `pending_commands` is empty. The
-action bar only shows the incident's `allowed_actions` and is hidden when `can_edit` is false. Colors come from the
-host theme through semantic tokens; only badges pick a `colorPalette` (category: data orange, code blue, ambiguous
-purple; status: waiting_human yellow, repaired green, repair_failed/error red, reported orange, others gray), see
-`src/palettes.ts`.
+State-changing actions (resolve as data / code, ignore, retry repair, retry task, approve contract) show their
+consequences and an optional note before they are confirmed (with the incident's `action_warnings` for that action),
+POST the command, show it as queued and poll until the incident's `pending_commands` is empty. Only the incident's
+`allowed_actions` are offered, and none when `can_edit` is false. The texts of decisions and consequences are pure
+functions of the API's data (`src/console/decision.ts`, `src/console/consequences.ts`), tested on their own.
 
 ### Vocabulary
 
@@ -101,17 +129,17 @@ module.
 - Entry: `src/standalone.tsx` (modelled on `src/dev.tsx`). It picks the view from the path after the `<base href>`
   path (`src/standalone/mode.ts`: `.../plugin/healer-ti` → task instance, `.../plugin/healer-dag` → DAG, anything
   else → the Healer page) and renders `StandaloneApp`.
-- `src/standalone/StandaloneApp.tsx` asks `/me` once, then renders the **same `App`** with the orchestrator's words and
-  a small header (`StandaloneHeader`: the title "Healer · <orchestrator>" from `/me`, linking to the Healer page, the
-  user and, for the token backend, "Sign out").
+- `src/standalone/StandaloneApp.tsx` asks `/me` once, then renders the **same `App`**: the console shell, whose sidebar
+  shows the orchestrator's name, the user and, for the token backend, "Sign out", and speaks the orchestrator's
+  words. On this host every URL shape opens the shell: the DAG tab's shape on the pipeline, the task-instance tab's
+  shape on its incident.
 - Token backend (`serve.auth.backend: token`): a browser cannot send a bearer token by itself, so the page shows a
   sign-in card (`TokenSignIn`). The token is checked with `GET /me` before it is kept for this tab (sessionStorage,
   or memory when storage is blocked; never localStorage, a URL or a log), and `src/standalone/auth.ts` sends it as
   `Authorization: Bearer <token>` on every API call. A 401 shows the sign-in card again; "Sign out" forgets the
-  token. Since a new tab cannot carry the token, the task-instance view then reads PR.md through its inline preview
-  only. The other backends (`dev`, `trusted_header`, `alb_oidc`) need nothing from the page: a 401 shows the session
+  token. Since a new tab cannot carry the token, the incident page then shows PR.md in its dialog only. The other backends (`dev`, `trusted_header`, `alb_oidc`) need nothing from the page: a 401 shows the session
   banner.
-- Bundle contract (see `vite.standalone.config.ts`): format ES, React 19, ReactDOM, Chakra UI and Emotion **bundled**
+- Bundle contract (see `vite.standalone.config.ts`): format ES, React 19 and ReactDOM **bundled**
   (nothing external: the shell has no host globals), CSS injected by JS, no inline script, file names without hashes
   (`index.js`, and `assets/*.js` only if the build ever splits) so rebuilds give clean diffs.
 - `src/main.tsx`, `vite.config.ts` and the plugin bundle are unaffected: nothing under `src/standalone/` is reachable
@@ -188,9 +216,8 @@ Copy-Item -Recurse ui\dist\standalone src\dag_healer\api\static\standalone
 downloads pnpm. On Windows a bind-mounted `node_modules` is slow (the first install takes minutes); mounting a named
 volume over it (`-v dag-healer-ui-modules:/app/node_modules`) makes repeated builds take seconds.
 
-Output in `ui/dist/` (gitignored): `main.umd.cjs` (about 384 kB, 103 kB gzipped; Chakra UI and Emotion are bundled,
-React is not), plus `main.d.ts` and `main.d.ts.map`, and `standalone/index.js` (about 578 kB, 163 kB gzipped; React
-included). **Commit both rebuilt bundles** in `src/dag_healer/api/static/` (`main.umd.cjs` and `standalone/`): the
+Output in `ui/dist/` (gitignored): `main.umd.cjs` (about 130 kB, 36 kB gzipped; React is not bundled), plus
+`main.d.ts` and `main.d.ts.map`, and `standalone/index.js` (about 320 kB, 95 kB gzipped; React included). **Commit both rebuilt bundles** in `src/dag_healer/api/static/` (`main.umd.cjs` and `standalone/`): the
 wheel ships them, so end users install dag-healer without Node. `hatch_build.py` refuses a wheel without
 `main.umd.cjs` and only warns without `standalone/index.js` (then `dag-healer serve` answers 503 on its pages). The
 CI job "UI bundle and wheel" builds both, warns when the committed bundles differ from that build and checks that the
@@ -213,24 +240,28 @@ them too. Run them inside `ui/`: from another directory corepack does not see th
 ```
 src/main.tsx                  plugin bundle entry: PluginComponentProps, the three components, globalThis registration
 src/appNames.ts               react_apps names (labels + globalThis keys) and the 0.1 aliases
-src/App.tsx                   App({mode, header?, text?, ...props}): Chakra, color mode and UiText providers,
-                              error boundary, view switch
+src/App.tsx                   App({mode, text?, user?, onSignOut?, ...props}): UiText provider, error boundary, the
+                              console shell or an embedded view
 src/api.ts                    typed client of /healer/api/v1 (shapes, endpoints, typed errors, authorization provider)
 src/links.ts                  hrefs of the Healer views (task-instance / DAG tabs, Healer page) and PR.md
 src/vocabulary.ts             orchestrator words (Airflow defaults), UiTextContext, vocabularyFrom(/me)
 src/hooks/usePolledResource.ts polling hook (interval, pause when hidden, abort, keep data on error)
-src/model.ts, format.ts       pure helpers: counts, sorting, decision from events, native links, labels and formatting
-src/palettes.ts, messages.ts  badge color palettes and shared user-facing messages (constants + vocabulary builders)
-src/diff.ts                   unified diff parser used by DiffView
+src/model.ts, format.ts       pure helpers: sorting, native links, action warnings, formatting
+src/messages.ts               shared user-facing messages (constants + vocabulary builders)
+src/diff.ts                   unified diff parser of the fix's diff
 src/context/pluginContext.ts  props -> objects -> URL context resolver
-src/context/colorMode/        color mode provider from the template (next-themes)
-src/components/               badges, DiffView, MaskedSampleTable, ViolationsTable, IncidentTimeline, EventTimeline,
-                              Contracts (table, rules, approve button), ConfirmDialog, ApiErrorNotice, ...
-src/views/                    HealerPage, DagPanel, TaskInstancePanel (+ *.test.tsx)
+src/components/ErrorBoundary  keeps a crash of the views inside them
+src/console/                  the console:
+  Console.tsx                   the shell (sidebar, work area, side panel) and the embedded views of the tabs
+  Sidebar, Inbox, IncidentPage, PrimaryCard (the decision), Evidence, Fix, Details (timeline), Pipelines,
+  ContractCard, Confirm (consequences + note), Layout (side panel, ] key), Modal, Frame (theme scope, dialogs),
+  nav and route (the console's place in the URL), focus, data (shared resources), prefs (panel, shortcuts, theme)
+  labels, decision, consequences, events, texts, time: pure functions behind the texts (+ *.test.ts)
+  console.css                   the calm look: tokens of both themes, layout, narrow screens
 src/standalone.tsx            standalone bundle entry (`pnpm build:standalone`)
-src/standalone/               StandaloneApp, StandaloneHeader, TokenSignIn, auth (token), mode (path -> view), title
+src/standalone/               StandaloneApp, TokenSignIn, auth (token), mode (path -> view), title
 src/test/                     fetch mock, fixtures and jest-dom typings for the tests
-src/global.d.ts               globalThis declarations (ChakraUISystem, AirflowPlugin)
+src/global.d.ts               globalThis declarations (AirflowPlugin)
 src/dev.tsx                   `pnpm dev` entry (not part of any bundle)
 ```
 

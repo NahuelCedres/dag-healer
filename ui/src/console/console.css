@@ -1,0 +1,1492 @@
+/*
+ * The dag-healer console: a calm, quiet look in a dark and a light theme.
+ *
+ * Every rule is scoped under .dhc (the root of the views), so nothing leaks into the Airflow UI
+ * that hosts the plugin. Colour marks state only, on small elements (a dot, a pill, a diff line);
+ * hierarchy comes from position, size and weight. No glow, no pulse, no gradient.
+ */
+
+.dhc {
+  --ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --side-w: 248px;
+  --panel-w: 312px;
+  --gutter: 24px;
+
+  /* dark (the default) */
+  --ground: #0b0d12;
+  --sidebar: #0f1218;
+  --panel: #13171f;
+  --raised: #191e28;
+  --hover: #1e2430;
+  --border: #242a36;
+  --border-strong: #3a4356;
+  --control-border: #646e83;
+  --text: #e4e7ee;
+  --muted: #a2aab9;
+  --faint: #8a93a5;
+  --on-accent: #0b0d12;
+  --scrim: rgba(8, 10, 14, 0.72);
+  --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  /* state colours, muted */
+  --cyan: #5db7c0;
+  --pink: #e0708a;
+  --lime: #8dbe6c;
+  --amber: #d6a65c;
+  --blue: #7c9fe0;
+  --violet: #a790d8;
+  --idle: #6b7487;
+  --focus: #5db7c0;
+  --add-bg: rgba(141, 190, 108, 0.1);
+  --del-bg: rgba(224, 112, 138, 0.1);
+  --hunk-bg: rgba(124, 159, 224, 0.08);
+  --mark-bg: rgba(214, 166, 92, 0.12);
+
+  color-scheme: dark;
+  background: var(--ground);
+  color: var(--text);
+  font: 13px/20px var(--ui);
+  -webkit-font-smoothing: antialiased;
+  text-align: left;
+}
+
+.dhc[data-theme="light"] {
+  --ground: #f5f6f8;
+  --sidebar: #edeff3;
+  --panel: #ffffff;
+  --raised: #f2f4f7;
+  --hover: #e6e9ef;
+  --border: #dce0e7;
+  --border-strong: #a9b1be;
+  --control-border: #7d8695;
+  --text: #1a1e26;
+  --muted: #4a5262;
+  --faint: #5f6879;
+  --on-accent: #ffffff;
+  --scrim: rgba(26, 30, 38, 0.4);
+  --shadow: 0 20px 50px rgba(26, 30, 38, 0.18);
+  --cyan: #1f6f7a;
+  --pink: #b23a57;
+  --lime: #3f7a27;
+  --amber: #8a5a12;
+  --blue: #3459a8;
+  --violet: #6a4cb0;
+  --idle: #6e7788;
+  --focus: #1f6f7a;
+  --add-bg: rgba(63, 122, 39, 0.1);
+  --del-bg: rgba(178, 58, 87, 0.08);
+  --hunk-bg: rgba(52, 89, 168, 0.07);
+  --mark-bg: rgba(138, 90, 18, 0.1);
+
+  color-scheme: light;
+}
+
+/* The standalone page has nothing but the console: paint the whole page in its ground colour. */
+html[data-dhc-theme="dark"],
+html[data-dhc-theme="dark"] body {
+  background: #0b0d12;
+  color-scheme: dark;
+}
+html[data-dhc-theme="light"],
+html[data-dhc-theme="light"] body {
+  background: #f5f6f8;
+  color-scheme: light;
+}
+html[data-dhc-theme] body {
+  margin: 0;
+}
+
+.dhc *,
+.dhc *::before,
+.dhc *::after {
+  box-sizing: border-box;
+}
+.dhc [hidden] {
+  display: none !important;
+}
+.dhc button,
+.dhc input,
+.dhc select,
+.dhc textarea {
+  font: inherit;
+  color: inherit;
+}
+.dhc a {
+  color: var(--cyan);
+  text-underline-offset: 2px;
+}
+.dhc a:hover {
+  text-decoration-thickness: 2px;
+}
+.dhc h1,
+.dhc h2,
+.dhc h3,
+.dhc p,
+.dhc dl,
+.dhc dd,
+.dhc figure {
+  margin: 0;
+}
+.dhc h1,
+.dhc h2,
+.dhc h3 {
+  text-wrap: balance;
+}
+.dhc table {
+  font-size: inherit;
+  line-height: inherit;
+}
+.dhc ::placeholder {
+  color: var(--faint);
+  opacity: 1;
+}
+.dhc :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.dhc [tabindex="-1"]:focus {
+  outline: none;
+}
+.dhc code,
+.dhc .mono {
+  font-family: var(--mono);
+}
+.dhc code {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  overflow-wrap: anywhere;
+}
+.dhc .faint {
+  color: var(--faint);
+}
+.dhc .muted {
+  color: var(--muted);
+}
+.dhc .small {
+  font-size: 12px;
+  line-height: 16px;
+}
+.dhc .lbl {
+  font: 600 11px/16px var(--ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.dhc .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.dhc .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dhc .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.dhc .wrap-anywhere {
+  overflow-wrap: anywhere;
+}
+
+/* skip link */
+.dhc .skip {
+  position: absolute;
+  z-index: 50;
+  top: 8px;
+  left: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  transform: translateY(-200%);
+}
+.dhc .skip:focus {
+  transform: none;
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/* shell: sidebar, work area, side panel                                                          */
+/* ---------------------------------------------------------------------------------------------- */
+
+.dhc.shell-root {
+  position: relative;
+  min-height: 100%;
+}
+.dhc .shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+.dhc .side {
+  flex: 0 0 var(--side-w);
+  width: var(--side-w);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 14px 12px 16px 16px;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  min-height: 100vh;
+}
+.dhc .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+  min-width: 0;
+}
+.dhc .brand-name {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+.dhc .brand-sub {
+  display: block;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+.dhc .nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dhc .nav a,
+.dhc .nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+}
+.dhc .nav a:hover,
+.dhc .nav button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.dhc .nav a[aria-current="page"] {
+  background: var(--hover);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+.dhc .nav .count {
+  margin-left: auto;
+  font: 500 11px/18px var(--mono);
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--muted);
+}
+.dhc .groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.dhc .group h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 4px;
+}
+.dhc .group h2 .n {
+  margin-left: auto;
+  font: 500 11px/16px var(--mono);
+  color: var(--faint);
+}
+.dhc .group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dhc .item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.dhc .item:hover,
+.dhc .item[aria-current="page"] {
+  background: var(--hover);
+}
+.dhc .item .t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.dhc .item .age {
+  font: 12px/16px var(--mono);
+  color: var(--faint);
+}
+.dhc .item .sub {
+  grid-column: 2 / 4;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 16px;
+}
+.dhc .item:hover .age,
+.dhc .item:hover .sub,
+.dhc .item[aria-current="page"] .age,
+.dhc .item[aria-current="page"] .sub {
+  color: var(--muted);
+}
+.dhc .empty-li {
+  padding: 4px 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.dhc .side-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 6px 0;
+  border-top: 1px solid var(--border);
+}
+.dhc .settings > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dhc .main {
+  flex: 999 1 520px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dhc .main:focus {
+  outline: none;
+}
+.dhc .work {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 22px var(--gutter) 40px;
+  min-width: 0;
+}
+.dhc .work > * {
+  flex-shrink: 0;
+}
+.dhc .work {
+  container: work / inline-size;
+}
+/* The Airflow DAG and task tabs: the console's ground, in Airflow's light or dark mode, so its text
+   stays legible whatever the page around it paints. */
+.dhc.embedded {
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.dhc .embedded .work,
+.dhc.embedded .work {
+  padding: 0 0 24px;
+}
+@media (min-width: 768px) {
+  .dhc.embedded {
+    padding: 24px;
+  }
+}
+
+/* side panel */
+.dhc .panel {
+  flex: 0 0 var(--panel-w);
+  width: var(--panel-w);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 0 16px 32px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  min-height: 100vh;
+}
+.dhc .panel-h {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: -8px;
+  padding: 10px 0 6px;
+  background: var(--panel);
+}
+.dhc .rail {
+  flex: 0 0 44px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+  min-height: 100vh;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.dhc .rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 32px;
+  padding: 8px 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dhc .rail-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.dhc .rail-btn .rail-label {
+  writing-mode: vertical-rl;
+  font: 600 11px/16px var(--ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dhc .psec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dhc .panel .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/* page blocks                                                                                    */
+/* ---------------------------------------------------------------------------------------------- */
+
+.dhc .page-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dhc .page-h h1 {
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.dhc .lead {
+  font-size: 14px;
+  line-height: 22px;
+  max-width: 72ch;
+}
+.dhc .crumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--faint);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.dhc .crumb a {
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.dhc .meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  color: var(--faint);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.dhc .meta .mono {
+  overflow-wrap: anywhere;
+}
+.dhc .pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.dhc .decided {
+  margin-top: 8px;
+  color: var(--muted);
+  max-width: 80ch;
+}
+.dhc .decided strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.dhc .latest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--faint);
+}
+.dhc .btn.back-link {
+  display: none;
+}
+
+.dhc .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.dhc .card.flush {
+  padding: 0;
+  gap: 0;
+}
+.dhc .card-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dhc .card h2 {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dhc .card h2.lbl {
+  font: 600 11px/16px var(--ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.dhc .card h3 {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.dhc .note-box {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--muted);
+}
+
+/* dots, pills, chips */
+.dhc .dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c, var(--idle));
+}
+.dhc .dot.hollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--c, var(--idle));
+}
+.dhc .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font: 600 11px/1 var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--c, var(--muted));
+  border: 1px solid color-mix(in srgb, var(--c, var(--muted)) 32%, transparent);
+  background: color-mix(in srgb, var(--c, var(--muted)) 8%, transparent);
+}
+.dhc .pill.plain {
+  text-transform: none;
+  letter-spacing: 0;
+  font: 500 12px/1 var(--mono);
+}
+.dhc .chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font: 600 11px/1 var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.dhc .tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font: 600 10.5px/1 var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* buttons */
+.dhc .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  white-space: nowrap;
+}
+.dhc .btn:hover {
+  background: var(--hover);
+}
+.dhc .btn.primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--ground);
+}
+.dhc .btn.primary:hover {
+  background: var(--muted);
+  border-color: var(--muted);
+}
+.dhc .btn.ghost {
+  background: transparent;
+}
+.dhc .btn.ghost:hover {
+  background: var(--hover);
+}
+.dhc .btn.sm {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 20px;
+}
+.dhc .btn:disabled,
+.dhc .btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.dhc .icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+.dhc .icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.dhc .linkish {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cyan);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-align: left;
+}
+@media (pointer: coarse) {
+  .dhc .btn,
+  .dhc .btn.sm {
+    min-height: 40px;
+  }
+  .dhc .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* forms */
+.dhc .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.dhc .field > span {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.dhc .input,
+.dhc .select,
+.dhc textarea {
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--control-border);
+  background: var(--ground);
+  color: var(--text);
+}
+.dhc textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  line-height: 20px;
+}
+.dhc .input:focus-visible,
+.dhc .select:focus-visible,
+.dhc textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+.dhc .check {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dhc .check input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--text);
+}
+.dhc .seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--ground);
+}
+.dhc .seg button {
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.dhc .seg button[aria-pressed="true"] {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* filters and tables */
+.dhc .filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+.dhc .fchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dhc .fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dhc .fchip:hover {
+  color: var(--text);
+}
+.dhc .fchip[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+.dhc .fchip .n {
+  font: 500 12px/1 var(--mono);
+  color: var(--faint);
+}
+.dhc .scroll {
+  overflow-x: auto;
+}
+.dhc .tbl {
+  width: 100%;
+  border-collapse: collapse;
+}
+.dhc .tbl caption {
+  text-align: left;
+}
+.dhc .tbl th {
+  text-align: left;
+  font: 600 11px/16px var(--ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dhc .tbl td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.dhc .tbl tbody tr:last-child td {
+  border-bottom: 0;
+}
+.dhc .tbl tbody tr:hover td,
+.dhc .tbl tbody tr[aria-current="true"] td {
+  background: var(--hover);
+}
+.dhc .tbl tbody tr[aria-current="true"] td:first-child {
+  box-shadow: inset 2px 0 0 var(--text);
+}
+.dhc .tbl.compact td,
+.dhc .tbl.compact th {
+  padding: 7px 12px;
+}
+.dhc .tbl .num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dhc .tbl .nowrap {
+  white-space: nowrap;
+}
+.dhc .tbl .mono {
+  font-size: 12.5px;
+}
+.dhc .tbl th.hl,
+.dhc .tbl td.hl {
+  background: var(--mark-bg);
+}
+.dhc .masked {
+  color: var(--violet);
+}
+.dhc .blank {
+  color: var(--pink);
+  font-style: italic;
+}
+.dhc .rowlink {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  text-decoration: none;
+  overflow-wrap: break-word;
+}
+.dhc .tbl td.wide {
+  min-width: 14em;
+}
+.dhc .rowlink:hover {
+  text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/* the decision                                                                                   */
+/* ---------------------------------------------------------------------------------------------- */
+
+.dhc .decide {
+  border-color: var(--border-strong);
+}
+.dhc .decide h2.q {
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.dhc .choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 12px;
+}
+.dhc .choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.dhc .choice:hover {
+  background: var(--hover);
+}
+.dhc .choice[aria-pressed="true"] {
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+.dhc .choice strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.dhc .choice span {
+  color: var(--muted);
+}
+.dhc .confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--raised);
+}
+.dhc .confirm h3 {
+  font-size: 14px;
+}
+.dhc .cons {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+}
+.dhc .cons li strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.dhc .queued {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+}
+.dhc .queued .dot {
+  margin-top: 6px;
+}
+.dhc .notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--raised);
+}
+.dhc .notice.error {
+  border-color: color-mix(in srgb, var(--pink) 55%, transparent);
+}
+.dhc .notice.warn {
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+}
+.dhc .notice .dot {
+  margin-top: 6px;
+}
+
+/* steps, key-value lists, timeline */
+.dhc .steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  counter-reset: step;
+}
+.dhc .steps > li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 36px;
+  counter-increment: step;
+}
+.dhc .steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font: 600 12px/1 var(--mono);
+}
+.dhc .steps strong {
+  font-weight: 600;
+}
+.dhc .kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 7px 14px;
+}
+.dhc .kv dt {
+  color: var(--faint);
+}
+.dhc .kv dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dhc .tl {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dhc .tl li {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--muted);
+}
+.dhc .tl li strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.dhc .tl .tt {
+  font: 12px/20px var(--mono);
+  color: var(--faint);
+}
+.dhc .tl .msg {
+  overflow-wrap: anywhere;
+}
+.dhc .plain-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+}
+.dhc .plain-list strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* evidence */
+.dhc .rules {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dhc .rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.dhc .rule:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.dhc .rule .plain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dhc .rule .plain p {
+  color: var(--text);
+}
+.dhc details.more > summary,
+.dhc details.err > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.dhc details.more[open] > summary {
+  margin-bottom: 8px;
+}
+.dhc details.err {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.dhc details.err > summary {
+  padding: 12px 16px;
+}
+.dhc details.err > .err-body {
+  padding: 0 16px 14px;
+}
+
+/* code: YAML, diffs, logs */
+.dhc .code {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  max-height: 480px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--ground);
+  font: 12px/19px var(--mono);
+  color: var(--text);
+  white-space: pre;
+  tab-size: 4;
+}
+.dhc .code.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dhc .code .k {
+  color: var(--muted);
+}
+.dhc .code .c {
+  color: var(--faint);
+}
+.dhc .code .hl {
+  display: inline-block;
+  min-width: 100%;
+  background: var(--mark-bg);
+}
+.dhc .diff {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--ground);
+  overflow: hidden;
+}
+.dhc .diff-h {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+  font-size: 12px;
+}
+.dhc .diff-b {
+  overflow-x: auto;
+  font: 12px/19px var(--mono);
+  padding-block: 6px;
+}
+.dhc .diff .l {
+  white-space: pre;
+  padding: 0 14px;
+  min-width: max-content;
+}
+.dhc .diff .add {
+  background: var(--add-bg);
+  color: var(--lime);
+}
+.dhc .diff .del {
+  background: var(--del-bg);
+  color: var(--pink);
+}
+.dhc .diff .hunk {
+  background: var(--hunk-bg);
+  color: var(--blue);
+}
+.dhc .diff .meta-l {
+  color: var(--faint);
+}
+.dhc .tests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+/* the contract in plain words */
+.dhc .contract-ds {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* overlays */
+.dhc .overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(8vh) 16px 24px;
+  background: var(--scrim);
+}
+.dhc .modal {
+  width: 100%;
+  max-width: 820px;
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.dhc .modal-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.dhc .modal-h h2 {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dhc .modal-b {
+  padding: 16px;
+  overflow: auto;
+}
+.dhc .modal-b .code {
+  max-height: none;
+}
+.dhc .toasts {
+  position: fixed;
+  z-index: 1500;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+.dhc .toast {
+  max-width: min(400px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+/* sign-in and loading screens of the standalone host */
+.dhc .center-card {
+  max-width: 440px;
+  margin: 10vh auto 0;
+  padding: 0 16px;
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/* narrow screens                                                                                 */
+/* ---------------------------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .dhc {
+    --panel-w: 280px;
+    --side-w: 228px;
+  }
+}
+
+@media (max-width: 900px) {
+  .dhc .shell {
+    flex-wrap: wrap;
+  }
+  .dhc .main {
+    flex-basis: calc(100% - var(--side-w));
+  }
+  .dhc .panel,
+  .dhc .rail {
+    position: static;
+    align-self: stretch;
+    flex: 1 1 100%;
+    width: auto;
+    max-height: none;
+    min-height: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .dhc .panel {
+    padding-left: var(--gutter);
+    padding-right: var(--gutter);
+  }
+  .dhc .panel-h {
+    position: static;
+  }
+  .dhc .rail {
+    flex-direction: row;
+    padding: 6px var(--gutter);
+  }
+  .dhc .rail-btn {
+    flex-direction: row;
+    width: auto;
+    padding: 6px 10px;
+  }
+  .dhc .rail-btn .rail-label {
+    writing-mode: horizontal-tb;
+  }
+}
+
+@media (max-width: 760px) {
+  .dhc {
+    --gutter: 16px;
+  }
+  .dhc .shell {
+    flex-direction: column;
+    min-height: 0;
+  }
+  .dhc .side {
+    position: static;
+    align-self: stretch;
+    width: auto;
+    flex: none;
+    max-height: none;
+    min-height: 0;
+    gap: 12px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .dhc .side .groups {
+    display: none;
+  }
+  .dhc .nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .dhc .side-foot {
+    margin-top: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .dhc .main {
+    flex: none;
+  }
+  .dhc .work {
+    padding: 16px var(--gutter) 28px;
+  }
+  .dhc .btn.back-link {
+    display: inline-flex;
+    margin-bottom: 8px;
+  }
+  .dhc .overlay {
+    padding: 16px 8px;
+  }
+}
+
+/* The work area is a container: its tables and two-column blocks stack when it is narrow, whatever
+   the sidebar and the side panel leave of the window. */
+@container work (max-width: 680px) {
+  .dhc .rule {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Tables become stacked lists: each cell keeps its column name. */
+  .dhc .tbl.stackable thead {
+    display: none;
+  }
+  .dhc .tbl.stackable tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 4px 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .dhc .tbl.stackable tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .dhc .tbl.stackable td {
+    display: block;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .dhc .tbl.stackable td::before {
+    content: attr(data-label);
+    display: block;
+    font: 600 10.5px/16px var(--ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .dhc .tbl.stackable td.wide {
+    grid-column: 1 / -1;
+  }
+  .dhc .tbl.stackable tbody tr:hover td,
+  .dhc .tbl.stackable tbody tr[aria-current="true"] td {
+    background: transparent;
+    box-shadow: none;
+  }
+  .dhc .tbl.stackable tbody tr[aria-current="true"] {
+    background: var(--hover);
+    box-shadow: inset 2px 0 0 var(--text);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dhc .skip {
+    transition: transform 0.12s ease-out;
+  }
+}

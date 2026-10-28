@@ -5,7 +5,7 @@ import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
 
 // Standalone bundle (`pnpm build:standalone`): the ES-module app loaded by the page shell of
 // `dag-healer serve`. Unlike vite.config.ts (the Airflow plugin's UMD library, with React from the
-// host), nothing is external: React, ReactDOM, Chakra UI and Emotion are bundled, because the shell is
+// host), nothing is external: React and ReactDOM are bundled, because the shell is
 // a plain page with no host globals. File names carry no hash, so a rebuild gives a clean diff of the
 // copy committed in src/dag_healer/api/static/standalone/ (the shell loads index.js?v=<version>, and
 // relative imports resolve against the module URL). Run it after `pnpm build`, which empties dist/.

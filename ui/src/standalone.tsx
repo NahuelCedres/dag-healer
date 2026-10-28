@@ -3,7 +3,7 @@
  * page shell of `dag-healer serve` (`dag_healer.hosting.shell`).
  *
  * Unlike the Airflow plugin bundle (`main.tsx`: UMD, React from the host), this bundle includes
- * React, ReactDOM and Chakra UI, because the shell is a plain page with no host globals. The shell
+ * React and ReactDOM, because the shell is a plain page with no host globals. The shell
  * serves the plugin's URL shapes, so the view is picked from the path and the same App renders it,
  * with the orchestrator's words from `GET /me`. The shell names the auth backend in
  * `<meta name="dag-healer-auth">`; with "token", the API token the user signs in with is sent as

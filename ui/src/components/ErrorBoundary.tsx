@@ -1,5 +1,6 @@
-import { Box, Heading, Text } from "@chakra-ui/react";
 import { Component, type ErrorInfo, type ReactNode } from "react";
+
+import "src/console/console.css";
 
 type ErrorBoundaryProps = {
   readonly children: ReactNode;
@@ -29,12 +30,14 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     }
 
     return (
-      <Box borderColor="border.error" borderRadius="md" borderWidth="1px" p={4} role="alert">
-        <Heading size="md">dag-healer could not render this view</Heading>
-        <Text color="fg.muted" fontSize="sm" mt={2}>
-          {error.message}
-        </Text>
-      </Box>
+      <div className="dhc" style={{ padding: 16 }}>
+        <div className="notice error" role="alert">
+          <div className="stack" style={{ gap: 6 }}>
+            <h2 style={{ fontSize: 14 }}>dag-healer could not render this view</h2>
+            <p className="muted">{error.message}</p>
+          </div>
+        </div>
+      </div>
     );
   }
 }

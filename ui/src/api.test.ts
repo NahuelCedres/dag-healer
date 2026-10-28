@@ -9,10 +9,12 @@ import {
   ConflictError,
   ForbiddenError,
   getContract,
+  getContractFile,
   getDagIncidents,
   getIncident,
   getMe,
   getPrMarkdown,
+  getSetup,
   getTaskInstanceIncident,
   hasSessionExpired,
   isApiError,
@@ -170,6 +172,7 @@ describe("endpoints", () => {
     ["getDagIncidents", () => getDagIncidents("my dag"), "/healer/api/v1/dags/my%20dag/incidents", ""],
     ["getIncident", () => getIncident("d", "abc"), "/healer/api/v1/dags/d/incidents/abc", ""],
     ["getContract", () => getContract("d"), "/healer/api/v1/dags/d/contract", ""],
+    ["getSetup", () => getSetup(), "/healer/api/v1/setup", ""],
   ])("%s calls GET %s", async (_name, call, pathname, search) => {
     const spy = ok();
 
@@ -208,6 +211,23 @@ describe("endpoints", () => {
 
     expect(url.pathname).toBe("/healer/api/v1/dags/d/incidents/i1/pr.md");
     expect(headers.get("Accept")).toContain("text/markdown");
+  });
+
+  it("fetches a contract file as text", async () => {
+    const spy = mockFetch(() =>
+      Promise.resolve(
+        new Response("version: 1\n", {
+          headers: { "Content-Type": "application/yaml; charset=utf-8" },
+          status: 200,
+        }),
+      ),
+    );
+
+    await expect(getContractFile("my dag")).resolves.toBe("version: 1\n");
+    const { headers, url } = lastCall(spy);
+
+    expect(url.pathname).toBe("/healer/api/v1/dags/my%20dag/contract.yaml");
+    expect(headers.get("Accept")).toContain("application/yaml");
   });
 
   it.each([

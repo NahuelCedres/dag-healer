@@ -1,13 +1,11 @@
-import { Box, ChakraProvider, HStack, Spinner, Text } from "@chakra-ui/react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import { App, type HealerMode } from "src/App";
 import { getMe, type MeResponse, toApiError } from "src/api";
-import { ColorModeProvider } from "src/context/colorMode";
-import { localSystem } from "src/theme";
-import { type UiText, vocabularyFrom } from "src/vocabulary";
+import { Frame } from "src/console/Frame";
+import { usePrefs, useTheme } from "src/console/prefs";
+import { DEFAULT_DISPLAY_NAME, type UiText, vocabularyFrom } from "src/vocabulary";
 
-import { StandaloneHeader } from "./StandaloneHeader";
 import { TokenSignIn } from "./TokenSignIn";
 import { clearToken, readToken, TOKEN_BACKEND } from "./auth";
 import { titleFor } from "./title";
@@ -29,18 +27,33 @@ const signOut = () => {
   globalThis.location.reload();
 };
 
-/** Chakra providers of the screens drawn without App (loading, sign-in); App has its own. */
-const Frame = ({ children }: { readonly children: ReactNode }) => (
-  <ChakraProvider value={localSystem}>
-    <ColorModeProvider>{children}</ColorModeProvider>
-  </ChakraProvider>
-);
+/** The page around the screens drawn before the console (loading, sign-in), in the viewer's theme. */
+const Screen = ({ children, title }: { readonly children: ReactNode; readonly title: string }) => {
+  const [prefs] = usePrefs();
+  const theme = useTheme("standalone", prefs.theme);
+
+  useEffect(() => {
+    document.documentElement.dataset.dhcTheme = theme;
+  }, [theme]);
+
+  return (
+    <Frame theme={theme}>
+      <main className="center-card stack" data-testid="standalone-screen">
+        <p className="lbl" data-testid="standalone-title">
+          {title}
+        </p>
+        {children}
+      </main>
+    </Frame>
+  );
+};
 
 /**
- * Root of the standalone page: asks `GET /me` once, then renders the same App as the Airflow plugin
- * with the orchestrator's words and a small header. With the token backend, a missing or rejected
- * token shows the sign-in card instead. When `/me` fails otherwise, App still renders (with the
- * default words), so its views show their own errors, such as the session banner on a 401.
+ * Root of the standalone page: asks `GET /me` once, then renders the console with the orchestrator's
+ * words, the user and, for the token backend, Sign out. With the token backend, a missing or
+ * rejected token shows the sign-in card instead. When `/me` fails otherwise, the console still
+ * renders (with the default words), so its views show their own errors, such as the session banner
+ * on a 401.
  */
 export const StandaloneApp = ({ authBackend, mode }: StandaloneAppProps) => {
   const tokenMode = authBackend === TOKEN_BACKEND;
@@ -78,38 +91,41 @@ export const StandaloneApp = ({ authBackend, mode }: StandaloneAppProps) => {
 
   const me = session.status === "ready" ? session.me : undefined;
   const text = useMemo<UiText>(
-    () => ({ host: "standalone", words: vocabularyFrom(me?.orchestrator?.vocabulary) }),
+    () => ({
+      displayName:
+        typeof me?.orchestrator?.display_name === "string" && me.orchestrator.display_name.trim().length > 0
+          ? me.orchestrator.display_name
+          : DEFAULT_DISPLAY_NAME,
+      host: "standalone",
+      type: me?.orchestrator?.type,
+      words: vocabularyFrom(me?.orchestrator?.vocabulary),
+    }),
     [me],
-  );
-  const header = (
-    <StandaloneHeader
-      onSignOut={tokenMode && session.status !== "signed_out" ? signOut : undefined}
-      title={titleFor(me)}
-      user={typeof me?.user === "string" ? me.user : undefined}
-    />
   );
 
   if (session.status === "signed_out") {
     return (
-      <Frame>
-        {header}
-        <Box p={{ base: 4, md: 6 }}>
-          <TokenSignIn onSignedIn={(signedIn) => setSession({ me: signedIn, status: "ready" })} />
-        </Box>
-      </Frame>
+      <Screen title={titleFor(undefined)}>
+        <TokenSignIn onSignedIn={(signedIn) => setSession({ me: signedIn, status: "ready" })} />
+      </Screen>
     );
   }
   if (loading) {
     return (
-      <Frame>
-        {header}
-        <HStack color="fg.muted" gap={2} p={{ base: 4, md: 6 }}>
-          <Spinner size="sm" />
-          <Text fontSize="sm">Loading…</Text>
-        </HStack>
-      </Frame>
+      <Screen title={titleFor(undefined)}>
+        <p className="muted" role="status">
+          Loading…
+        </p>
+      </Screen>
     );
   }
 
-  return <App header={header} mode={mode} text={text} />;
+  return (
+    <App
+      mode={mode}
+      onSignOut={tokenMode ? signOut : undefined}
+      text={text}
+      user={typeof me?.user === "string" ? me.user : undefined}
+    />
+  );
 };

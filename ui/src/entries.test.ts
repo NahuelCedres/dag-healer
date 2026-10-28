@@ -66,7 +66,7 @@ describe("bundle entries", () => {
     const graph = moduleGraph("main.tsx");
 
     expect(graph).toContain("App.tsx");
-    expect(graph).toContain("views/TaskInstancePanel.tsx");
+    expect(graph).toContain("console/IncidentPage.tsx");
     expect(graph).toContain("vocabulary.ts");
     expect([...graph].filter(isStandalone)).toEqual([]);
   });

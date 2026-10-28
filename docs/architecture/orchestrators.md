@@ -1188,7 +1188,7 @@ As built in step 7:
 
 - `ui/src/main.tsx` and `vite.config.ts` (UMD with React, ReactDOM, router and jsx-runtime external) are **unchanged**.
 - New `ui/src/standalone.tsx`, modelled on today's `ui/src/dev.tsx`:
-  - bundles React 19, ReactDOM and Chakra (React 19 ships no UMD [V], so the shell cannot provide host globals);
+  - bundles React 19 and ReactDOM (React 19 ships no UMD [V], so the shell cannot provide host globals);
   - draws a small header (product name, user from `/me`);
   - picks `mode` from `location.pathname` (`/plugin/healer` → nav, `/dags/:d/plugin/healer-dag` → dag, `/dags/:d/runs/:r/tasks/:t[/mapped/:i]/plugin/healer-ti` → task_instance);
   - renders the **same** `App`. The existing pathname fallback in `context/pluginContext.ts` already parses these shapes.
@@ -1200,7 +1200,7 @@ As built in step 7:
 
 As built in step 7:
 - **Bundles:**
-  - `pnpm build` is unchanged: the UMD bundle of `vite.config.ts` and `main.tsx`. `pnpm build:standalone` (`vite.standalone.config.ts`) builds one ES module, `ui/dist/standalone/index.js`, after it. React 19, ReactDOM, Chakra and Emotion are bundled, the CSS is injected by the JavaScript and the file name has no hash.
+  - `pnpm build` is unchanged: the UMD bundle of `vite.config.ts` and `main.tsx`. `pnpm build:standalone` (`vite.standalone.config.ts`) builds one ES module, `ui/dist/standalone/index.js`, after it. React 19 and ReactDOM are bundled, the CSS is injected by the JavaScript and the file name has no hash.
   - Sizes: about 577 kB (163 kB gzipped); the UMD bundle is about 384 kB.
   - `python scripts/tasks.py ui` builds both, with the local toolchain or else in the `ui` stage of `docker/Dockerfile`, and replaces `src/dag_healer/api/static/standalone/` as a whole. The image's wheel takes the fresh plugin bundle and the standalone bundle of `src/`.
   - `hatch_build.py` requires `main.umd.cjs` alone and warns, for standard and editable builds, when `standalone/index.js` is missing.
@@ -1210,7 +1210,7 @@ As built in step 7:
   - `/` redirects (307) to `{root_path}/plugin/healer`. `/plugin/{route}` and `/dags/{rest:path}` answer the page: `<base href="{root_path}/">`, `<meta name="dag-healer-auth" content="<backend>">`, the title "Healer · <display name>", `<div id="root">` and the module script `healer/static/standalone/index.js?v=<version>`.
   - Every value is HTML-escaped, and the page has no inline script or style. `root_path` is the ASGI root path, set by uvicorn's `--root-path`.
   - The bundle is looked for on every request. While it is missing, the three routes answer 503 in plain text, naming the file and the fix; the API keeps answering.
-  - Every shell answer (200, 307 and 503) carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: DENY` and the policy `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`. Emotion and the injected CSS need the inline styles.
+  - Every shell answer (200, 307 and 503) carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: DENY` and the policy `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`. The injected CSS needs the inline styles.
   - The routes answer GET only. A probe uses `/healer/health`.
 - **The standalone UI:**
   - `StandaloneApp` asks `/me` once per page, before it mounts `App` (with the `token` backend, once a token is there); meanwhile it shows the header "Healer" and "Loading…". So the words never switch from "DAG" to "flow", and a token host shows its sign-in before any view gets a 401.

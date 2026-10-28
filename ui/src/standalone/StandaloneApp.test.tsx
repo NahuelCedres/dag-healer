@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type MeResponse, setAuthorizationProvider } from "src/api";
+import { setup } from "src/test/fixtures";
 import { jsonResponse, mockApi, type RecordedCall } from "src/test/utils";
 
 import { StandaloneApp } from "./StandaloneApp";
@@ -34,6 +35,8 @@ const FAKEFLOW_ME: MeResponse = {
 
 const unauthorized = () => jsonResponse(401, { detail: "Not authenticated" });
 
+const SETUP = setup() as unknown as Record<string, unknown>;
+
 /** The token backend: only `Bearer alice-token` is accepted. */
 const tokenApi = (me: MeResponse = FAKEFLOW_ME) => {
   const accepts = (call: RecordedCall) => call.headers.get("Authorization") === `Bearer ${TOKEN}`;
@@ -45,7 +48,7 @@ const tokenApi = (me: MeResponse = FAKEFLOW_ME) => {
     },
     { handler: (call) => (accepts(call) ? { incidents: [], total: 0 } : unauthorized()), path: "incidents" },
     { handler: (call) => (accepts(call) ? { dags: [] } : unauthorized()), path: "dags" },
-    { handler: (call) => (accepts(call) ? { contracts: [] } : unauthorized()), path: "contracts" },
+    { handler: (call) => (accepts(call) ? SETUP : unauthorized()), path: "setup" },
   ]);
 };
 
@@ -76,9 +79,7 @@ describe("StandaloneApp with the token backend", () => {
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByLabelText("API token")).toHaveAttribute("type", "password");
     expect(screen.getByLabelText("API token")).not.toHaveAttribute("name");
-    expect(
-      within(screen.getByTestId("standalone-header")).getByRole("link", { name: "Healer" }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("standalone-title")).toHaveTextContent("Healer");
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
     expect(calls).toHaveLength(0);
   });
@@ -89,13 +90,15 @@ describe("StandaloneApp with the token backend", () => {
     render(<StandaloneApp authBackend="token" mode="nav" />);
     signIn(`  ${TOKEN}  `);
 
-    // The header is drawn again once the views render: query it afresh.
-    expect(await screen.findByRole("link", { name: "Healer · Fakeflow" })).toHaveAttribute(
-      "href",
-      new URL("plugin/healer", document.baseURI).href,
-    );
+    // The console replaces the sign-in screen: its sidebar names the orchestrator and the user.
+    const sidebar = await screen.findByTestId("sidebar");
+
+    expect(sidebar).toHaveTextContent("Fakeflow");
+    expect(within(sidebar).getByRole("link", { name: "Flows" })).toBeInTheDocument();
     expect(screen.getByTestId("standalone-user")).toHaveTextContent("alice");
-    expect(await screen.findByText("Failed steps of monitored flows will show up here.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("When a step of a watched flow fails, its incident shows up here."),
+    ).toBeInTheDocument();
     expect(globalThis.sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe(TOKEN);
 
     expect(calls[0]?.path).toBe("me");
@@ -137,11 +140,10 @@ describe("StandaloneApp with the token backend", () => {
     tokenApi();
     render(<StandaloneApp authBackend="token" mode="nav" />);
 
-    expect(await screen.findByRole("link", { name: "Healer · Fakeflow" })).toBeInTheDocument();
-    const header = screen.getByTestId("standalone-header");
+    const sidebar = await screen.findByTestId("sidebar");
 
-    expect(within(header).getByText("alice")).toBeInTheDocument();
-    fireEvent.click(within(header).getByRole("button", { name: "Sign out" }));
+    expect(within(sidebar).getByText("alice")).toBeInTheDocument();
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Sign out" }));
     expect(readToken()).toBeUndefined();
     expect(globalThis.sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
     expect(reload).toHaveBeenCalledTimes(1);
@@ -165,7 +167,7 @@ describe("StandaloneApp with the other backends", () => {
 
     expect(await screen.findByText("Your session expired — reload the page")).toBeInTheDocument();
     expect(screen.queryByLabelText("API token")).toBeNull();
-    expect(screen.getByTestId("standalone-header")).toHaveTextContent("Healer");
+    expect(screen.getByTestId("sidebar")).toHaveTextContent("dag-healer");
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
     await waitFor(() => expect(calls.length).toBeGreaterThan(1));
     expect(calls.every((call) => !call.headers.has("Authorization"))).toBe(true);
@@ -178,15 +180,20 @@ describe("StandaloneApp with the other backends", () => {
         handler: () => ({ can_edit: true, contract: null, incidents: [], monitored: true }),
         path: "dags/customers_sync/incidents",
       },
+      { handler: () => ({ incidents: [], total: 0 }), path: "incidents" },
+      { handler: () => ({ dags: [] }), path: "dags" },
+      { handler: () => SETUP, path: "setup" },
     ]);
 
     window.history.pushState({}, "", "/dags/customers_sync/plugin/healer-dag");
     try {
       render(<StandaloneApp authBackend="dev" mode="dag" />);
-      expect(await screen.findByText("No incidents recorded for this flow.")).toBeInTheDocument();
-      expect(screen.getByTestId("standalone-header")).toHaveTextContent("Healer · Fakeflow");
+      expect(await screen.findByText(/No incidents: no step of this flow has failed/u)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Every flow dag-healer watches" })).toBeInTheDocument();
+      expect(screen.getByTestId("sidebar")).toHaveTextContent("Fakeflow");
       expect(screen.getByTestId("standalone-user")).toHaveTextContent("dev");
-      expect(calls.map((call) => call.path)).toEqual(["me", "dags/customers_sync/incidents"]);
+      expect(calls[0]?.path).toBe("me");
+      expect(calls.map((call) => call.path)).toContain("dags/customers_sync/incidents");
     } finally {
       window.history.pushState({}, "", "/");
     }
@@ -197,11 +204,16 @@ describe("StandaloneApp with the other backends", () => {
       { handler: () => ({ base_url: "http://127.0.0.1:8090", host: "standalone", user: "ann" }), path: "me" },
       { handler: () => ({ incidents: [], total: 0 }), path: "incidents" },
       { handler: () => ({ dags: [] }), path: "dags" },
-      { handler: () => ({ contracts: [] }), path: "contracts" },
+      { handler: () => SETUP, path: "setup" },
     ]);
 
     render(<StandaloneApp authBackend="alb_oidc" mode="nav" />);
-    expect(await screen.findByText("Healer · Apache Airflow")).toBeInTheDocument();
-    expect(await screen.findByText("No monitored DAGs.")).toBeInTheDocument();
+    const sidebar = await screen.findByTestId("sidebar");
+
+    expect(sidebar).toHaveTextContent("Apache Airflow");
+    expect(within(sidebar).getByRole("link", { name: "DAGs" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("When a task of a watched DAG fails, its incident shows up here."),
+    ).toBeInTheDocument();
   });
 });

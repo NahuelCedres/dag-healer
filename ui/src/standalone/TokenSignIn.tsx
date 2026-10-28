@@ -1,5 +1,4 @@
-import { Button, Card, Field, Heading, Input, Stack, Text } from "@chakra-ui/react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useId, useState } from "react";
 
 import { apiFetch, type MeResponse, toApiError } from "src/api";
 
@@ -20,6 +19,8 @@ export const TokenSignIn = ({ onSignedIn }: { readonly onSignedIn: (me: MeRespon
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const inputId = useId();
+  const errorId = useId();
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -46,39 +47,37 @@ export const TokenSignIn = ({ onSignedIn }: { readonly onSignedIn: (me: MeRespon
   };
 
   return (
-    <Card.Root asChild data-testid="token-sign-in" maxWidth="md" mx="auto" size="sm" variant="outline">
-      <form noValidate onSubmit={submit}>
-        <Card.Header>
-          <Heading as="h1" size="lg">
-            Sign in
-          </Heading>
-        </Card.Header>
-        <Card.Body>
-          <Stack gap={3}>
-            <Text color="fg.muted" fontSize="sm">
-              Sign in with an API token of this dag-healer, one whose sha256 is listed under serve.auth.tokens
-              in healer.yaml. It is kept in this tab only.
-            </Text>
-            <Field.Root invalid={error !== undefined}>
-              <Field.Label>API token</Field.Label>
-              <Input
-                autoComplete="off"
-                maxLength={MAX_TOKEN_LENGTH}
-                onChange={(event) => setToken(event.target.value)}
-                spellCheck={false}
-                type="password"
-                value={token}
-              />
-              {error === undefined ? undefined : <Field.ErrorText>{error}</Field.ErrorText>}
-            </Field.Root>
-          </Stack>
-        </Card.Body>
-        <Card.Footer>
-          <Button loading={busy} type="submit">
-            Sign in
-          </Button>
-        </Card.Footer>
-      </form>
-    </Card.Root>
+    <form className="card" data-testid="token-sign-in" noValidate onSubmit={submit}>
+      <h1 style={{ fontSize: 18, lineHeight: "26px" }}>Sign in</h1>
+      <p className="muted">
+        Sign in with an API token of this dag-healer, one whose sha256 is listed under serve.auth.tokens in
+        healer.yaml. It is kept in this tab only.
+      </p>
+      <label className="field" htmlFor={inputId}>
+        <span>API token</span>
+        <input
+          aria-describedby={error === undefined ? undefined : errorId}
+          aria-invalid={error === undefined ? undefined : true}
+          autoComplete="off"
+          className="input"
+          id={inputId}
+          maxLength={MAX_TOKEN_LENGTH}
+          onChange={(event) => setToken(event.target.value)}
+          spellCheck={false}
+          type="password"
+          value={token}
+        />
+      </label>
+      {error === undefined ? undefined : (
+        <p className="notice error" id={errorId} role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row">
+        <button className="btn primary" disabled={busy} type="submit">
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </div>
+    </form>
   );
 };

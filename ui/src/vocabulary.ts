@@ -42,11 +42,18 @@ export const DEFAULT_DISPLAY_NAME = "Apache Airflow";
 export type UiHost = "airflow_plugin" | "standalone";
 
 export interface UiText {
+  /** The orchestrator's name ("AWS Step Functions"); {@link DEFAULT_DISPLAY_NAME} when unset. */
+  readonly displayName?: string;
   readonly host: UiHost;
+  /** The orchestrator type (`/me` → `orchestrator.type`); "airflow" when unset. */
+  readonly type?: string;
   readonly words: Vocabulary;
 }
 
 export const DEFAULT_UI_TEXT: UiText = { host: "airflow_plugin", words: DEFAULT_VOCABULARY };
+
+/** The orchestrator type of a {@link UiText}: "airflow" unless `/me` named another one. */
+export const orchestratorType = (text: UiText): string => text.type ?? "airflow";
 
 export const UiTextContext = createContext<UiText>(DEFAULT_UI_TEXT);
 
