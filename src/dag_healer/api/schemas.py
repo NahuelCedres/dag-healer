@@ -228,13 +228,19 @@ class RowCountView(_Out):
 
 
 class DatasetView(_Out):
-    """One dataset of a contract."""
+    """One dataset of a contract.
+
+    ``allow_extra_columns`` says whether columns the contract does not list are accepted.
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {"allow_extra_columns": True}
 
     name: str
     task_id: str | None = None
     locator: LocatorView
     columns: list[ColumnView] = Field(default_factory=list)
     row_count: RowCountView = Field(default_factory=RowCountView)
+    allow_extra_columns: bool = True
 
 
 class ContractView(_Out):
@@ -319,6 +325,51 @@ class MeView(_Out):
     orchestrator: MeOrchestrator | None = None
 
 
+class AlertSetup(_Out):
+    """Who hears about an incident (``notify``): every alert is also written to the worker's log.
+
+    ``events`` are the incident events that send alerts (``notify.events``); ``email`` the
+    recipients of the email channel (``notify.email.to``, empty without ``notify.email``).
+    """
+
+    events: list[str] = Field(default_factory=list)
+    email: list[str] = Field(default_factory=list)
+
+
+class RepairSetup(_Out):
+    """How a CODE fix is delivered and what it may change (``github``, ``repo``, ``limits``).
+
+    ``token_configured`` says whether this process has a GitHub token (never the token): with
+    one, a fix becomes a pull request on ``repository`` (``github.repo``, else the repository's
+    GitHub origin) against ``pr_base``; without one, it is committed on a local branch and
+    described in PR.md. ``skip_ci`` puts ``[skip ci]`` in the fix's commit.
+    """
+
+    token_configured: bool
+    repository: str | None = None
+    base_branch: str
+    pr_base: str
+    skip_ci: bool
+    allowed_paths: list[str] = Field(default_factory=list)
+    tests_dir: str | None = None
+    max_diff_files: int
+    max_diff_lines: int
+
+
+class SetupView(_Out):
+    """``GET /setup``: what the human actions lead to in this deployment.
+
+    The views show it before an action is confirmed: who gets an alert, how a fix is delivered
+    and what it may change, and the confidence the model needs to decide on its own
+    (``classification.min_confidence``).
+    """
+
+    alerts: AlertSetup
+    repairs: RepairSetup
+    min_confidence: float
+    contracts_dir: str
+
+
 class CommandAccepted(_Out):
     """202 answer of the action routes."""
 
@@ -389,6 +440,7 @@ class TaskFailedEvent(BaseModel):
 
 __all__ = [
     "Action",
+    "AlertSetup",
     "AlertView",
     "ColumnView",
     "CommandAccepted",
@@ -412,9 +464,11 @@ __all__ = [
     "MeView",
     "NoteBody",
     "PendingCommandView",
+    "RepairSetup",
     "ResolveBody",
     "RowCountView",
     "Sample",
+    "SetupView",
     "TaskFailedEvent",
     "TaskInstanceIncident",
 ]

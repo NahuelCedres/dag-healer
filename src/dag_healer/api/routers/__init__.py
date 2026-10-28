@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from dag_healer.api.deps import API_PREFIX
-from dag_healer.api.routers import contracts, dags, events, incidents, me
+from dag_healer.api.routers import contracts, dags, events, incidents, me, setup
 from dag_healer.masking import mask_text
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ PUBLIC_PREFIXES: tuple[str, ...] = (f"{API_PREFIX}/events/",)
 
 routers: list[APIRouter] = [
     me.router,
+    setup.router,
     incidents.router,
     dags.router,
     contracts.router,

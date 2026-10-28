@@ -400,6 +400,77 @@ def test_me(api: Api) -> None:
     assert response.json() == {"user": "viewer", "base_url": BASE_URL}
 
 
+# --------------------------------------------------------------------------- /setup
+
+
+def test_setup_defaults(api: Api) -> None:
+    response = api.get("/setup", user="viewer")
+    assert response.status_code == 200
+    assert response.json() == {
+        "alerts": {"events": ["waiting_human", "reported", "repaired", "repair_failed"], "email": []},
+        "repairs": {
+            "token_configured": False,
+            "repository": None,
+            "base_branch": "main",
+            "pr_base": "main",
+            "skip_ci": True,
+            "allowed_paths": ["src/", "dags/"],
+            "tests_dir": None,
+            "max_diff_files": 10,
+            "max_diff_lines": 400,
+        },
+        "min_confidence": 0.75,
+        "contracts_dir": "healer/contracts",
+    }
+    assert api.get("/setup", user=None).status_code == 401
+
+
+def test_setup_shows_recipients_and_delivery_but_never_the_token(api: Api) -> None:
+    token = "ghp_setupRouteSecretValue0123456789"
+    (api.repo / "healer.yaml").write_text(
+        textwrap.dedent(
+            f"""\
+            version: 1
+            repo: {{path: ., dags_dir: dags, base_branch: develop, tests_dir: tests, allowed_paths: [src/]}}
+            contracts: {{dir: healer/contracts}}
+            notify:
+              email:
+                host: smtp.example.com
+                from: healer@example.com
+                to: "data-team@example.com, oncall@example.com"
+              events: [reported, waiting_human]
+            github: {{repo: acme/analytics-etl, token: {token}, pr_base: release, skip_ci: false}}
+            classification: {{min_confidence: 0.8}}
+            limits: {{max_diff_files: 4, max_diff_lines: 120}}
+            """
+        ),
+        encoding="utf-8",
+    )
+    deps.reset_config_cache()
+
+    response = api.get("/setup", user="viewer")
+
+    assert response.status_code == 200
+    assert token not in response.text
+    body = response.json()
+    assert body["alerts"] == {
+        "events": ["reported", "waiting_human"],
+        "email": ["data-team@example.com", "oncall@example.com"],
+    }
+    assert body["repairs"] == {
+        "token_configured": True,
+        "repository": "acme/analytics-etl",
+        "base_branch": "develop",
+        "pr_base": "release",
+        "skip_ci": False,
+        "allowed_paths": ["src/"],
+        "tests_dir": "tests",
+        "max_diff_files": 4,
+        "max_diff_lines": 120,
+    }
+    assert body["min_confidence"] == 0.8
+
+
 # --------------------------------------------------------------------------- incident lists
 
 
@@ -650,6 +721,8 @@ def test_contracts_list_and_detail(api: Api) -> None:
     detail = api.get("/dags/inventory_report/contract").json()
     assert detail["status"] == "draft"
     assert detail["datasets"][0]["columns"][0]["name"] == "qty"
+    # allow_extra_columns is additive: left out while it holds the default (true)
+    assert "allow_extra_columns" not in detail["datasets"][0]
     assert api.get("/dags/deleted_dag/contract").status_code == 404
 
 
@@ -659,6 +732,63 @@ def test_contract_reload_picks_up_file_edits(api: Api) -> None:
     path.write_text(text + "\n", encoding="utf-8")
     detail = api.get("/dags/inventory_report/contract").json()
     assert detail["datasets"][0]["columns"][0]["name"] == "quantity"
+
+
+def test_contract_view_shows_closed_column_sets(api: Api) -> None:
+    contract = _contract(
+        "inventory_report", "inventory", "build_report", [ColumnRule(name="qty", dtype="integer")]
+    )
+    closed = contract.model_copy(
+        update={"datasets": [contract.datasets[0].model_copy(update={"allow_extra_columns": False})]}
+    )
+    save_contract(closed, api.repo / "healer" / "contracts" / "inventory_report.yaml")
+
+    detail = api.get("/dags/inventory_report/contract").json()
+    assert detail["datasets"][0]["allow_extra_columns"] is False
+    listed = {c["dag_id"]: c for c in api.get("/contracts").json()["contracts"]}
+    assert listed["inventory_report"]["datasets"][0]["allow_extra_columns"] is False
+
+
+def test_contract_file_is_served_as_written(api: Api) -> None:
+    path = api.repo / "healer" / "contracts" / "inventory_report.yaml"
+
+    response = api.get("/dags/inventory_report/contract.yaml", user="viewer")
+
+    assert response.status_code == 200
+    assert response.text == path.read_text(encoding="utf-8")
+    assert response.headers["content-type"] == "application/yaml; charset=utf-8"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-disposition"] == 'inline; filename="inventory_report.yaml"'
+    assert ("GET", "CODE", "inventory_report") in api.authorizer.checks
+    assert api.get("/dags/deleted_dag/contract.yaml").status_code == 404
+    assert api.get("/dags/inventory_report/contract.yaml", user="limited").status_code == 403
+    assert api.get("/dags/inventory_report/contract.yaml", user=None).status_code == 401
+
+
+def test_contract_file_outside_the_contracts_dir_is_not_served(api: Api, tmp_path: Path) -> None:
+    outside = tmp_path / "outside" / "linked.yaml"
+    outside.parent.mkdir()
+    save_contract(_contract("linked_dag", "linked", "t", [ColumnRule(name="x", dtype="integer")]), outside)
+    link = api.repo / "healer" / "contracts" / "linked_dag.yaml"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symbolic links are not available here")
+
+    assert api.get("/dags/linked_dag/contract").status_code == 200  # the view reads it, as before
+    assert api.get("/dags/linked_dag/contract.yaml").status_code == 404
+
+
+def test_contract_file_too_large_to_show(api: Api) -> None:
+    contract = _contract(
+        "inventory_report", "inventory", "build_report", [ColumnRule(name="qty", dtype="integer")]
+    )
+    big = contract.model_copy(update={"notes": "x" * (views.MAX_CONTRACT_FILE_BYTES + 1)})
+    save_contract(big, api.repo / "healer" / "contracts" / "inventory_report.yaml")
+
+    assert api.get("/dags/inventory_report/contract").status_code == 200
+    assert api.get("/dags/inventory_report/contract.yaml").status_code == 404
 
 
 # --------------------------------------------------------------------------- actions

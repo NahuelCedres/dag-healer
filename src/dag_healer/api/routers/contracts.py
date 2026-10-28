@@ -4,7 +4,8 @@ The API never writes contract files: an approval is queued as an ``approve_contr
 command that the worker (single writer of the repository) of this process's orchestrator
 instance applies.
 
-Reading a contract needs ``GET`` on ``DagAccessEntity.CODE``. Approving one needs ``PUT`` on
+Reading a contract (its view or its file, ``contract.yaml``) needs ``GET`` on
+``DagAccessEntity.CODE``. Approving one needs ``PUT`` on
 the DAG itself (``requires_access_dag("PUT")``, no sub-entity): the FAB auth manager defines
 only ``can_read`` for "DAG Code", so ``PUT`` on ``CODE`` would be denied to every user,
 Admin included, while editing the DAG is granted to Admin and Op and denied to Viewer.
@@ -13,9 +14,11 @@ Admin included, while editing the DAG is granted to Admin and Op and denied to V
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
@@ -77,6 +80,35 @@ def get_contract(
         record,
         can_approve=authorizer.can_edit_dag(user, dag_id, None),
         pending_approval=dag_id in views.pending_approval_dags(session, orchestrator=instance),
+    )
+
+
+@router.get(
+    "/dags/{dag_id}/contract.yaml",
+    response_class=Response,
+    responses={200: {"content": {"application/yaml": {}}}},
+)
+def get_contract_file(
+    dag_id: str,
+    user: Any = Depends(read_code),
+    cfg: HealerConfig = Depends(get_config),
+) -> Response:
+    """The contract file of one DAG as written in the repository (404 when it has none)."""
+    record = views.load_contracts(cfg).get(dag_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+    text = views.contract_file_text(cfg, record)
+    if text is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The contract file cannot be shown")
+    filename = re.sub(r"[^A-Za-z0-9._-]", "_", record.path.name)
+    return Response(
+        content=text,
+        media_type="application/yaml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
     )
 
 

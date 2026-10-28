@@ -214,11 +214,11 @@ def test_dag_routes_check_dag_permissions() -> None:
         ((method, entity),) = markers
         expected_method = "PUT" if "POST" in route.methods else "GET"
         assert method == expected_method, route.path
-        # reading a contract needs DAG Code; approving needs edit on the DAG itself (FAB has
-        # no "can_edit on DAG Code", so PUT on CODE would be denied to everyone)
+        # reading a contract (its view or its file) needs DAG Code; approving needs edit on the
+        # DAG itself (FAB has no "can_edit on DAG Code", so PUT on CODE would be denied to everyone)
         if route.path.endswith("/contract/approve"):
             expected_entity = None
-        elif route.path.endswith("/contract"):
+        elif route.path.endswith(("/contract", "/contract.yaml")):
             expected_entity = "CODE"
         else:
             expected_entity = "TASK_INSTANCE"
@@ -229,6 +229,7 @@ def _route_samples(incident_id: str) -> list[tuple[str, str, dict[str, Any] | No
     base = f"/api/v1/dags/inventory_report/incidents/{incident_id}"
     return [
         ("GET", "/api/v1/me", None),
+        ("GET", "/api/v1/setup", None),
         ("GET", "/api/v1/incidents", None),
         ("GET", "/api/v1/dags", None),
         ("GET", "/api/v1/contracts", None),
@@ -237,6 +238,7 @@ def _route_samples(incident_id: str) -> list[tuple[str, str, dict[str, Any] | No
         ("GET", f"{base}/pr.md", None),
         ("GET", "/api/v1/dags/inventory_report/task-instance?run_id=manual__1&task_id=build_report", None),
         ("GET", "/api/v1/dags/inventory_report/contract", None),
+        ("GET", "/api/v1/dags/inventory_report/contract.yaml", None),
         ("POST", f"{base}/resolve", {"resolution": "ignore"}),
         ("POST", f"{base}/retry-repair", None),
         ("POST", f"{base}/retry-task", None),

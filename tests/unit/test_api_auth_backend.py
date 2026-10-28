@@ -283,7 +283,7 @@ def test_the_backend_guards_every_api_route(standalone: Standalone) -> None:
                 denied = standalone.call(method, url, user="bob", **options)
                 assert denied.status_code == 403, url
                 assert denied.json() == {"detail": "Forbidden"}
-        elif url != "/api/v1/me":  # the lists filter through the backend's authorizer
+        elif url not in ("/api/v1/me", "/api/v1/setup"):  # the lists filter through the backend's authorizer
             assert recorder.asked("authorized_dag_ids")[0] == ("authorized_dag_ids", ALICE, "GET"), url
 
 

@@ -8,7 +8,7 @@ columns of the contract, ``masking.columns`` and sensitive-looking names are has
 the value already is a mask token, other strings are scrubbed with ``mask_text``).
 ``masking.allow`` columns are left alone and the masking hook is not re-run here.
 Test code, diffs and PR.md files are shown as written by the worker (they are the code
-of the pull request).
+of the pull request), and contract files as written in the repository.
 
 The orchestrator adapter (``adapter``, ``None`` when it cannot be built) only shapes the
 views: native links, the actions its remediator can serve, their warnings and the words of
@@ -741,6 +741,7 @@ def contract_view(
                     for column in dataset.columns
                 ],
                 row_count=schemas.RowCountView(min=dataset.row_count.min, max=dataset.row_count.max),
+                allow_extra_columns=dataset.allow_extra_columns,
             )
             for dataset in contract.datasets
         ],
@@ -749,14 +750,69 @@ def contract_view(
     )
 
 
+#: Largest contract file :func:`contract_file_text` reads (a contract is a few kilobytes).
+MAX_CONTRACT_FILE_BYTES = 512 * 1024
+
+
+def contract_file_text(cfg: HealerConfig, record: ContractRecord) -> str | None:
+    """The contract file of ``record`` as written in the repository.
+
+    ``None`` when it is gone, unreadable, larger than :data:`MAX_CONTRACT_FILE_BYTES` or
+    outside ``cfg.contracts_dir`` (a symbolic link that leads elsewhere). Like test code and
+    diffs, it is repository content and is shown as written.
+    """
+    try:
+        root = cfg.contracts_dir.resolve()
+        path = record.path.resolve()
+        path.relative_to(root)
+        if path.stat().st_size > MAX_CONTRACT_FILE_BYTES:
+            log.warning("dag-healer: not showing the contract file %s: it is too large", record.relpath)
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+
+# --------------------------------------------------------------------------- setup
+
+
+def setup_view(cfg: HealerConfig) -> schemas.SetupView:
+    """What the human actions lead to here: alert recipients, fix delivery, limits, threshold.
+
+    No secret leaves: the GitHub token only shows as ``token_configured``.
+    """
+    email = cfg.notify.email
+    return schemas.SetupView(
+        alerts=schemas.AlertSetup(
+            events=[str(event) for event in cfg.notify.events],
+            email=[str(address) for address in (email.to if email is not None else [])],
+        ),
+        repairs=schemas.RepairSetup(
+            token_configured=bool(cfg.github.token),
+            repository=cfg.github.repo,
+            base_branch=cfg.repo.base_branch,
+            pr_base=cfg.github.pr_base,
+            skip_ci=cfg.github.skip_ci,
+            allowed_paths=[str(entry) for entry in cfg.repo.allowed_paths],
+            tests_dir=cfg.repo.tests_dir,
+            max_diff_files=cfg.limits.max_diff_files,
+            max_diff_lines=cfg.limits.max_diff_lines,
+        ),
+        min_confidence=cfg.classification.min_confidence,
+        contracts_dir=cfg.contracts.dir,
+    )
+
+
 __all__ = [
     "ALLOWED_ACTIONS_BY_STATUS",
+    "MAX_CONTRACT_FILE_BYTES",
     "RESOLUTION_ACTIONS",
     "ContractRecord",
     "action_warnings",
     "actions_for_status",
     "airflow_base_url",
     "allowed_actions",
+    "contract_file_text",
     "contract_status",
     "contract_view",
     "count_incidents",
@@ -778,5 +834,6 @@ __all__ = [
     "pr_md_url",
     "remask_sample",
     "retry_available",
+    "setup_view",
     "task_instance_incident",
 ]
