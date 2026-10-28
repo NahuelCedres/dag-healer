@@ -18,6 +18,11 @@ values stay joinable inside one incident without revealing them.
 
 pandas is imported lazily: :func:`mask_value`, :func:`mask_text` and
 :func:`is_sensitive_column` are cheap enough for log/e-mail code paths.
+
+:func:`known_secrets`, :func:`hide_secrets` and :func:`holds_secret` find known values, such as
+those of credential variables, in a text: whole, or as a fragment of 16 or more characters. The
+LLM providers hide them in their error messages, and the CLI's log filter drops the records that
+hold them.
 """
 
 from __future__ import annotations
@@ -220,6 +225,61 @@ def mask_text(text: Any) -> str:
     if not isinstance(text, str):
         text = str(text)
     return _TEXT_RE.sub(_replace_sensitive, text)
+
+
+# --------------------------------------------------------------------------- known secrets
+
+#: Shorter secret values are not looked for: they would hide ordinary words.
+SHORTEST_SECRET = 8
+#: A run of this many characters of a known secret counts as the secret (a cut or a split echo).
+SECRET_FRAGMENT_CHARS = 16
+
+
+def known_secrets(values: Iterable[Any]) -> list[str]:
+    """The secrets to look for among ``values`` (the values of credential variables, say): each
+    string without the whitespace around it, 8 characters or more, once, longest first."""
+    found = {value.strip() for value in values if isinstance(value, str)}
+    return sorted((value for value in found if len(value) >= SHORTEST_SECRET), key=len, reverse=True)
+
+
+def _secret_fragments(secrets: Iterable[str]) -> set[str]:
+    size = SECRET_FRAGMENT_CHARS
+    return {secret[start : start + size] for secret in secrets for start in range(len(secret) - size + 1)}
+
+
+def hide_secrets(text: str, secrets: Iterable[str], mask: str) -> str:
+    """``text`` with each of ``secrets`` (:func:`known_secrets`), and each run made of fragments of
+    16 or more characters of one (a cut or a split echo), replaced by ``mask``; the rest of
+    ``text`` stays as it is."""
+    secrets = list(secrets)
+    for secret in secrets:
+        text = text.replace(secret, mask)
+    fragments = _secret_fragments(secrets)
+    size = SECRET_FRAGMENT_CHARS
+    if not fragments or len(text) < size:
+        return text
+    hidden = [False] * len(text)
+    for start in range(len(text) - size + 1):
+        if text[start : start + size] in fragments:
+            hidden[start : start + size] = [True] * size
+    parts: list[str] = []
+    for index, char in enumerate(text):
+        if not hidden[index]:
+            parts.append(char)
+        elif index == 0 or not hidden[index - 1]:
+            parts.append(mask)
+    return "".join(parts)
+
+
+def holds_secret(text: str, secrets: Iterable[str]) -> bool:
+    """True when ``text`` holds one of ``secrets`` (:func:`known_secrets`) or a fragment of 16
+    characters of one."""
+    secrets = list(secrets)
+    if any(secret in text for secret in secrets):
+        return True
+    fragments = _secret_fragments(secrets)
+    size = SECRET_FRAGMENT_CHARS
+    return any(text[start : start + size] in fragments for start in range(len(text) - size + 1))
 
 
 # --------------------------------------------------------------------------- settings
@@ -486,7 +546,10 @@ __all__ = [
     "MaskingHookError",
     "MaskingSettings",
     "dataframe_to_records",
+    "hide_secrets",
+    "holds_secret",
     "is_sensitive_column",
+    "known_secrets",
     "load_hook",
     "mask_dataframe",
     "mask_text",

@@ -320,6 +320,8 @@ def classify_incident(
 
     ``taxonomy`` is the orchestrator's :class:`~dag_healer.core.vocab.ErrorTaxonomy` (the worker
     passes its adapter's); ``None`` reads the configured orchestrator's taxonomy from ``cfg``.
+    The outcome's ``tokens_used`` also counts the billed answers of a call that failed, when the
+    provider's :class:`LLMUnavailable` or :class:`LLMRefusal` carries them (``tokens_used``).
     """
     min_confidence = _min_confidence(cfg)
     words = prompt_words(ctx)
@@ -347,8 +349,10 @@ def classify_incident(
             )
         except LLMRefusal as exc:
             llm_error = f"the model declined the request: {exc}"
+            tokens_used = exc.tokens_used  # answers billed before the refusal still count
         except LLMUnavailable as exc:
             llm_error = str(exc)
+            tokens_used = exc.tokens_used
         except Exception as exc:  # any provider failure falls back to the policy
             llm_error = f"the {getattr(provider, 'name', 'LLM')} provider failed with {type(exc).__name__}"
             logger.warning(

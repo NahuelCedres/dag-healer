@@ -117,15 +117,17 @@ Shared by every Airflow container (`x-airflow-common-env`): LocalExecutor, FabAu
 `HEALER_SMTP_HOST=mailpit`, `HEALER_SMTP_PORT=1025`.
 
 Only `airflow-apiserver` and `healer-worker` also receive `HEALER_AIRFLOW_USERNAME` /
-`HEALER_AIRFLOW_PASSWORD`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GITHUB_REPO` and
-`HEALER_LLM_PROVIDER`: with the LocalExecutor the scheduler runs the DAGs' own task code,
-which has no business seeing those credentials. The scheduler only gets what the listener
-needs to post failure events: `HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The optional
-credentials are passed through from `docker/.env` or the shell and stay unset when they are
-not defined. For real pull requests, `GITHUB_TOKEN` is a fine-grained personal access token
-limited to the one repository in `GITHUB_REPO`: [docs/github/README.md](../docs/github/README.md)
-shows how to create it and protect the base branch, and `python scripts/tasks.py doctor` checks
-both.
+`HEALER_AIRFLOW_PASSWORD`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GITHUB_REPO`,
+`HEALER_LLM_PROVIDER` and `HEALER_LLM_MODEL`: with the LocalExecutor the scheduler runs the
+DAGs' own task code, which has no business seeing those credentials. `healer-worker` alone
+receives the AWS settings of Claude on Amazon Bedrock: `AWS_REGION`, `AWS_DEFAULT_REGION`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and `AWS_BEARER_TOKEN_BEDROCK`
+(see "LLM provider"). The scheduler only gets what the listener needs to post failure events:
+`HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The optional credentials are passed through from
+`docker/.env` or the shell and stay unset when they are not defined. For real pull requests,
+`GITHUB_TOKEN` is a fine-grained personal access token limited to the one repository in
+`GITHUB_REPO`: [docs/github/README.md](../docs/github/README.md) shows how to create it and
+protect the base branch, and `python scripts/tasks.py doctor` checks both.
 
 `healer-worker` additionally sets `HEALER_FAKE_LLM_DIR=/opt/airflow/repo/fixtures/fake_llm`,
 the git identity of its fix commits (`GIT_AUTHOR_NAME` / `GIT_COMMITTER_NAME` `dag-healer`,
@@ -140,6 +142,31 @@ deterministic policy and replays the YAML scripts in `<repo>/fixtures/fake_llm`,
 needs no API key. **To use Claude, set `HEALER_LLM_PROVIDER=anthropic` and
 `ANTHROPIC_API_KEY` in `docker/.env`**, then `python scripts/tasks.py up` (the containers are
 recreated with the new environment).
+
+**To use Claude on Amazon Bedrock** in your AWS account
+([docs/bedrock.md](../docs/bedrock.md)), set `HEALER_LLM_PROVIDER=bedrock`, `HEALER_LLM_MODEL`
+(a Bedrock model or inference profile ID, such as `eu.anthropic.claude-opus-5-5`) and
+`AWS_REGION` in `docker/.env`. Export the AWS credentials in the shell that starts the stack,
+never in `docker/.env`, then start it and check the `llm` line of doctor:
+
+```bash
+eval "$(aws configure export-credentials --profile <profile> --format env)"
+python scripts/tasks.py up
+python scripts/tasks.py doctor        # llm: the model, the region and where the credentials come from
+```
+
+In PowerShell, `aws configure export-credentials --profile <profile> --format powershell |
+Invoke-Expression` does the same. A short-term Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK` works
+too. On a laptop there is no EC2 instance role, and the container cannot renew the exported
+credentials: when they expire, export them again and run `up` once more. In the api-server, which
+gets no AWS variable, doctor's `llm` line fails for bedrock.
+
+`HEALER_LLM_MODEL` reaches the worker through `healer.yaml`: the one that `dag-healer init` writes
+reads it (`model: "${HEALER_LLM_MODEL:-claude-opus-5-5}"`), but a `.demo/repo/healer.yaml`
+written by an earlier version names `claude-opus-5-5` itself. `python scripts/tasks.py demo`
+writes a new one; or set `llm.model` in it by hand and restart the worker. That `healer.yaml`
+also sets `llm.fallbacks: true`, so the worker warns once that Bedrock has no server-side
+fallbacks: `llm.fallbacks: false` silences it.
 
 ## Test sandbox
 

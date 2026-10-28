@@ -108,6 +108,10 @@ ISOLATED_ENV = (
     "GITHUB_REPO",
     "ANTHROPIC_API_KEY",
     "HEALER_SANDBOX_IMAGE",
+    "HEALER_LLM_MODEL",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
 )
 #: JSON keys whose values are wall-clock times (``created_at``/``approved_at`` are fixed).
 VOLATILE_TIME_KEYS = frozenset({"at", "updated_at", "claimed_at", "sent_at", "applied_at", "received_at"})

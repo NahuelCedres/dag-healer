@@ -15,6 +15,7 @@ from dag_healer.config import (
     ConfigError,
     GithubConfig,
     HealerConfig,
+    LlmConfig,
     SandboxConfig,
     config_candidates,
     config_from_mapping,
@@ -50,6 +51,7 @@ def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         "HEALER_SMTP_USERNAME",
         "HEALER_SMTP_PASSWORD",
         "HEALER_LLM_PROVIDER",
+        "HEALER_LLM_MODEL",
         "HEALER_SANDBOX_IMAGE",
         "GITHUB_REPO",
         "GITHUB_TOKEN",
@@ -601,6 +603,239 @@ def test_github_repo_normalisation_and_hook_format() -> None:
     assert config_from_mapping({"masking": {"hook": "acme.masks:mask"}}).masking.hook == "acme.masks:mask"
     with pytest.raises(ConfigError, match="masking.hook"):
         config_from_mapping({"masking": {"hook": "acme.masks.mask"}})
+
+
+# --------------------------------------------------------------------------- llm
+BEDROCK_SETTINGS = ("aws_region", "aws_profile", "endpoint_url")
+VPC_ENDPOINT = "https://vpce-0123456789abcdef0-abcdefgh.bedrock-runtime.eu-west-1.vpce.amazonaws.com"
+PROVIDER_FROM_ENV = "${HEALER_LLM_PROVIDER:-anthropic}"
+NOT_A_REGION = "aws_region: Value error, expected an AWS region such as eu-west-1"
+NOT_A_PROFILE = "aws_profile: Value error, expected the name of a profile of the shared AWS config files"
+NOT_AN_ENDPOINT = (
+    "endpoint_url: Value error, expected an https URL (http only for a loopback host) without credentials, "
+    "query or fragment"
+)
+NOT_A_MODEL = "model: Value error, expected a model ID without whitespace or control characters"
+
+
+@pytest.mark.parametrize(
+    ("value", "env", "expected"),
+    [
+        pytest.param("bedrock", {}, "bedrock", id="literal"),
+        pytest.param(PROVIDER_FROM_ENV, {"HEALER_LLM_PROVIDER": "bedrock"}, "bedrock", id="env"),
+        pytest.param(PROVIDER_FROM_ENV, {}, "anthropic", id="env-unset"),
+        pytest.param("fake", {}, "fake", id="fake"),
+    ],
+)
+def test_llm_provider_values(value: str, env: dict[str, str], expected: str) -> None:
+    assert config_from_mapping({"llm": {"provider": value}}, env=env).llm.provider == expected
+
+
+def test_an_unknown_llm_provider_is_rejected() -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"llm": {"provider": "openai"}})
+    assert "llm.provider: Input should be 'anthropic', 'bedrock' or 'fake'" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        pytest.param({"aws_region": " eu-west-1 "}, {"aws_region": "eu-west-1"}, id="region"),
+        pytest.param({"aws_region": "us-gov-west-1"}, {"aws_region": "us-gov-west-1"}, id="gov-region"),
+        pytest.param(
+            {"aws_region": "eusc-de-east-1"}, {"aws_region": "eusc-de-east-1"}, id="sovereign-cloud"
+        ),
+        pytest.param(
+            {"aws_region": " ", "aws_profile": "", "endpoint_url": None},
+            {"aws_region": None, "aws_profile": None, "endpoint_url": None},
+            id="blank",
+        ),
+        pytest.param(
+            {"aws_region": "${NO_SUCH_REGION}", "endpoint_url": "${NO_SUCH_URL}"},
+            {"aws_region": None, "endpoint_url": None},
+            id="env-unset",
+        ),
+        pytest.param({"aws_profile": " healer-dev "}, {"aws_profile": "healer-dev"}, id="profile"),
+        pytest.param({"endpoint_url": f" {VPC_ENDPOINT}/ "}, {"endpoint_url": VPC_ENDPOINT}, id="https"),
+        pytest.param(
+            {"endpoint_url": "https://bedrock-proxy.internal:8443/bedrock/"},
+            {"endpoint_url": "https://bedrock-proxy.internal:8443/bedrock"},
+            id="gateway",
+        ),
+        pytest.param(
+            {"endpoint_url": "http://127.0.0.1:8080/bedrock/"},
+            {"endpoint_url": "http://127.0.0.1:8080/bedrock"},
+            id="loopback-http",
+        ),
+        pytest.param(
+            {"endpoint_url": "http://[::1]:8080"}, {"endpoint_url": "http://[::1]:8080"}, id="ipv6-loopback"
+        ),
+        pytest.param(
+            {"endpoint_url": "HTTP://localhost:8080"},
+            {"endpoint_url": "HTTP://localhost:8080"},
+            id="localhost",
+        ),
+        pytest.param(
+            {"model": "  eu.anthropic.claude-opus-5-5 "},
+            {"model": "eu.anthropic.claude-opus-5-5"},
+            id="model",
+        ),
+    ],
+)
+def test_bedrock_settings_are_normalised(settings: dict[str, Any], expected: dict[str, Any]) -> None:
+    llm = config_from_mapping({"llm": settings}, env={}).llm
+    assert {name: getattr(llm, name) for name in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        pytest.param({"aws_region": "Europe-SECRET"}, NOT_A_REGION, id="bad-region"),
+        pytest.param({"aws_region": "eu_west_1"}, NOT_A_REGION, id="underscore"),
+        pytest.param({"aws_profile": "healer SECRET"}, NOT_A_PROFILE, id="profile-space"),
+        pytest.param({"aws_profile": "healer\tSECRET"}, NOT_A_PROFILE, id="profile-tab"),
+        pytest.param({"aws_secret_access_key": "SECRET"}, "aws_secret_access_key: unknown key", id="no-key"),
+        *(
+            pytest.param({"endpoint_url": url}, NOT_AN_ENDPOINT, id=name)
+            for name, url in (
+                ("userinfo", "https://user:SECRET@bedrock.example.com"),
+                ("user", "https://SECRET@bedrock.example.com"),
+                ("query", "https://bedrock.example.com/?X-Amz-Security-Token=SECRET"),
+                ("fragment", "https://bedrock.example.com/#SECRET"),
+                ("ftp", "ftp://SECRET.example.com"),
+                ("no-scheme", "bedrock-runtime.eu-west-1.amazonaws.com/SECRET"),
+                ("port", "https://bedrock.example.com:SECRET"),
+                ("space", "https://bedrock example.com/SECRET"),
+                ("http", "http://bedrock.collector.SECRET.example.net"),
+                ("http-private-address", "http://10.0.0.7:8080/SECRET"),
+                ("backslash", "https://SECRET.example.net\\.bedrock-runtime.eu-west-1.amazonaws.com"),
+                ("percent-host", "https://SECRET.example.net%2F.bedrock-runtime.eu-west-1.amazonaws.com"),
+            )
+        ),
+        *(
+            pytest.param({"model": model}, NOT_A_MODEL, id=name)
+            for name, model in (
+                ("model-crlf", "eu.anthropic.claude-opus-5-5\r\nSECRET forged log line"),
+                ("model-space", "eu.anthropic.claude-opus-5-5 SECRET"),
+                ("model-escape", "eu.anthropic.SECRET\x1b[31m"),
+            )
+        ),
+    ],
+)
+def test_invalid_bedrock_settings_are_rejected_without_their_value(
+    settings: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"llm": {"provider": "bedrock", **settings}})
+    text = str(excinfo.value)
+    assert f"  - llm.{message}" in text
+    assert "SECRET" not in text
+
+
+def test_the_endpoint_error_names_an_example() -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping({"llm": {"endpoint_url": "https://user:pw@vpce.example.com"}})
+    assert (
+        "llm.endpoint_url: Value error, expected an https URL (http only for a loopback host) without "
+        f"credentials, query or fragment, such as {VPC_ENDPOINT}"
+    ) in str(excinfo.value)
+
+
+def test_a_model_from_the_environment_cannot_forge_a_log_line() -> None:
+    raw = yaml.safe_load(default_config_yaml())
+    with pytest.raises(ConfigError) as excinfo:
+        config_from_mapping(raw, env={"HEALER_LLM_MODEL": "eu.anthropic.claude-opus-5-5\r\nSECRET"})
+    assert f"llm.{NOT_A_MODEL}" in str(excinfo.value)
+    assert "SECRET" not in str(excinfo.value)
+
+
+def test_bedrock_settings_are_dumped_only_when_set() -> None:
+    from dag_healer.cli.doctor_cmd import effective_settings
+
+    plain = config_from_mapping({"llm": {"provider": "bedrock", "model": "eu.anthropic.claude-opus-5-5"}})
+    for dump in (
+        plain.model_dump()["llm"],
+        plain.model_dump(mode="json", by_alias=True)["llm"],
+        json.loads(plain.model_dump_json())["llm"],
+        effective_settings(plain)["llm"],
+    ):
+        assert list(dump) == ["provider", "model", "effort", "max_tokens", "fallbacks"]
+    assert HealerConfig().model_dump()["llm"] == LlmConfig().model_dump()  # the defaults dump as before
+    settings = {"aws_region": "eu-west-1", "aws_profile": "healer-dev", "endpoint_url": VPC_ENDPOINT}
+    full = config_from_mapping({"llm": {"provider": "bedrock", **settings}})
+    assert {name: full.model_dump(mode="json")["llm"][name] for name in BEDROCK_SETTINGS} == settings
+    assert effective_settings(full)["llm"]["endpoint_url"] == VPC_ENDPOINT
+    assert config_from_mapping(full.model_dump(mode="json")).llm == full.llm  # the dump loads back
+    only_region = config_from_mapping({"llm": {"aws_region": "eu-west-1"}}).model_dump()["llm"]
+    assert [name for name in BEDROCK_SETTINGS if name in only_region] == ["aws_region"]
+
+
+def test_the_bedrock_settings_are_not_secrets() -> None:
+    from dag_healer.config import SECRET_FIELDS
+
+    assert not [field for field in SECRET_FIELDS if field.startswith("llm.")]
+    cfg = config_from_mapping({"llm": {"aws_profile": "healer-dev", "endpoint_url": VPC_ENDPOINT}})
+    assert cfg.secret_literals() == []
+
+
+@pytest.mark.parametrize(
+    ("llm", "explicit"),
+    [
+        pytest.param({}, False, id="absent"),
+        pytest.param({"fallbacks": None}, False, id="empty"),
+        pytest.param({"fallbacks": "${HEALER_NO_FALLBACKS}"}, False, id="env-unset"),
+        pytest.param({"fallbacks": True}, True, id="true"),
+        pytest.param({"fallbacks": False}, True, id="false"),
+        pytest.param({"fallbacks": "${HEALER_NO_FALLBACKS:-true}"}, True, id="env-fallback"),
+    ],
+)
+def test_fallbacks_are_explicit_only_when_the_file_sets_them(llm: dict[str, Any], explicit: bool) -> None:
+    """The bedrock provider warns about ``fallbacks: true`` only when it is written in the file."""
+    cfg = config_from_mapping({"llm": {"provider": "bedrock", **llm}}, env={})
+    assert ("fallbacks" in cfg.llm.model_fields_set) is explicit
+    assert cfg.llm.fallbacks is (llm.get("fallbacks") is not False)
+
+
+@pytest.mark.parametrize("orchestrator", ["airflow", "stepfunctions"])
+def test_the_templates_document_the_bedrock_settings(orchestrator: str) -> None:
+    text = default_config_yaml(orchestrator=orchestrator)
+    block = text.split("\nllm:\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert block[:5] == [
+        '  provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | bedrock | fake (offline tests)',
+        '  model: "${HEALER_LLM_MODEL:-claude-opus-5-5}"   '
+        "# bedrock: a Bedrock model or inference profile ID",
+        "  effort: high",
+        "  max_tokens: 16000",
+        "  fallbacks: true                # server-side refusal fallbacks (Claude API only)",
+    ]
+    comments = block[5:]
+    assert comments and all(line.startswith("  # ") for line in comments)
+    assert "docs/bedrock.md" in comments[0] and "never from this file" in " ".join(comments)
+    assert "Cross-Region inference" in " ".join(comments) and "Model catalog" in " ".join(comments)
+    keys = [line[4:].split(":", 1)[0] for line in comments]
+    assert [key for key in keys if key in LlmConfig.model_fields] == list(BEDROCK_SETTINGS)  # in field order
+    raw = yaml.safe_load(text)
+    assert set(raw["llm"]) == {"provider", "model", "effort", "max_tokens", "fallbacks"}
+
+
+@pytest.mark.parametrize(
+    ("env", "model"),
+    [
+        pytest.param({}, "claude-opus-5-5", id="unset"),
+        pytest.param({"HEALER_LLM_MODEL": ""}, "claude-opus-5-5", id="empty"),
+        pytest.param(
+            {"HEALER_LLM_PROVIDER": "bedrock", "HEALER_LLM_MODEL": "eu.anthropic.claude-opus-5-5"},
+            "eu.anthropic.claude-opus-5-5",
+            id="bedrock",
+        ),
+    ],
+)
+def test_the_template_reads_the_model_from_the_environment(env: dict[str, str], model: str) -> None:
+    raw = yaml.safe_load(default_config_yaml())
+    llm = config_from_mapping(raw, env=env).llm
+    assert llm.model == model
+    assert llm.provider == env.get("HEALER_LLM_PROVIDER", "anthropic")
+    assert (llm.aws_region, llm.aws_profile, llm.endpoint_url) == (None, None, None)
 
 
 # --------------------------------------------------------------------------- repo.sandbox

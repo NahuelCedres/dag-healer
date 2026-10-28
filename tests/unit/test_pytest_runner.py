@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import textwrap
 import time
@@ -245,19 +246,26 @@ def test_environment_is_scrubbed(project: Path, tmp_path: Path, monkeypatch: pyt
     assert not home.exists()  # the throw-away AIRFLOW_HOME is removed after the run
 
 
-#: Cloud credentials a worker may run with (an AWS task role, a GCP key file, an Azure secret).
+#: Cloud credentials a worker may run with (an AWS task or instance role, an Amazon Bedrock API
+#: key and endpoint, a GCP key file, an Azure secret).
 CLOUD_CREDENTIALS = {
     "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEKEYID0001",
     "AWS_SECRET_ACCESS_KEY": "example-secret-access-key",
     "AWS_SESSION_TOKEN": "example-session-token",
     "AWS_SECURITY_TOKEN": "example-security-token",
+    "AWS_BEARER_TOKEN_BEDROCK": "example-bedrock-api-key",
     "AWS_PROFILE": "example-admin-profile",
+    "AWS_DEFAULT_PROFILE": "example-default-profile",
     "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/example-healer",
+    "AWS_ROLE_SESSION_NAME": "example-role-session",
     "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/secrets/example/web-identity-token",
     "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/example-id",
     "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://169.254.170.23/v1/example-credentials",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN": "example-container-token",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/example/container-token",
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://example-bedrock-gateway.invalid/runtime",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL": "https://example-bedrock-gateway.invalid/mantle",
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://example-bedrock-endpoint.invalid",
     "GOOGLE_APPLICATION_CREDENTIALS": "/secrets/example-gcp-key.json",
     "AZURE_CLIENT_SECRET": "example-azure-client-secret",
 }
@@ -278,6 +286,9 @@ def test_cloud_credentials_never_reach_the_sandbox(
         "ENV_DUMP": str(dump),
         "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEOVERRIDE1",
         "aws_secret_access_key": "example-lower-case-override",
+        "AWS_BEARER_TOKEN_BEDROCK": "example-bedrock-api-key-override",
+        "AWS_DEFAULT_PROFILE": "example-profile-override",
+        "Anthropic_Bedrock_Base_Url": "https://example-gateway-override.invalid",
         "AWS_EC2_METADATA_DISABLED": "false",
         "AWS_CONFIG_FILE": "/home/airflow/.aws/override",
         "FAKEFLOW_TOKEN": None,
@@ -289,7 +300,15 @@ def test_cloud_credentials_never_reach_the_sandbox(
     upper = {key.upper() for key in env}
     assert not upper & set(CLOUD_CREDENTIALS)
     assert not [key for key in upper if key.startswith(("AWS_CONTAINER_CREDENTIALS_", "AWS_CONTAINER_AUTH"))]
-    secrets = [*CLOUD_CREDENTIALS.values(), "AKIAEXAMPLEOVERRIDE1", "example-lower-case-override"]
+    assert not [key for key in upper if key.startswith(("ANTHROPIC_", "AWS_ENDPOINT_URL_BEDROCK"))]
+    secrets = [
+        *CLOUD_CREDENTIALS.values(),
+        "AKIAEXAMPLEOVERRIDE1",
+        "example-lower-case-override",
+        "example-bedrock-api-key-override",
+        "example-profile-override",
+        "https://example-gateway-override.invalid",
+    ]
     assert [value for value in env.values() for secret in secrets if secret in value] == []
     assert env["AWS_EC2_METADATA_DISABLED"] == "true"
     assert (env["AWS_SHARED_CREDENTIALS_FILE"], env["AWS_CONFIG_FILE"]) == ("", "")
@@ -545,9 +564,124 @@ def test_scrubbed_env_removes_cloud_credentials(tmp_path: Path) -> None:
         "AWS_EC2_METADATA_DISABLED": "true",
         "AWS_SHARED_CREDENTIALS_FILE": "",
         "AWS_CONFIG_FILE": "",
+        "BOTO_CONFIG": "",
     }
     assert (env["PATH"], env["AWS_REGION"]) == ("/usr/bin", "eu-west-1")
     assert env["AIRFLOW__CORE__UNIT_TEST_MODE"] == "True"
+
+
+#: Every AWS variable that holds, finds or redirects credentials, with a distinct fictional value:
+#: none of them may reach a sandbox (docs/security.md, section 4.3).
+AWS_CREDENTIAL_SETTINGS = {
+    "AWS_ACCESS_KEY_ID": "AKIDEXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    "AWS_SESSION_TOKEN": "example-session-token",
+    "AWS_SECURITY_TOKEN": "example-security-token",
+    "AWS_BEARER_TOKEN_BEDROCK": "bedrock-api-key-EXAMPLE",
+    "AWS_PROFILE": "example-profile",
+    "AWS_DEFAULT_PROFILE": "example-default-profile",
+    "AWS_CONFIG_FILE": "/home/worker/.aws/example-config",
+    "AWS_SHARED_CREDENTIALS_FILE": "/home/worker/.aws/example-credentials",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/example-relative",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://169.254.170.23/v1/example-full",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN": "example-container-authorization-token",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/example/authorization-token",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/secrets/example/web-identity",
+    "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/example-bedrock-worker",
+    "AWS_ROLE_SESSION_NAME": "example-session-name",
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://example-vpce.bedrock-runtime.eu-west-1.vpce.amazonaws.com",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL": "https://example-mantle-gateway.invalid/anthropic",
+    "ANTHROPIC_AWS_API_KEY": "example-anthropic-aws-api-key",
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://example-runtime-gateway.invalid",
+    "AWS_ENDPOINT_URL_BEDROCK": "https://example-control-plane-gateway.invalid",
+    # boto's config file (botocore's boto-config provider) and the legacy names of older AWS tools
+    "BOTO_CONFIG": "/home/worker/.example-boto",
+    "AWS_CREDENTIAL_FILE": "/home/worker/.aws/example-legacy-credentials",
+    "AWS_ACCESS_KEY": "AKIDEXAMPLELEGACY",
+    "AWS_SECRET_KEY": "example-legacy-secret-key",
+    "EC2_ACCESS_KEY": "AKIDEXAMPLEEC2",
+    "EC2_SECRET_KEY": "example-ec2-secret-key",
+}
+#: The file settings that the sandbox gets set to an empty value (botocore then reads no file).
+EMPTIED_FILES = {"AWS_CONFIG_FILE": "", "AWS_SHARED_CREDENTIALS_FILE": "", "BOTO_CONFIG": ""}
+
+
+def test_scrubbed_env_drops_every_aws_credential_setting(tmp_path: Path) -> None:
+    base = {
+        "PATH": "/usr/bin",
+        **AWS_CREDENTIAL_SETTINGS,
+        "AWS_REGION": "eu-west-1",
+        "AWS_DEFAULT_REGION": "eu-west-1",
+        "AWS_ENDPOINT_URL": "http://localstack.invalid:4566",
+        "AWS_EC2_METADATA_DISABLED": "false",
+    }
+    env = scrubbed_env(base, airflow_home=tmp_path / "home")
+    assert not (set(AWS_CREDENTIAL_SETTINGS) - set(EMPTIED_FILES)) & {key.upper() for key in env}
+    assert {name: env[name] for name in EMPTIED_FILES} == EMPTIED_FILES
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+    leaked = [
+        value for value in env.values() for secret in AWS_CREDENTIAL_SETTINGS.values() if secret in value
+    ]
+    assert leaked == []
+    # not credentials: the region and the generic endpoint override stay
+    assert (env["AWS_REGION"], env["AWS_DEFAULT_REGION"]) == ("eu-west-1", "eu-west-1")
+    assert env["AWS_ENDPOINT_URL"] == "http://localstack.invalid:4566"
+
+
+def test_an_override_cannot_bring_an_aws_credential_setting_back(project: Path) -> None:
+    stub = StubSandbox(SandboxRun(0), output="1 passed in 0.01s\n")
+    lower_case = {name.lower(): value for name, value in AWS_CREDENTIAL_SETTINGS.items()}
+    overrides = {**AWS_CREDENTIAL_SETTINGS, **lower_case}  # names compare case-insensitively (Windows)
+    run_pytest(project, ["tests/test_pass.py"], timeout=30, extra_env=overrides, sandbox=stub)
+    (job,) = stub.jobs
+    assert not (set(AWS_CREDENTIAL_SETTINGS) - set(EMPTIED_FILES)) & {key.upper() for key in job.env}
+    assert {name: job.env[name] for name in EMPTIED_FILES} == EMPTIED_FILES
+    assert not [name for name in job.env if name.upper() in EMPTIED_FILES and name not in EMPTIED_FILES]
+    assert job.env["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert not [value for value in job.env.values() for secret in overrides.values() if secret in value]
+
+
+def test_botocore_reads_no_boto_config_file_in_the_scrubbed_environment(tmp_path: Path) -> None:
+    """botocore's ``boto-config`` provider reads ``$BOTO_CONFIG``, else ``/etc/boto.cfg`` and
+    ``~/.boto``. Under the ``process`` backend the code that pytest runs gets the scrubbed
+    environment (``BOTO_CONFIG=""``): botocore there finds none of these credentials."""
+    pytest.importorskip("botocore")
+    home = tmp_path / "home"
+    home.mkdir()
+    boto = "[Credentials]\naws_access_key_id = AKIDEXAMPLEBOTO\naws_secret_access_key = example-boto-secret\n"
+    (home / ".boto").write_text(boto, encoding="utf-8")
+    (tmp_path / "boto.cfg").write_text(boto, encoding="utf-8")
+    base = {
+        name: value for name, value in os.environ.items() if not name.upper().startswith(("AWS_", "BOTO"))
+    }
+    base.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),  # where Windows looks for ~
+            "BOTO_CONFIG": str(tmp_path / "boto.cfg"),
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "AWS_CONFIG_FILE": str(tmp_path / "no-config"),
+            "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "no-credentials"),
+        }
+    )
+    code = (
+        "import botocore.session\n"
+        "credentials = botocore.session.Session().get_credentials()\n"
+        "print(credentials.method if credentials else None)\n"
+    )
+
+    def method(env: dict[str, str]) -> str:
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120, check=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    assert method(base) == "boto-config"  # the control: botocore reads the file the variable names
+    without_variable = {name: value for name, value in base.items() if name != "BOTO_CONFIG"}
+    assert method(without_variable) == "boto-config"  # and ~/.boto without it
+    for source in (base, without_variable):
+        assert method(scrubbed_env(source, airflow_home=tmp_path / "airflow")) == "None"
 
 
 @pytest.mark.parametrize(

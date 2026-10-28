@@ -8,6 +8,7 @@ of refusals, truncation, API errors, tool calls, ``pause_turn`` and the token bu
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -15,12 +16,14 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 import anthropic
 import httpx2
 import pytest
 
 from dag_healer.agent import llm as llm_module
+from dag_healer.agent.bedrock import BedrockProvider
 from dag_healer.agent.budget import TokenBudget, usage_tokens
 from dag_healer.agent.fake import (
     FAKE_DIR_ENV,
@@ -33,12 +36,14 @@ from dag_healer.agent.fake import (
 )
 from dag_healer.agent.llm import (
     FALLBACK_BETA,
+    PROVIDER_NAMES,
     AnthropicProvider,
     Classification,
     LLMRefusal,
     LLMUnavailable,
     RepairSessionResult,
     get_provider,
+    provider_name,
     tool_call_record,
 )
 from dag_healer.config import HealerConfig
@@ -197,8 +202,34 @@ def test_get_provider_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEALER_LLM_PROVIDER", "Anthropic")
     assert get_provider(cfg).name == "anthropic"
     monkeypatch.setenv("HEALER_LLM_PROVIDER", "openai")
-    with pytest.raises(ValueError, match="Unknown LLM provider"):
+    with pytest.raises(ValueError, match="Unknown LLM provider") as info:
         get_provider(cfg)
+    assert "'anthropic', 'bedrock' or 'fake'" in str(info.value)
+    # Claude on Amazon Bedrock: built without any AWS setting (nothing is resolved before a call).
+    for name in ("bedrock", "Bedrock"):
+        monkeypatch.setenv("HEALER_LLM_PROVIDER", name)
+        assert isinstance(get_provider(cfg), BedrockProvider)
+    monkeypatch.delenv("HEALER_LLM_PROVIDER")
+    cfg.llm.provider = "bedrock"
+    prov = get_provider(cfg)
+    assert isinstance(prov, BedrockProvider) and prov.name == "bedrock"
+    assert isinstance(prov, AnthropicProvider) and prov.fallbacks is False
+
+
+def test_provider_name_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HEALER_LLM_PROVIDER", raising=False)
+    assert PROVIDER_NAMES == ("anthropic", "bedrock", "fake")
+    assert provider_name(None) == "anthropic"
+    cfg = HealerConfig()
+    assert provider_name(cfg) == "anthropic"
+    cfg.llm.provider = "bedrock"
+    assert provider_name(cfg) == "bedrock"
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "")  # empty: the configuration decides
+    assert provider_name(cfg) == "bedrock"
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", " Fake ")
+    assert provider_name(cfg) == "fake"
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "OpenAI")
+    assert provider_name(None) == "openai"  # unknown names are returned as they are
 
 
 def test_provider_settings_come_from_the_config() -> None:
@@ -308,6 +339,84 @@ def test_classify_refusal_before_any_output(fallbacks: bool) -> None:
     assert "cyber" in str(info.value)
 
 
+#: An API key with a run of lower-case letters in it: a cut of that run passes for a refusal category.
+CATEGORY_SHAPED_KEY = "sk-ant-api03-EXAMPLE-lowercaserunofthekey-0123456789AbCd"
+
+
+@pytest.mark.parametrize("fallbacks", [True, False], ids=["fallbacks", "no-fallbacks"])
+@pytest.mark.parametrize(
+    ("category", "shown"),
+    [
+        ("cyber", "cyber"),
+        ("bio", "bio"),
+        ("lowercaserunofthekey", None),
+        ("Cyber", None),
+        ("cyber security", None),
+        ("x" * 33, None),
+        ("", None),
+        (7, None),
+    ],
+    ids=["cyber", "bio", "key-run", "capital", "words", "too-long", "empty", "number"],
+)
+def test_a_refusal_names_its_category_only_when_it_is_shaped_like_one(
+    monkeypatch: pytest.MonkeyPatch, fallbacks: bool, category: Any, shown: str | None
+) -> None:
+    """The category goes into the refusal's message, which the incident stores and the worker logs:
+    the providers' shared check (the bedrock provider's in tests/unit/test_bedrock.py), lower-case
+    letters and ``_``, 32 at most, and no part of the API key (``key-run`` is shaped like a
+    category, but cut from ``ANTHROPIC_API_KEY``). The explanation is kept without the key."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", CATEGORY_SHAPED_KEY)
+    details = {
+        "type": "refusal",
+        "category": category,
+        "explanation": f"declined, echo of {CATEGORY_SHAPED_KEY}",
+    }
+    api = FakeAPI(message([], stop_reason="refusal", stop_details=details))
+    with pytest.raises(LLMRefusal) as info:
+        provider(api, fallbacks=fallbacks).classify(system="S", prompt="P")
+    assert str(info.value) == (
+        f"Claude declined the incident classification (refusal category: {shown or 'unspecified'})"
+    )
+    assert (info.value.category, info.value.explanation) == (shown, "declined, echo of [hidden]")
+    assert len(api.requests) == 1
+
+
+def test_classify_incident_keeps_a_refusal_category_cut_from_the_key_out_of_the_incident(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from dag_healer.agent.classify import classify_incident
+    from dag_healer.agent.context import IncidentContext
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", CATEGORY_SHAPED_KEY)
+    caplog.set_level(logging.DEBUG)
+    details = {"type": "refusal", "category": "lowercaserunofthekey", "explanation": CATEGORY_SHAPED_KEY}
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "/opt/airflow/repo/src/etl/customers.py", line 19, in parse_signup_date\n'
+        "ValueError: unconverted data remains: T08:30:00Z"
+    )
+    ctx = IncidentContext(
+        incident_id="0123456789abcdef0123456789abcdef",
+        dag_id="customers_sync",
+        run_id="manual__2026-10-26T08:30:00+00:00",
+        task_id="transform",
+        error_text=traceback,
+        exception_type="ValueError",
+        exception_message="unconverted data remains: T08:30:00Z",
+        traceback_text=traceback,
+        repo_frames=[{"file": "src/etl/customers.py", "line": 19, "function": "parse_signup_date"}],
+        contract_status="approved",
+    )
+    api = FakeAPI(message([], stop_reason="refusal", stop_details=details))
+    outcome = classify_incident(HealerConfig(), ctx, provider(api))
+    assert outcome.llm_error == (
+        "the model declined the request: Claude declined the incident classification "
+        "(refusal category: unspecified)"
+    )
+    for found in (outcome.diagnosis, json.dumps(outcome.to_dict()), caplog.text):
+        assert "lowercaserunofthekey" not in found and key_fragments(found, CATEGORY_SHAPED_KEY) == []
+
+
 def test_classify_refusal_with_partial_output_keeps_the_category() -> None:
     api = FakeAPI(
         message(
@@ -362,6 +471,107 @@ def test_classify_connection_errors_become_llm_unavailable() -> None:
     )
     with pytest.raises(LLMUnavailable, match="Cannot reach"):
         AnthropicProvider(HealerConfig(), client=client).classify(system="S", prompt="P")
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_the_claude_api_client_never_follows_a_redirect(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """The provider's own client (nothing injected) behind a gateway that answers with a redirect:
+    one request, then LLMUnavailable; the prompt is never sent to the other host. httpx2's
+    network transport is patched, so no request leaves the process."""
+    sent: list[httpx2.Request] = []
+
+    def handle_request(_transport: Any, request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(
+            status, headers={"location": "https://collector.attacker.example.net/steal"}, request=request
+        )
+
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", handle_request)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):  # the wire is direct
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-example-not-a-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-gateway.internal.example.com")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    prov = AnthropicProvider(HealerConfig(), fallbacks=False)
+    with pytest.raises(
+        LLMUnavailable, match=f"Anthropic API error {status} during the incident classification"
+    ):
+        prov.classify(system="S", prompt="PROMPT")
+    assert [request.url.host for request in sent] == ["llm-gateway.internal.example.com"]
+
+
+#: Fictional values of the SDK's key variables (no real key or token).
+EXAMPLE_API_KEY = "sk-ant-api03-EXAMPLEnotARealKey0123456789exampleExampleEXAMPLE-AA"
+EXAMPLE_AUTH_TOKEN = "example-gateway-token/held+in=the-environment/EXAMPLE"
+
+
+def key_fragments(text: str, *values: str) -> list[str]:
+    """The fragments of 16 characters of ``values`` that ``text`` holds: as it is, URL-decoded or
+    without its whitespace."""
+    forms = (text, unquote(text), "".join(text.split()))
+    return [
+        value[start : start + 16]
+        for value in values
+        for start in range(len(value) - 15)
+        if any(value[start : start + 16] in form for form in forms)
+    ]
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        f"invalid x-api-key {EXAMPLE_API_KEY}",
+        f"unknown key {EXAMPLE_API_KEY[:-4]}",
+        f"unknown key {EXAMPLE_API_KEY[:30]} and {EXAMPLE_API_KEY[30:]}",
+        "unknown key " + " ".join(EXAMPLE_API_KEY[i : i + 8] for i in range(0, len(EXAMPLE_API_KEY), 8)),
+        f"invalid bearer {EXAMPLE_AUTH_TOKEN}",
+        f"invalid bearer {quote(EXAMPLE_AUTH_TOKEN, safe='')}",
+    ],
+    ids=["key", "cut-key", "two-halves", "spaced-out", "token", "url-encoded-token"],
+)
+def test_an_api_error_never_quotes_the_api_key(monkeypatch: pytest.MonkeyPatch, echo: str) -> None:
+    """A gateway (``ANTHROPIC_BASE_URL``) that echoes the key in an error answer: the values of
+    ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, and their fragments of 16 characters, never reach
+    the message, which the incident stores and the worker logs."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", EXAMPLE_API_KEY)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", EXAMPLE_AUTH_TOKEN)
+    api = FakeAPI((502, {"type": "error", "error": {"type": "api_error", "message": echo}}))
+    with pytest.raises(LLMUnavailable) as info:
+        provider(api).classify(system="S", prompt="P")
+    text = str(info.value)
+    assert text.startswith("Anthropic API error 502 during the incident classification: ")
+    assert "[hidden]" in text
+    assert key_fragments(text, EXAMPLE_API_KEY, EXAMPLE_AUTH_TOKEN) == []
+
+
+def test_an_api_error_without_the_key_is_quoted_as_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the key's values change a message: the same answer gives the same text with the
+    variables unset, set, or set to a value too short to look for."""
+    body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded: try again"}}
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    texts = []
+    for key in (None, EXAMPLE_API_KEY, "again"):
+        if key is None:
+            monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+        with pytest.raises(LLMUnavailable) as info:
+            provider(FakeAPI((529, body))).classify(system="S", prompt="P")
+        texts.append(str(info.value))
+    assert texts[0] == texts[1] == texts[2]
+    assert "Overloaded: try again" in texts[0] and "[hidden]" not in texts[0]
+
+
+def test_the_provider_names_are_one_list() -> None:
+    """``llm.provider``, ``dag-healer worker --provider`` and the messages all use PROVIDER_NAMES."""
+    from typing import get_args
+
+    from dag_healer.cli.worker_cmd import PROVIDERS
+    from dag_healer.config import LlmProvider
+
+    assert get_args(LlmProvider) == PROVIDER_NAMES
+    assert sorted(PROVIDERS) == sorted(PROVIDER_NAMES)
 
 
 # --------------------------------------------------------------------------- Anthropic repair session
@@ -521,6 +731,41 @@ def test_repair_session_refusal_stops_the_loop() -> None:
     )
     assert result.stop_reason == "refusal"
     assert result.tool_calls == []
+
+
+@pytest.mark.parametrize(
+    ("category", "shown"),
+    [
+        ("cyber", "cyber"),
+        ("lowercaserunofthekey", "unspecified"),
+        ("Cyber Security", "unspecified"),
+        ("x" * 33, "unspecified"),
+        (7, "unspecified"),
+        (None, "unspecified"),
+    ],
+    ids=["cyber", "key-run", "words", "too-long", "number", "none"],
+)
+def test_a_refusal_in_a_repair_logs_its_category_only_when_it_is_shaped_like_one(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, category: Any, shown: str
+) -> None:
+    """The shared check of the providers (the bedrock provider's in tests/unit/test_bedrock.py):
+    lower-case letters and ``_``, 32 at most, and no part of the API key (``key-run`` is shaped
+    like a category, but cut from ``ANTHROPIC_API_KEY``)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", CATEGORY_SHAPED_KEY)
+    caplog.set_level(logging.WARNING, logger="dag_healer.agent.llm")
+    details = {"type": "refusal", "category": category, "explanation": None}
+    api = FakeAPI(message([], stop_reason="refusal", stop_details=details))
+    result = provider(api).repair_session(
+        system="S", prompt="P", tools=make_tools([]), max_tokens_budget=10_000, scenario={"phase": "fix"}
+    )
+    assert result.stop_reason == "refusal"
+    declined = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "dag_healer.agent.llm" and record.levelno == logging.WARNING
+    ]
+    assert declined == [f"Claude declined the repair session (refusal category: {shown})"]
+    assert "lowercaserunofthekey" not in caplog.text
 
 
 def test_repair_session_api_error_keeps_the_partial_result() -> None:

@@ -9,8 +9,9 @@ Two operations are needed by the agent:
   through the plain Python functions it is given.
 
 :func:`get_provider` picks the implementation: ``$HEALER_LLM_PROVIDER`` overrides
-``llm.provider``; ``"fake"`` returns the offline :class:`dag_healer.agent.fake.FakeProvider`
-used by CI and the keyless demo.
+``llm.provider``; ``"bedrock"`` returns :class:`dag_healer.agent.bedrock.BedrockProvider` and
+``"fake"`` the offline :class:`dag_healer.agent.fake.FakeProvider` used by CI and the keyless
+demo.
 
 Request shape for Claude Opus 5.5 (``claude-opus-5-5``): no ``thinking`` parameter (thinking is
 adaptive and cannot be disabled), ``output_config.effort`` always sent (the model default is
@@ -19,6 +20,15 @@ stable system prompt sent as a text block with ``cache_control``. With ``llm.fal
 requests go through ``client.beta.messages`` with the server-side fallback beta
 (``fallbacks="default"``), so a request declined by a safety classifier is retried server-side
 on the model Anthropic recommends for that refusal category.
+
+The ``bedrock`` provider runs Claude on Amazon Bedrock with the same prompts, tools and repair
+flow, through the SDK's ``anthropic.AnthropicBedrock`` client (the ``bedrock-runtime``
+endpoint, AWS credentials from the default AWS chain). It subclasses
+:class:`AnthropicProvider`, never sends the server-side fallbacks (Bedrock has none) and asks for
+a JSON answer when the endpoint does not apply structured outputs.
+
+Both providers name a refusal's category, in its error and in the warning of a repair, only when
+it is shaped like one of Claude's and holds none of their credentials (:func:`_shown_category`).
 """
 
 from __future__ import annotations
@@ -26,18 +36,23 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any, Literal, Protocol, runtime_checkable
+from urllib.parse import unquote
 
 from pydantic import BaseModel, Field, field_validator
 
 from dag_healer.agent.budget import TokenBudget, usage_tokens
-from dag_healer.masking import mask_text
+from dag_healer.masking import hide_secrets, holds_secret, known_secrets, mask_text
 
 logger = logging.getLogger(__name__)
 
 PROVIDER_ENV = "HEALER_LLM_PROVIDER"
+#: The providers :func:`get_provider` builds: the values of ``llm.provider`` (``config.LlmProvider``)
+#: and of ``dag-healer worker --provider``, which tests keep equal to this list.
+PROVIDER_NAMES: tuple[str, ...] = ("anthropic", "bedrock", "fake")
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -47,6 +62,26 @@ MAX_RUNNER_MESSAGES = 40
 OUTPUT_EXCERPT_CHARS = 2000
 INPUT_VALUE_CHARS = 4000
 _CREDENTIAL_ENVS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+#: Stands for the value of a variable of ``_CREDENTIAL_ENVS`` in an error message.
+_HIDDEN = "[hidden]"
+#: The SDK refuses non-streaming requests whose max_tokens could exceed its 10-minute timeout.
+_MAX_TOKENS_TOO_LARGE = (
+    "llm.max_tokens is too large for a non-streaming request during {action}; lower it (about 21000 at most)"
+)
+#: The categories of Claude's refusals (``cyber``, ``bio``): lower-case letters and ``_``, 32 at
+#: most. A refusal's category is shown in no other shape, by both providers (:func:`_shown_category`).
+_REFUSAL_CATEGORY = re.compile(r"[a-z_]{1,32}")
+#: The stop reasons of Claude's answers (the SDK's ``StopReason`` and ``BetaStopReason``).
+_STOP_REASONS: tuple[str, ...] = (
+    "end_turn",
+    "tool_use",
+    "max_tokens",
+    "stop_sequence",
+    "pause_turn",
+    "refusal",
+    "model_context_window_exceeded",
+    "compaction",
+)
 
 
 # --------------------------------------------------------------------------- models
@@ -102,7 +137,11 @@ class LLMUnavailable(RuntimeError):
     """The LLM could not be used (no credentials, network or API error, truncated answer...).
 
     ``partial`` carries what a repair session produced before the failure, when known.
+    ``tokens_used`` counts the tokens of the answers already billed for the failed call, when the
+    provider knows them (the bedrock provider's classification); 0 otherwise.
     """
+
+    tokens_used: int = 0
 
     def __init__(self, message: str, *, partial: RepairSessionResult | None = None) -> None:
         super().__init__(message)
@@ -110,7 +149,12 @@ class LLMUnavailable(RuntimeError):
 
 
 class LLMRefusal(RuntimeError):
-    """The model declined the request (``stop_reason == "refusal"``)."""
+    """The model declined the request (``stop_reason == "refusal"``).
+
+    ``tokens_used``: as for :class:`LLMUnavailable`.
+    """
+
+    tokens_used: int = 0
 
     def __init__(self, message: str, *, category: str | None = None, explanation: str | None = None) -> None:
         super().__init__(message)
@@ -235,7 +279,7 @@ def _message_text(message: Any) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
-def _log_fallbacks(message: Any) -> None:
+def _log_fallback_hops(message: Any) -> None:
     """Log server-side fallback hops (``fallback`` content blocks / ``fallback_message`` usage)."""
     for block in _get(message, "content") or []:
         if _get(block, "type") != "fallback":
@@ -251,6 +295,41 @@ def _log_fallbacks(message: Any) -> None:
 
 def _has_credentials() -> bool:
     return any(os.environ.get(name) for name in _CREDENTIAL_ENVS)
+
+
+def _hide_api_keys(text: str) -> str:
+    """``text`` without the values of ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_AUTH_TOKEN``.
+
+    Each value, and each run of ``text`` made of fragments of 16 or more characters of one (a
+    cut or a split echo), becomes ``[hidden]``; the rest of ``text`` stays as it is. When a value
+    or such a fragment can still be read once ``text`` is URL-decoded and its whitespace is taken
+    out, nothing of ``text`` is kept but ``[hidden]`` (:func:`dag_healer.masking.hide_secrets`,
+    shared with the bedrock provider).
+    """
+    keys = known_secrets(os.environ.get(name) for name in _CREDENTIAL_ENVS)
+    if not keys:
+        return text
+    shown = hide_secrets(text, keys, _HIDDEN)
+    compact = "".join(unquote(shown.replace("\\/", "/")).split())
+    return _HIDDEN if holds_secret(compact, keys) else shown
+
+
+def _shown_category(category: Any, hide: Callable[[str], str] = _hide_api_keys) -> str | None:
+    """A refusal's ``category`` as a message or a log line may show it (``None``: ``unspecified``).
+
+    Shared by the providers: the category itself when the whole of it is shaped like one of
+    Claude's (:data:`_REFUSAL_CATEGORY`) and holds no credential (``hide``, which takes the
+    provider's credentials out of a text, leaves it as it is), ``None`` for any other value.
+    """
+    if isinstance(category, str) and _REFUSAL_CATEGORY.fullmatch(category) and hide(category) == category:
+        return category
+    return None
+
+
+def _known_stop_reason(stop_reason: Any) -> Any:
+    """``stop_reason`` when it is one of Claude's (:data:`_STOP_REASONS`) or ``None``, else
+    ``"other"``: what a log line may show of a stop reason that the answer could fill with anything."""
+    return stop_reason if stop_reason is None or stop_reason in _STOP_REASONS else "other"
 
 
 def _unthreaded(tool_runner: Callable[..., Any]) -> dict[str, Any]:
@@ -269,7 +348,10 @@ def _unthreaded(tool_runner: Callable[..., Any]) -> dict[str, Any]:
 
 @contextmanager
 def _api_errors(action: str) -> Iterator[None]:
-    """Translate Anthropic SDK errors into :class:`LLMUnavailable` (most specific first)."""
+    """Translate Anthropic SDK errors into :class:`LLMUnavailable` (most specific first).
+
+    An API error's message is quoted without the values of the key variables (:func:`_hide_api_keys`).
+    """
     import anthropic
 
     try:
@@ -287,18 +369,15 @@ def _api_errors(action: str) -> Iterator[None]:
     except anthropic.RateLimitError as exc:
         raise LLMUnavailable(f"Anthropic rate limit reached during {action} (429); retry later") from exc
     except anthropic.APIStatusError as exc:
-        detail = excerpt(getattr(exc, "message", "") or "", 300)
+        # The SDK's message quotes the whole answer: a gateway may echo the key in it.
+        detail = excerpt(_hide_api_keys(str(getattr(exc, "message", "") or "")), 300)
         raise LLMUnavailable(f"Anthropic API error {exc.status_code} during {action}: {detail}") from exc
     except anthropic.APIConnectionError as exc:
         raise LLMUnavailable(f"Cannot reach the Anthropic API during {action}: {type(exc).__name__}") from exc
     except ValueError as exc:
         if "Streaming is required" not in str(exc):
             raise
-        # The SDK refuses non-streaming requests whose max_tokens could exceed its 10-minute timeout.
-        raise LLMUnavailable(
-            f"llm.max_tokens is too large for a non-streaming request during {action}; lower it "
-            "(about 21000 at most)"
-        ) from exc
+        raise LLMUnavailable(_MAX_TOKENS_TOO_LARGE.format(action=action)) from exc
 
 
 # --------------------------------------------------------------------------- Anthropic
@@ -309,8 +388,10 @@ class AnthropicProvider:
 
     The client is created lazily on the first call; without ``ANTHROPIC_API_KEY`` (or
     ``ANTHROPIC_AUTH_TOKEN``) every call raises :class:`LLMUnavailable` with a clear message.
-    Pass ``client`` to inject a pre-built ``anthropic.Anthropic`` (tests use one built on an
-    ``httpx2.MockTransport``).
+    Its HTTP client is the SDK's default one with ``follow_redirects=False``: a redirect (from a
+    gateway in ``ANTHROPIC_BASE_URL``, say) ends the call, and the prompt never goes to another
+    host. Pass ``client`` to inject a pre-built ``anthropic.Anthropic`` (tests use one built on
+    an ``httpx2.MockTransport``).
     """
 
     name = "anthropic"
@@ -350,8 +431,15 @@ class AnthropicProvider:
             import anthropic
         except ImportError as exc:  # pragma: no cover - anthropic is a hard dependency
             raise LLMUnavailable("The 'anthropic' package is not installed") from exc
-        self._client = anthropic.Anthropic()
+        self._client = anthropic.Anthropic(http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
         return self._client
+
+    def _errors(self, action: str) -> AbstractContextManager[None]:
+        """The context manager that turns the SDK's errors into :class:`LLMUnavailable`.
+
+        The provider of another platform overrides it with that platform's messages.
+        """
+        return _api_errors(action)
 
     def _request_kwargs(self, system: str, prompt: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -367,13 +455,16 @@ class AnthropicProvider:
         return kwargs
 
     def _raise_for_stop(self, stop_reason: Any, stop_details: Any, action: str) -> None:
+        """Raise for an answer that cannot be used: :class:`LLMRefusal` for a refusal (its category
+        as :meth:`_refusal_category` shows it, its explanation without the provider's credentials),
+        :class:`LLMUnavailable` for a cut answer or an exceeded context window."""
         if stop_reason == "refusal":
-            category = _get(stop_details, "category") if stop_details is not None else None
+            category = self._refusal_category(stop_details)
             explanation = _get(stop_details, "explanation") if stop_details is not None else None
             raise LLMRefusal(
                 f"Claude declined {action} (refusal category: {category or 'unspecified'})",
                 category=category,
-                explanation=explanation,
+                explanation=self._without_credentials(explanation) if isinstance(explanation, str) else None,
             )
         if stop_reason == "max_tokens":
             raise LLMUnavailable(
@@ -381,6 +472,29 @@ class AnthropicProvider:
             )
         if stop_reason == "model_context_window_exceeded":
             raise LLMUnavailable(f"The prompt for {action} exceeded the model context window")
+
+    def _without_credentials(self, text: str) -> str:
+        """``text`` without the provider's credentials: the values of ``ANTHROPIC_API_KEY`` and
+        ``ANTHROPIC_AUTH_TOKEN`` (:func:`_hide_api_keys`). The provider of another platform hides
+        its own."""
+        return _hide_api_keys(text)
+
+    def _refusal_category(self, details: Any) -> str | None:
+        """The category of a refusal's ``stop_details`` as its error and the log line of a repair
+        may show it: the providers' shared check (:func:`_shown_category`), with the provider's
+        credentials (:meth:`_without_credentials`); ``None``: ``unspecified``."""
+        category = _get(details, "category") if details is not None else None
+        return _shown_category(category, self._without_credentials)
+
+    def _shown_stop_reason(self, stop_reason: Any) -> Any:
+        """The stop reason of a repair session as its last log line shows it: as the answer gave
+        it. The provider of another platform shows only one of Claude's (:func:`_known_stop_reason`)."""
+        return stop_reason
+
+    def _log_fallbacks(self, message: Any) -> None:
+        """Log the server-side fallback hops of ``message`` (:func:`_log_fallback_hops`). The
+        provider of a platform without server-side fallbacks logs none."""
+        _log_fallback_hops(message)
 
     # ------------------------------------------------------------------ classify
     def classify(self, *, system: str, prompt: str) -> tuple[Classification, int]:
@@ -390,7 +504,7 @@ class AnthropicProvider:
         client = self._get_client()
         kwargs = self._request_kwargs(system, prompt)
         action = "the incident classification"
-        with _api_errors(action):
+        with self._errors(action):
             if self.fallbacks:
                 # The raw response keeps stop_reason/stop_details readable when the SDK cannot
                 # parse a truncated or refused answer into the schema.
@@ -411,7 +525,7 @@ class AnthropicProvider:
                     ) from exc
 
         input_tokens, output_tokens = usage_tokens(getattr(message, "usage", None))
-        _log_fallbacks(message)
+        self._log_fallbacks(message)
         self._raise_for_stop(
             getattr(message, "stop_reason", None), getattr(message, "stop_details", None), action
         )
@@ -463,7 +577,7 @@ class AnthropicProvider:
             budget.limit,
         )
         try:
-            with _api_errors(action):
+            with self._errors(action):
                 tool_runner = client.beta.messages.tool_runner
                 runner = tool_runner(
                     tools=runnable,
@@ -482,29 +596,27 @@ class AnthropicProvider:
         result.input_tokens, result.output_tokens = budget.input_tokens, budget.output_tokens
         logger.info(
             "Claude repair session finished: stop_reason=%s, %d tool calls, %d tokens%s",
-            result.stop_reason,
+            self._shown_stop_reason(result.stop_reason),
             len(result.tool_calls),
             result.tokens_used,
             " (budget exhausted)" if result.budget_exhausted else "",
         )
         return result
 
-    @staticmethod
-    def _drive(runner: Any, budget: TokenBudget, result: RepairSessionResult) -> None:
+    def _drive(self, runner: Any, budget: TokenBudget, result: RepairSessionResult) -> None:
         count = 0
         for message in runner:
             count += 1
             budget.add_usage(getattr(message, "usage", None))
             result.stop_reason = getattr(message, "stop_reason", None)
-            _log_fallbacks(message)
+            self._log_fallbacks(message)
             text = _message_text(message)
             if text:
                 result.final_text = text
             if result.stop_reason == "refusal":
-                details = getattr(message, "stop_details", None)
+                category = self._refusal_category(getattr(message, "stop_details", None))
                 logger.warning(
-                    "Claude declined the repair session (refusal category: %s)",
-                    _get(details, "category") if details is not None else None,
+                    "Claude declined the repair session (refusal category: %s)", category or "unspecified"
                 )
                 break
             if budget.exhausted:
@@ -552,22 +664,37 @@ def _records_for(message: Any, response: Any) -> list[ToolCallRecord]:
 # --------------------------------------------------------------------------- factory
 
 
+def provider_name(cfg: Any) -> str:
+    """The name of the provider the worker runs: ``$HEALER_LLM_PROVIDER``, else ``llm.provider``.
+
+    Stripped and lower-cased; ``"anthropic"`` when neither is set (``cfg`` may be ``None``). The
+    name is not checked: it may be one that :func:`get_provider` refuses.
+    """
+    configured = getattr(getattr(cfg, "llm", None), "provider", None)
+    return str(os.environ.get(PROVIDER_ENV) or configured or "anthropic").strip().lower()
+
+
 def get_provider(cfg: Any) -> LLMProvider:
     """Return the configured provider (``$HEALER_LLM_PROVIDER`` overrides ``llm.provider``).
 
-    ``"anthropic"`` never fails here: a missing ``ANTHROPIC_API_KEY`` surfaces as
-    :class:`LLMUnavailable` when the provider is first called. Unknown names raise
-    :class:`ValueError`.
+    ``"anthropic"`` and ``"bedrock"`` never fail here: missing credentials (an unset
+    ``ANTHROPIC_API_KEY``, no AWS credentials), a missing AWS region or ``aws`` extra, or a
+    Claude API model ID given to Bedrock surface as :class:`LLMUnavailable` when the provider is
+    first called. Unknown names raise :class:`ValueError`.
     """
-    configured = getattr(getattr(cfg, "llm", None), "provider", None)
-    name = (os.environ.get(PROVIDER_ENV) or configured or "anthropic").strip().lower()
+    name = provider_name(cfg)
     if name == "anthropic":
         return AnthropicProvider(cfg)
+    if name == "bedrock":
+        from dag_healer.agent.bedrock import BedrockProvider
+
+        return BedrockProvider(cfg)
     if name == "fake":
         from dag_healer.agent.fake import FakeProvider
 
         return FakeProvider(cfg)
-    raise ValueError(f"Unknown LLM provider {name!r}: expected 'anthropic' or 'fake'")
+    expected = ", ".join(repr(known) for known in PROVIDER_NAMES[:-1]) + f" or {PROVIDER_NAMES[-1]!r}"
+    raise ValueError(f"Unknown LLM provider {name!r}: expected {expected}")
 
 
 __all__ = [
@@ -576,6 +703,7 @@ __all__ = [
     "FALLBACK_BETA",
     "MAX_RUNNER_MESSAGES",
     "PROVIDER_ENV",
+    "PROVIDER_NAMES",
     "AnthropicProvider",
     "Classification",
     "LLMProvider",
@@ -585,5 +713,6 @@ __all__ = [
     "ToolCallRecord",
     "excerpt",
     "get_provider",
+    "provider_name",
     "tool_call_record",
 ]

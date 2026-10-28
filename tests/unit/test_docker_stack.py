@@ -24,6 +24,15 @@ AIRFLOW_SERVICES = (
     "healer-worker",
 )
 SECRETS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_REPO", "HEALER_AIRFLOW_PASSWORD")
+#: The AWS settings of Claude on Amazon Bedrock: only healer-worker gets them, passed through.
+BEDROCK_AWS_ENV = (
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
 
 
 @pytest.fixture(scope="module")
@@ -198,6 +207,9 @@ def test_worker_environment(services: dict[str, Any]) -> None:
     # offline fake LLM unless docker/.env selects Claude
     assert env["HEALER_LLM_PROVIDER"] == "${HEALER_LLM_PROVIDER:-fake}"
     assert services["airflow-apiserver"]["environment"]["HEALER_LLM_PROVIDER"] == env["HEALER_LLM_PROVIDER"]
+    # the model of the generated healer.yaml, passed through (unset: the template's default)
+    assert env["HEALER_LLM_MODEL"] is None
+    assert services["airflow-apiserver"]["environment"]["HEALER_LLM_MODEL"] is None
     assert env["HEALER_FAKE_LLM_DIR"] == "/opt/airflow/repo/fixtures/fake_llm"
     for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
         assert env[key] == "dag-healer"
@@ -212,6 +224,21 @@ def test_scheduler_can_post_listener_events(services: dict[str, Any]) -> None:
     assert env["HEALER_API_URL"] == "http://airflow-apiserver:8080"
     assert env["HEALER_INGEST_TOKEN"].startswith("${HEALER_INGEST_TOKEN:-")
     assert "HEALER_LLM_PROVIDER" not in env and "ANTHROPIC_API_KEY" not in env
+    assert "HEALER_LLM_MODEL" not in env
+
+
+def test_only_the_worker_gets_the_aws_settings_of_bedrock(services: dict[str, Any]) -> None:
+    """Passed through from docker/.env or the shell (unset when undefined), to healer-worker only:
+    the scheduler runs task code, and doctor for bedrock runs in the worker."""
+    worker = services["healer-worker"]["environment"]
+    assert {name: worker[name] for name in BEDROCK_AWS_ENV} == dict.fromkeys(BEDROCK_AWS_ENV)
+    # no profile (the container has no ~/.aws) and no endpoint override (an empty one breaks the SDK)
+    assert not {"AWS_PROFILE", "AWS_DEFAULT_PROFILE", "ANTHROPIC_BEDROCK_BASE_URL"} & set(worker)
+    for name, svc in services.items():
+        if name == "healer-worker":
+            continue
+        env = svc.get("environment") or {}
+        assert not [key for key in env if key.startswith(("AWS_", "ANTHROPIC_BEDROCK"))], name
 
 
 def test_only_the_worker_gets_the_engine_socket(services: dict[str, Any]) -> None:

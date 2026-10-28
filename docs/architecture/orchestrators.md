@@ -47,7 +47,7 @@ Extra checks (all [V]):
 
 ### Goals
 
-1. **Neutral core.** The core is `agent/`, `worker/`, `store/`, `contracts/`, `alerts/`, `pr/`, `repo/{git,profile,pytest_runner,sandbox}.py`, `masking.py`, `datasets.py`, `links.py`, `api/` (except `api/auth.py`) and `ui/`. It never imports `airflow`, `boto3`, `botocore`, `dag_healer.airflow.*` (other than the two re-exported constants, which move to `core`) or `dag_healer.stepfunctions.*`. It reaches an orchestrator only through `dag_healer.core.ports`, from an adapter that `dag_healer.orchestrators.registry` returns or that is injected.
+1. **Neutral core.** The core is `agent/`, `worker/`, `store/`, `contracts/`, `alerts/`, `pr/`, `repo/{git,profile,pytest_runner,sandbox}.py`, `masking.py`, `datasets.py`, `links.py`, `api/` (except `api/auth.py`) and `ui/`. It never imports `airflow`, `boto3`, `botocore`, `dag_healer.airflow.*` (other than the two re-exported constants, which move to `core`) or `dag_healer.stepfunctions.*`. It reaches an orchestrator only through `dag_healer.core.ports`, from an adapter that `dag_healer.orchestrators.registry` returns or that is injected. The Amazon Bedrock LLM provider (`agent/bedrock.py`) is core too: boto3 and botocore reach it only through the `anthropic` SDK, and it checks that they are installed with `importlib.util.find_spec`.
 2. **Airflow is one adapter.** It passes the same conformance suite as the fake orchestrator and the Step Functions reference adapter.
 3. **The Airflow plugin UX stays exactly as it is:**
    - same entry point `dag_healer = "dag_healer.airflow.plugin:HealerPlugin"`, same `HealerPlugin` class, same listener module object;
@@ -762,7 +762,8 @@ ui/vite.standalone.config.ts   NEW  ES-module app build with React bundled
 - `core` imports only stdlib and `core`.
 - The core packages listed in goal 1 never import `airflow`, `boto3`, `botocore`, `dag_healer.airflow.adapter`, `dag_healer.airflow.client` or `dag_healer.stepfunctions*`. They may import `core`, `orchestrators.registry` and `orchestrators.compat`.
 - Only `airflow/{plugin,listener}.py` and `api/auth.py` import `airflow` (today's rule).
-- Only `stepfunctions/aws.py` and `storage/s3.py` import `boto3`, and only lazily.
+- Only `stepfunctions/aws.py`, `stepfunctions/testing.py` (the offline AWS of the tests), `storage/s3.py` and `cli/doctor_cmd.py` (the AWS credential probe of the `llm` check for Amazon Bedrock) import `boto3` / `botocore`, and only lazily.
+- Only the LLM providers, `agent/llm.py` and `agent/bedrock.py`, import the `anthropic` SDK, and only lazily.
 - Task runners never import `orchestrators` or `core`: an extension of the existing light-import test.
 - As built in step 7:
   - `hosting/auth/` also holds `__init__.py`, with the factory `build_auth_backend`, and `base.py`, with what the four backends share.

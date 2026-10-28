@@ -62,6 +62,18 @@ and works without `make` (every `make <target>` delegates to it):
   `HEALER_SANDBOX_TEST_IMAGE=dag-healer/airflow:dev` too when the change touches how the sandbox
   finds Python packages: the test image installs pytest with `pip install --user`, the
   development image keeps its packages in a virtualenv under the `airflow` user's `~/.local`.
+- Amazon Bedrock provider changes (`src/dag_healer/agent/bedrock.py`, the `llm` check of
+  `dag-healer doctor`): the opt-in live test as well, in your own AWS account. It calls the real
+  Amazon Bedrock (about 2,000 to 4,000 tokens, billed to the account), with the region and the
+  credentials of the usual AWS settings:
+
+  ```bash
+  HEALER_BEDROCK_TEST_MODEL=eu.anthropic.claude-opus-5-5 AWS_REGION=eu-west-1 \
+    .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/live/test_bedrock_live.py
+  ```
+
+  Without `HEALER_BEDROCK_TEST_MODEL` it is skipped, and neither a plain `pytest` run nor CI
+  collects `tests/live/`. [docs/bedrock.md](docs/bedrock.md) ("The live test") says what it checks.
 
 The unit tests never need a container engine. The container backend is tested with a fake
 engine, and every test that runs a repair selects the `process` backend in its own

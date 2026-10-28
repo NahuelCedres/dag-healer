@@ -41,6 +41,7 @@ def aws_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     empty = tmp_path / "aws-config"
     empty.write_text("", encoding="utf-8")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_CREDENTIAL_EXPIRATION", raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")

@@ -8,7 +8,7 @@ import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -19,6 +19,9 @@ from dag_healer.cli._output import mask_url, render_table
 from dag_healer.cli.main import main
 from dag_healer.contracts.io import contract_path, load_contract, save_contract
 from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING, ContainerSandbox, SandboxProbe
+
+if TYPE_CHECKING:
+    from dag_healer.config import HealerConfig
 
 EXAMPLE_REPO = Path(__file__).resolve().parents[2] / "example_existing_repo"
 SECRET = "sk-ant-do-not-print-me-123"
@@ -34,6 +37,7 @@ def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in (
         "ANTHROPIC_API_KEY",
         "HEALER_LLM_PROVIDER",
+        "HEALER_LLM_MODEL",
         "HEALER_SMTP_HOST",
         "HEALER_AIRFLOW_USERNAME",
         "HEALER_AIRFLOW_PASSWORD",
@@ -561,6 +565,887 @@ def test_airflow_auth_and_ingest_follow_the_detection_modes(
         assert auth_result.detail == "REST polling disabled (monitor.modes)"
     if ingest == doctor_cmd.SKIP:
         assert ingest_result.detail == "listener/callback modes disabled"
+
+
+# --------------------------------------------------------------------------- doctor: the bedrock provider
+
+#: Fictional static AWS credentials (nothing is ever sent anywhere with them).
+AWS_KEY_ID = "AKIDEXAMPLE"
+AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+AWS_SESSION_TOKEN = "example-session-token"
+BEDROCK_API_KEY = "bedrock-api-key-EXAMPLE"
+BEDROCK_MODEL = "eu.anthropic.claude-opus-5-5"
+#: The end of the bedrock llm line, by how the provider would authenticate.
+ENV_CREDENTIALS_RESOLVE = "AWS credentials resolve (env; values hidden)"
+API_KEY_SET = "AWS_BEARER_TOKEN_BEDROCK is set (value hidden)"
+
+
+@pytest.fixture
+def aws_env(isolated: Path, isolated_aws: Path) -> Path:
+    """No AWS setting of the host (``isolated_aws`` of tests/conftest.py: no variable, no AWS file,
+    no instance metadata service), in the isolated environment of these tests.
+
+    Returns the folder of the test's ``aws-config`` and ``aws-credentials`` files (absent until a
+    test writes them).
+    """
+    return isolated_aws
+
+
+@pytest.fixture
+def aws_sdk(aws_env: Path) -> Path:
+    """``aws_env`` where botocore can resolve credentials (the ``aws`` extra is installed)."""
+    pytest.importorskip("botocore")
+    pytest.importorskip("boto3")
+    return aws_env
+
+
+def _write_aws_file(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _env_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", AWS_KEY_ID)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", AWS_SECRET_KEY)
+    monkeypatch.setenv("AWS_SESSION_TOKEN", AWS_SESSION_TOKEN)
+
+
+def _bedrock(**llm: Any) -> HealerConfig:
+    """A configuration of the bedrock provider (``llm.model`` a Bedrock inference profile ID)."""
+    from dag_healer.config import config_from_mapping
+
+    return config_from_mapping({"llm": {"provider": "bedrock", "model": BEDROCK_MODEL, **llm}})
+
+
+def _without_aws_secrets(text: str) -> bool:
+    return not [
+        value for value in (AWS_KEY_ID, AWS_SECRET_KEY, AWS_SESSION_TOKEN, BEDROCK_API_KEY) if value in text
+    ]
+
+
+def _no_probe(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("no AWS credential lookup expected")
+
+
+def test_doctor_bedrock_line_with_credentials_from_the_environment(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.name, result.status) == ("llm", doctor_cmd.OK)
+    assert result.detail == (
+        f"provider bedrock (model eu.anthropic.claude-opus-5-5, region eu-west-1): {ENV_CREDENTIALS_RESOLVE}"
+    )
+    assert _without_aws_secrets(result.detail)
+
+
+@pytest.mark.parametrize(
+    ("llm", "env", "region"),
+    [
+        pytest.param(
+            {"aws_region": "eu-central-1"},
+            {"AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "us-west-2"},
+            "eu-central-1",
+            id="llm",
+        ),
+        pytest.param(
+            {}, {"AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "us-west-2"}, "us-east-1", id="aws-region"
+        ),
+        pytest.param(
+            {}, {"AWS_REGION": " ", "AWS_DEFAULT_REGION": "us-west-2"}, "us-west-2", id="default-region"
+        ),
+    ],
+)
+def test_doctor_bedrock_region_order(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, llm: dict[str, str], env: dict[str, str], region: str
+) -> None:
+    _env_credentials(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    result = doctor_cmd.check_llm(_bedrock(**llm))
+    assert result.status == doctor_cmd.OK
+    assert result.detail.startswith(f"provider bedrock (model {BEDROCK_MODEL}, region {region}): ")
+
+
+@pytest.mark.parametrize(
+    "where", [pytest.param("llm", id="llm-profile"), pytest.param("env", id="aws-profile")]
+)
+def test_doctor_bedrock_takes_the_region_and_credentials_of_the_profile(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    _write_aws_file(aws_sdk / "aws-config", "[profile healer-dev]\nregion = eu-west-3\n")
+    _write_aws_file(
+        aws_sdk / "aws-credentials",
+        f"[healer-dev]\naws_access_key_id = {AWS_KEY_ID}\naws_secret_access_key = {AWS_SECRET_KEY}\n",
+    )
+    if where == "env":
+        monkeypatch.setenv("AWS_PROFILE", "healer-dev")
+        cfg = _bedrock()
+    else:
+        cfg = _bedrock(aws_profile="healer-dev")
+    result = doctor_cmd.check_llm(cfg)
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-3): "
+        "AWS credentials resolve (shared-credentials-file; values hidden)",
+    )
+    assert _without_aws_secrets(result.detail)
+
+
+def test_doctor_bedrock_without_a_region(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region unset): {bedrock.NO_REGION}",
+    )
+
+
+def test_doctor_bedrock_without_credentials(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No variable, no AWS file and no instance metadata service (disabled): nothing resolves."""
+    from dag_healer.agent import bedrock
+
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): {bedrock.NO_CREDENTIALS}",
+    )
+
+
+@pytest.mark.parametrize(
+    "model", [pytest.param(None, id="default"), pytest.param("claude-sonnet-5-5", id="sonnet")]
+)
+def test_doctor_bedrock_refuses_a_claude_api_model_id(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, model: str | None
+) -> None:
+    from dag_healer.agent import bedrock
+    from dag_healer.config import config_from_mapping
+
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    llm = {"provider": "bedrock"} if model is None else {"provider": "bedrock", "model": model}
+    shown = model or "claude-opus-5-5"
+    result = doctor_cmd.check_llm(config_from_mapping({"llm": llm}))
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {shown}, region eu-west-1): {bedrock.model_alias_problem(shown)}",
+    )
+    assert "docs/bedrock.md" in result.detail
+
+
+def test_doctor_bedrock_names_every_problem_in_order(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.agent import bedrock
+    from dag_healer.config import config_from_mapping
+
+    monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", "")
+    result = doctor_cmd.check_llm(config_from_mapping({"llm": {"provider": "bedrock"}}))
+    problems = [
+        bedrock.model_alias_problem("claude-opus-5-5"),
+        bedrock.BASE_URL_EMPTY,
+        bedrock.NO_REGION,
+        bedrock.NO_CREDENTIALS,
+    ]
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        "provider bedrock (model claude-opus-5-5, region unset): " + "; ".join(str(p) for p in problems),
+    )
+
+
+def test_doctor_bedrock_with_an_api_key(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", BEDROCK_API_KEY)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.setattr(doctor_cmd, "_aws_credentials", _no_probe)  # the key is never resolved
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): {API_KEY_SET}",
+    )
+    assert _without_aws_secrets(result.detail)
+
+
+def test_doctor_bedrock_with_an_api_key_reads_the_region_of_the_profile(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_aws_file(aws_sdk / "aws-config", "[default]\nregion = eu-north-1\n")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", BEDROCK_API_KEY)
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-north-1): {API_KEY_SET}",
+    )
+
+
+def test_doctor_bedrock_treats_a_blank_api_key_as_unset(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", " ")
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = doctor_cmd.check_llm(_bedrock())
+    assert result.status == doctor_cmd.OK
+    assert result.detail.endswith(f": {ENV_CREDENTIALS_RESOLVE}")
+
+
+@pytest.mark.parametrize(
+    ("api_key", "region", "problem"),
+    [
+        pytest.param(BEDROCK_API_KEY, "eu-west-1", "PROFILE_AND_API_KEY", id="api-key"),
+        pytest.param("", None, "EMPTY_API_KEY_WITH_PROFILE", id="empty-api-key"),
+    ],
+)
+def test_doctor_bedrock_refuses_a_profile_next_to_an_api_key(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, api_key: str, region: str | None, problem: str
+) -> None:
+    from dag_healer.agent import bedrock
+
+    _write_aws_file(aws_sdk / "aws-config", "[profile healer-dev]\nregion = eu-west-3\n")
+    _write_aws_file(
+        aws_sdk / "aws-credentials",
+        f"[healer-dev]\naws_access_key_id = {AWS_KEY_ID}\naws_secret_access_key = {AWS_SECRET_KEY}\n",
+    )
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", api_key)
+    result = doctor_cmd.check_llm(_bedrock(aws_profile="healer-dev", aws_region=region))
+    assert result.status == doctor_cmd.ERROR
+    assert result.detail.endswith(f": {getattr(bedrock, problem)}")
+    assert _without_aws_secrets(result.detail)
+
+
+def test_doctor_bedrock_names_an_unknown_profile(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = doctor_cmd.check_llm(_bedrock(aws_profile="no-such-profile"))
+    assert result.status == doctor_cmd.ERROR
+    assert result.detail.startswith(
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): the AWS credentials for the bedrock "
+        "provider cannot be resolved: ProfileNotFound: "
+    )
+    assert "no-such-profile" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("base_url", "endpoint_url", "shown"),
+    [
+        pytest.param(
+            None, "https://vpce-0123-abcd.bedrock-runtime.eu-west-1.vpce.amazonaws.com/", True, id="vpce"
+        ),
+        pytest.param("", "https://bedrock-gateway.internal:8443", True, id="empty-variable"),
+        pytest.param("https://bedrock-gateway.internal:8443", None, False, id="variable"),
+    ],
+)
+def test_doctor_bedrock_endpoint_overrides(
+    aws_sdk: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    endpoint_url: str | None,
+    shown: bool,
+) -> None:
+    _env_credentials(monkeypatch)
+    if base_url is not None:
+        monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", base_url)
+    result = doctor_cmd.check_llm(_bedrock(aws_region="eu-west-1", endpoint_url=endpoint_url))
+    assert result.status == doctor_cmd.OK, result.detail
+    endpoint = f", endpoint {(endpoint_url or '').rstrip('/')}" if shown else ""
+    assert result.detail == (
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1{endpoint}): {ENV_CREDENTIALS_RESOLVE}"
+    )
+
+
+def test_doctor_bedrock_names_the_aws_extra(aws_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.agent import bedrock
+    from dag_healer.config import config_from_mapping
+
+    monkeypatch.setattr(bedrock, "missing_aws_sdk", lambda: True)
+    monkeypatch.setattr(doctor_cmd, "_aws_credentials", _no_probe)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    result = doctor_cmd.check_llm(config_from_mapping({"llm": {"provider": "bedrock"}}))
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model claude-opus-5-5, region eu-west-1): {bedrock.AWS_SDK_MISSING}",
+    )
+    assert result.detail.endswith('pip install "dag-healer[aws]"')
+
+
+def test_doctor_checks_the_provider_the_worker_runs(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.config import config_from_mapping
+
+    cfg = config_from_mapping({"llm": {"provider": "anthropic", "model": BEDROCK_MODEL}})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    assert (
+        doctor_cmd.check_llm(cfg).detail == f"ANTHROPIC_API_KEY is set (value hidden); model {BEDROCK_MODEL}"
+    )
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", " Bedrock ")
+    result = doctor_cmd.check_llm(cfg)
+    assert result.status == doctor_cmd.OK
+    assert result.detail.startswith(f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): ")
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "fake")
+    assert doctor_cmd.check_llm(cfg).detail == "provider 'fake' (offline); no API key needed"
+
+
+@pytest.mark.parametrize(
+    "cfg", [pytest.param(None, id="no-config"), pytest.param("anthropic", id="anthropic")]
+)
+def test_doctor_reports_an_unknown_provider_name(
+    isolated: Path, monkeypatch: pytest.MonkeyPatch, cfg: str | None
+) -> None:
+    from dag_healer.config import config_from_mapping
+
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "openai")
+    config = None if cfg is None else config_from_mapping({"llm": {"provider": cfg}})
+    result = doctor_cmd.check_llm(config)
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        "unknown LLM provider 'openai': expected anthropic, bedrock or fake "
+        "(llm.provider or HEALER_LLM_PROVIDER)",
+    )
+
+
+def test_the_credential_probe_asks_the_instance_metadata_service_once_with_a_short_timeout(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import botocore.session
+
+    seen: dict[str, Any] = {}
+    get_credentials = botocore.session.Session.get_credentials
+
+    def spy(self: Any) -> Any:
+        seen["timeout"] = self.get_config_variable("metadata_service_timeout")
+        seen["attempts"] = self.get_config_variable("metadata_service_num_attempts")
+        return get_credentials(self)
+
+    monkeypatch.setattr(botocore.session.Session, "get_credentials", spy)
+    monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "30")
+    monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "5")
+    assert doctor_cmd._aws_credentials(None) == (None, None, None)
+    assert seen == {"timeout": doctor_cmd.METADATA_TIMEOUT_SECONDS, "attempts": 1}
+    assert doctor_cmd.METADATA_TIMEOUT_SECONDS <= 2
+
+
+def test_aws_errors_never_show_a_key() -> None:
+    botocore_exceptions = pytest.importorskip("botocore.exceptions")
+    exc = botocore_exceptions.CredentialRetrievalError(
+        provider="custom-process",
+        error_msg=f"denied AKIAEXAMPLEKEYID0001 {AWS_SECRET_KEY} for ops@example.com;" + " retry later" * 40,
+    )
+    text = doctor_cmd._aws_error_text(exc)
+    assert text.startswith(
+        "CredentialRetrievalError: Error when retrieving credentials from custom-process: denied *** *** for "
+    )
+    assert "AKIAEXAMPLEKEYID0001" not in text and AWS_SECRET_KEY not in text and "ops@example.com" not in text
+    assert text.endswith("...") and len(text) == len("CredentialRetrievalError: ") + 300  # cut
+    profile = "healer-worker-production-eu-west-1-account"  # long, but not random: shown
+    missing = doctor_cmd._aws_error_text(botocore_exceptions.ProfileNotFound(profile=profile))
+    assert missing == f"ProfileNotFound: The config profile ({profile}) could not be found"
+
+
+@pytest.mark.parametrize(
+    ("variable", "region"),
+    [
+        pytest.param("AWS_REGION", "collector.example.net/", id="host"),
+        pytest.param("AWS_REGION", "Europe West", id="words"),
+        pytest.param("AWS_DEFAULT_REGION", "eu-west-1.collector.example.net#", id="default-region"),
+    ],
+)
+def test_doctor_bedrock_refuses_a_region_variable_that_is_no_region(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, variable: str, region: str
+) -> None:
+    """The region names the host of the signed requests: an error, and the value is never shown."""
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv(variable, region)
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region invalid): "
+        f"{bedrock.REGION_INVALID.format(source=variable)}",
+    )
+    assert region not in result.detail
+
+
+def test_doctor_bedrock_refuses_a_profile_region_that_is_no_region(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    _write_aws_file(aws_sdk / "aws-config", "[default]\nregion = eu-west-1.collector.example.net#\n")
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region invalid): "
+        f"{bedrock.REGION_INVALID.format(source=bedrock.PROFILE_REGION)}",
+    )
+
+
+def test_doctor_bedrock_refuses_a_blank_region_variable_like_the_provider(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``AWS_REGION=' '`` next to a profile region: the SDK would take the blank value, so doctor
+    does not report the profile's region as the one in use."""
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    _write_aws_file(aws_sdk / "aws-config", "[default]\nregion = eu-west-1\n")
+    monkeypatch.setenv("AWS_REGION", " ")
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region unset): "
+        f"{bedrock.REGION_BLANK.format(name='AWS_REGION')}",
+    )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://collector.example.net",
+        "https://collector.example.net\\.bedrock-runtime.eu-west-1.amazonaws.com",
+        "https://bedrock.example.com/x?y#z",
+    ],
+    ids=["http", "backslash", "query-fragment"],
+)
+def test_doctor_bedrock_refuses_an_invalid_sdk_base_url(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", base_url)
+    result = doctor_cmd.check_llm(_bedrock())
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): {bedrock.BASE_URL_INVALID}",
+    )
+    assert "collector" not in result.detail
+
+
+def test_doctor_bedrock_agrees_with_the_provider(aws_sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both read the same rules (``settings_problems``): what doctor refuses, the provider refuses."""
+    from dag_healer.agent import bedrock
+
+    _env_credentials(monkeypatch)
+    for name, value in (
+        ("AWS_REGION", "collector.example.net/"),
+        ("ANTHROPIC_BEDROCK_BASE_URL", "http://x.example"),
+        ("AWS_SESSION_TOKEN", f"{AWS_SESSION_TOKEN}\nsecond-line-of-the-value"),
+    ):
+        monkeypatch.setenv(name, value)
+        result = doctor_cmd.check_llm(_bedrock())
+        with pytest.raises(bedrock.LLMUnavailable) as info:
+            bedrock.BedrockProvider(_bedrock()).classify(system="S", prompt="P")
+        assert result.status == doctor_cmd.ERROR
+        assert str(info.value) in result.detail.split(": ", 1)[1].split("; ")  # one of doctor's problems
+        assert "second-line" not in result.detail and _without_aws_secrets(result.detail)
+        monkeypatch.delenv(name)
+
+
+def test_doctor_bedrock_refuses_expired_keys_of_the_environment(
+    aws_sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What stays in a shell once keys exported with ``aws configure export-credentials --format
+    env`` expire: doctor refuses them as the provider does, before any request and without their
+    values; keys that have not expired yet still resolve."""
+    import httpx2
+
+    from dag_healer.agent import bedrock
+
+    def no_request(request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError("no request expected")
+
+    _env_credentials(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2099-01-01T00:00:00Z")
+    assert doctor_cmd.check_llm(_bedrock()).detail.endswith(ENV_CREDENTIALS_RESOLVE)
+    monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2020-01-01T00:00:00Z")
+    result = doctor_cmd.check_llm(_bedrock())
+    expired = "RuntimeError: Credentials were refreshed, but the refreshed credentials are still expired."
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        f"provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): "
+        f"the AWS credentials for the bedrock provider cannot be resolved: {expired}",
+    )
+    assert _without_aws_secrets(result.detail)
+    client = httpx2.Client(transport=httpx2.MockTransport(no_request))
+    with pytest.raises(bedrock.LLMUnavailable) as info:
+        bedrock.BedrockProvider(_bedrock(), http_client=client).classify(system="S", prompt="P")
+    assert str(info.value) == (
+        "the AWS credentials for the bedrock provider cannot be resolved during the incident "
+        f"classification: {expired}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("form", "value"),
+    [
+        pytest.param("url-encoded secret", "quote:" + AWS_SECRET_KEY, id="url-secret"),
+        pytest.param(
+            "url-encoded token",
+            "quote:IQoJb3JpZ2luX2VjEXAMPLE/role+token=Q0123456789abcdefXYZ",
+            id="url-token",
+        ),
+        pytest.param("json-escaped secret", "json:" + AWS_SECRET_KEY, id="json-secret"),
+        pytest.param("api key fragment", "ABSKQmVkcm9ja0FQSUtleS1leGFt", id="api-key-fragment"),
+        pytest.param(
+            "session token field", 'field:"SessionToken": "example-lower-case-token-value"', id="field"
+        ),
+    ],
+)
+def test_aws_errors_never_show_a_credential_in_any_form(form: str, value: str) -> None:
+    """What a credential process may print: decoded before it is looked at, then hidden."""
+    from urllib.parse import quote
+
+    botocore_exceptions = pytest.importorskip("botocore.exceptions")
+    kind, _, raw = (
+        value.partition(":") if value.startswith(("quote:", "json:", "field:")) else ("", "", value)
+    )
+    shown = {"quote": quote(raw, safe=""), "json": raw.replace("/", "\\/"), "field": raw, "": value}[kind]
+    exc = botocore_exceptions.CredentialRetrievalError(
+        provider="custom-process", error_msg=f"output {shown} end"
+    )
+    text = doctor_cmd._aws_error_text(exc)
+    assert text.startswith(
+        "CredentialRetrievalError: Error when retrieving credentials from custom-process: output "
+    )
+    secret = raw.split('": "')[-1].rstrip('"') if kind == "field" else (raw or value)
+    assert secret not in text and quote(secret, safe="") not in text, form
+    assert not [secret[i : i + 16] for i in range(len(secret) - 15) if secret[i : i + 16] in text], form
+    assert "***" in text
+
+
+def test_doctor_shows_the_bedrock_line(
+    tmp_path: Path, aws_sdk: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "dags").mkdir()
+    config_file = tmp_path / "healer.yaml"
+    config_file.write_text(
+        f"llm: {{provider: bedrock, model: {BEDROCK_MODEL}, aws_region: eu-west-1, fallbacks: false}}\n"
+        "repo: {sandbox: {backend: process}}\n" + FAKEFLOW,
+        encoding="utf-8",
+    )
+    _env_credentials(monkeypatch)
+    code = main(["doctor", "-c", str(config_file)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    line = _line(out, "llm")
+    assert line.startswith("[ OK ]") and line.endswith(
+        f"  provider bedrock (model {BEDROCK_MODEL}, region eu-west-1): {ENV_CREDENTIALS_RESOLVE}"
+    )
+    assert _without_aws_secrets(out)
+
+
+@pytest.mark.parametrize(
+    ("llm", "warned"),
+    [
+        pytest.param("provider: bedrock", False, id="default"),
+        pytest.param("provider: bedrock, fallbacks: true", True, id="true"),
+        pytest.param("provider: bedrock, fallbacks: false", False, id="false"),
+        pytest.param("provider: bedrock, fallbacks: '${HEALER_NO_SUCH_SETTING}'", False, id="env-unset"),
+        pytest.param("provider: anthropic, fallbacks: true", False, id="anthropic"),
+    ],
+)
+def test_check_warns_about_fallbacks_written_for_bedrock(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str], llm: str, warned: bool
+) -> None:
+    from dag_healer.agent import bedrock
+
+    config_file = tmp_path / "healer.yaml"
+    config_file.write_text(f"version: 1\nllm: {{{llm}, model: {BEDROCK_MODEL}}}\n", encoding="utf-8")
+    assert main(["check", "--config", str(config_file)]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == (f"warning: {bedrock.FALLBACKS_IGNORED}\n" if warned else "")
+
+
+def test_check_shows_the_bedrock_settings_only_when_set(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_file = tmp_path / "healer.yaml"
+    llm = f"provider: bedrock, model: {BEDROCK_MODEL}, fallbacks: false"
+    config_file.write_text(f"version: 1\nllm: {{{llm}}}\n", encoding="utf-8")
+    assert main(["check", "--config", str(config_file)]) == 0
+    shown = yaml.safe_load(capsys.readouterr().out.split("\nConfiguration is valid.")[0])
+    assert shown["llm"] == {
+        "provider": "bedrock",
+        "model": BEDROCK_MODEL,
+        "effort": "high",
+        "max_tokens": 16000,
+        "fallbacks": False,
+    }
+    endpoint = "https://vpce-0123-abcd.bedrock-runtime.eu-west-1.vpce.amazonaws.com"
+    settings = f"aws_region: eu-west-1, aws_profile: healer-dev, endpoint_url: '{endpoint}'"
+    config_file.write_text(f"version: 1\nllm: {{{llm}, {settings}}}\n", encoding="utf-8")
+    assert main(["check", "--config", str(config_file)]) == 0
+    captured = capsys.readouterr()
+    shown = yaml.safe_load(captured.out.split("\nConfiguration is valid.")[0])
+    assert {name: shown["llm"][name] for name in ("aws_region", "aws_profile", "endpoint_url")} == {
+        "aws_region": "eu-west-1",
+        "aws_profile": "healer-dev",
+        "endpoint_url": endpoint,
+    }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("verbosity", "anthropic_log", "dropped"),
+    [
+        pytest.param(2, None, True, id="vv"),
+        pytest.param(2, "debug", False, id="vv-sdk-debug"),
+        pytest.param(1, None, False, id="v"),
+    ],
+)
+def test_debug_logs_never_quote_the_requests_of_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    verbosity: int,
+    anthropic_log: str | None,
+    dropped: bool,
+) -> None:
+    """``-vv`` puts the root logger at DEBUG: the anthropic SDK's ``Request options`` record would
+    quote every request body (the prompts), on both providers. Only ``ANTHROPIC_LOG=debug`` keeps it."""
+    from dag_healer.cli import main as main_module
+
+    target = logging.getLogger(main_module.SDK_REQUEST_LOGGER)
+    monkeypatch.setattr(target, "filters", [])  # put back at teardown
+    monkeypatch.setattr(main_module._SDK_FILTER, "keep_requests", main_module._SDK_FILTER.keep_requests)
+    if anthropic_log is None:
+        monkeypatch.delenv("ANTHROPIC_LOG", raising=False)
+    else:
+        monkeypatch.setenv("ANTHROPIC_LOG", anthropic_log)
+    main_module._configure_logging(verbosity)
+    caplog.set_level(logging.DEBUG)
+    target.debug("Request options: %s", {"json_data": {"messages": [{"content": "PROMPT"}]}})
+    target.debug("Sending HTTP Request: %s %s", "POST", "https://bedrock-runtime.eu-west-1.amazonaws.com")
+    messages = [
+        record.getMessage() for record in caplog.records if record.name == main_module.SDK_REQUEST_LOGGER
+    ]
+    assert any("PROMPT" in text for text in messages) is not dropped
+    assert "Sending HTTP Request: POST https://bedrock-runtime.eu-west-1.amazonaws.com" in messages
+
+
+#: A value that an answer's header echoes; it is in no variable, so only the headers rule hides it.
+HEADER_ECHO = "example/echo+value/held-in-no-variable"
+#: How a transport's trace prints the headers of an answer, and the same trace once filtered.
+RAW_ANSWER_HEADERS = (
+    "receive_response_headers.complete return_value=(b'HTTP/1.1', 403, b'Forbidden', "
+    f"[(b'Content-Type', b'application/json'), (b'x-amzn-ErrorType', b'AccessDenied:{HEADER_ECHO}')])"
+)
+FILTERED_ANSWER_HEADERS = (
+    "receive_response_headers.complete return_value=(b'HTTP/1.1', 403, b'Forbidden', [headers not shown])"
+)
+#: How httpcore2's trace of a failed request quotes the header value that h11 refused.
+H11_REFUSAL = (
+    "send_request_headers.failed exception=LocalProtocolError(LocalProtocolError("
+    f"\"Illegal header value b'{HEADER_ECHO}\\\\n'\"))"
+)
+#: How httpcore2's traces of a failed answer quote the bytes that h11 could not read.
+H11_STATUS_LINE = (
+    "receive_response_headers.failed exception=RemoteProtocolError(RemoteProtocolError("
+    f"\"illegal status line: bytearray(b'HTTP/1.1 4x3 {HEADER_ECHO}')\"))"
+)
+H11_CHUNK_HEADER = (
+    "receive_response_body.failed exception=RemoteProtocolError(RemoteProtocolError("
+    f"\"illegal chunk header: bytearray(b'{HEADER_ECHO}\\\\r\\\\n')\"))"
+)
+H11_CHUNK_FOOTER = (
+    "receive_response_body.failed exception=RemoteProtocolError(RemoteProtocolError("
+    f"\"malformed chunk footer: bytearray(b'{HEADER_ECHO[:2]}') (expected b'\\\\r\\\\n')\"))"
+)
+#: A reason phrase that echoes a value, in the status line of an answer.
+ECHOED_REASON = f"Forbidden {HEADER_ECHO}"
+
+
+@pytest.mark.parametrize(
+    ("name", "message", "args", "shown"),
+    [
+        pytest.param(
+            "anthropic._base_client",
+            'HTTP Response: %s %s "%i %s" %s',
+            (
+                "POST",
+                "https://h.example/model/m/invoke",
+                403,
+                "Forbidden",
+                httpx.Headers({"x-echo": HEADER_ECHO}),
+            ),
+            'HTTP Response: POST https://h.example/model/m/invoke "403 Forbidden" [headers not shown]',
+            id="sdk-answer",
+        ),
+        pytest.param(
+            "anthropic._base_client",
+            "request_id: %s",
+            (HEADER_ECHO,),
+            "request_id: [headers not shown]",
+            id="sdk-request-id",
+        ),
+        pytest.param(
+            "anthropic._base_client", "request_id: %s", (None,), "request_id: None", id="sdk-no-request-id"
+        ),
+        pytest.param(
+            "httpcore2.http11", RAW_ANSWER_HEADERS, (), FILTERED_ANSWER_HEADERS, id="httpcore2-answer"
+        ),
+        pytest.param(
+            "httpcore.http11", RAW_ANSWER_HEADERS, (), FILTERED_ANSWER_HEADERS, id="httpcore-answer"
+        ),
+        pytest.param("httpcore2.http11", H11_REFUSAL, (), None, id="h11-refusal"),
+        pytest.param("httpcore2.http11", H11_STATUS_LINE, (), None, id="h11-status-line"),
+        pytest.param("httpcore2.http11", H11_CHUNK_HEADER, (), None, id="h11-chunk-header"),
+        pytest.param("httpcore.http11", H11_CHUNK_FOOTER, (), None, id="h11-chunk-footer"),
+        pytest.param(
+            "anthropic._base_client",
+            'HTTP Response: %s %s "%i %s" %s',
+            ("POST", "https://h.example/model/m/invoke", 403, ECHOED_REASON, {"x-echo": "e"}),
+            'HTTP Response: POST https://h.example/model/m/invoke "403 Forbidden" [headers not shown]',
+            id="sdk-reason-phrase",
+        ),
+        pytest.param(
+            "httpx2",
+            'HTTP Request: %s %s "%s %d %s"',
+            ("POST", "https://h.example/model/m/invoke", "HTTP/1.1", 403, ECHOED_REASON),
+            'HTTP Request: POST https://h.example/model/m/invoke "HTTP/1.1 403 Forbidden"',
+            id="httpx2-reason-phrase",
+        ),
+        pytest.param(
+            "httpx",
+            'HTTP Request: %s %s "%s %d %s"',
+            ("POST", "https://h.example/v1/messages", "HTTP/1.1", 499, ECHOED_REASON),
+            'HTTP Request: POST https://h.example/v1/messages "HTTP/1.1 499 "',
+            id="httpx-unknown-status",
+        ),
+        pytest.param(
+            "httpcore2.http11",
+            RAW_ANSWER_HEADERS.replace("b'Forbidden'", f"b'{ECHOED_REASON}'"),
+            (),
+            FILTERED_ANSWER_HEADERS,
+            id="httpcore2-reason-phrase",
+        ),
+        pytest.param(
+            "httpcore2.http11",
+            RAW_ANSWER_HEADERS.replace("b'Forbidden'", f'b"it\'s {ECHOED_REASON}"'),
+            (),
+            FILTERED_ANSWER_HEADERS,
+            id="httpcore2-double-quoted-reason-phrase",
+        ),
+        pytest.param(
+            "anthropic.lib.tools._beta_runner",
+            "Turn ended with stop_reason %r, exiting from tool runner loop.",
+            (HEADER_ECHO,),
+            None,
+            id="sdk-runner-stop-reason",
+        ),
+        pytest.param(
+            "anthropic._base_client",
+            "Request headers: %s",
+            (f"x-amz-security-token: {HEADER_ECHO}",),
+            None,
+            id="credential-header",
+        ),
+        pytest.param(
+            "anthropic._base_client",
+            "Sending HTTP Request: %s %s",
+            ("POST", "https://h.example/model/m/invoke"),
+            "Sending HTTP Request: POST https://h.example/model/m/invoke",
+            id="sdk-request",
+        ),
+        pytest.param(
+            "httpcore2.http11",
+            "send_request_headers.started request=<Request [b'POST']>",
+            (),
+            "send_request_headers.started request=<Request [b'POST']>",
+            id="httpcore2-request",
+        ),
+        pytest.param(
+            "dag_healer.worker.pipeline",
+            "Authorization: %s",
+            (HEADER_ECHO,),
+            f"Authorization: {HEADER_ECHO}",
+            id="another-logger",
+        ),
+    ],
+)
+def test_the_sdk_log_filter_hides_the_headers_of_an_answer_and_drops_credentials(
+    name: str, message: str, args: tuple[Any, ...], shown: str | None
+) -> None:
+    """``shown``: what a handler prints of the record once filtered (``None``: dropped). A header
+    or the reason phrase of an answer can echo a credential that no variable holds (an
+    ``x-amzn-ErrorType``, a gateway's header), and h11 quotes whole the bytes it refuses (a header
+    value, a status line, a chunk header or footer). The SDK's tool runner logs the stop reason
+    as the answer gave it."""
+    from dag_healer.cli.main import _SdkRequestFilter
+
+    record = logging.LogRecord(name, logging.DEBUG, __file__, 1, message, args, None)
+    kept = _SdkRequestFilter().filter(record)
+    assert (record.getMessage() if kept else None) == shown
+
+
+def test_the_sdk_log_filter_drops_a_traceback_that_quotes_a_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK's ``Encountered Exception`` record carries the traceback of a failed request."""
+    from dag_healer.cli.main import _SdkRequestFilter
+
+    key = "sk-ant-api03-EXAMPLE-key-held-in-the-environment-0123456789"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+
+    def failure(error: Exception) -> logging.LogRecord:
+        try:
+            raise error
+        except Exception:
+            info = sys.exc_info()
+        return logging.LogRecord(
+            "anthropic._base_client", logging.DEBUG, __file__, 1, "Encountered Exception", (), info
+        )
+
+    keep = _SdkRequestFilter()
+    assert keep.filter(failure(ConnectionError("connection refused"))) is True
+    assert keep.filter(failure(ValueError(f"Illegal header value b'{HEADER_ECHO}\\n'"))) is False
+    # anthropic 1.x logs httpx's HTTPStatusError with its traceback, whose message quotes the status line
+    answered = httpx.Response(
+        403,
+        request=httpx.Request("POST", "https://h.example/v1/messages"),
+        extensions={"reason_phrase": ECHOED_REASON.encode("ascii")},
+    )
+    with pytest.raises(httpx.HTTPStatusError) as status_error:
+        answered.raise_for_status()
+    assert HEADER_ECHO in str(status_error.value)
+    assert keep.filter(failure(status_error.value)) is False
+    assert keep.filter(failure(ValueError(f"echo of {key}"))) is False
+    assert keep.filter(failure(ValueError(f"echo of {key[12:40]}"))) is False  # a fragment of 16 or more
+
+
+@pytest.mark.parametrize("verbosity", [0, 1, 2])
+def test_the_sdk_log_filter_is_on_at_every_verbosity(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, verbosity: int
+) -> None:
+    """``ANTHROPIC_LOG=debug`` turns the SDK's DEBUG records on whatever ``-v`` says: the headers
+    of an answer never show, while the ``Request options`` that it asks for are kept."""
+    from dag_healer.cli import main as main_module
+
+    for name in main_module.FILTERED_LOGGERS:
+        monkeypatch.setattr(logging.getLogger(name), "filters", [])  # put back at teardown
+    monkeypatch.setattr(main_module._SDK_FILTER, "keep_requests", main_module._SDK_FILTER.keep_requests)
+    monkeypatch.setenv("ANTHROPIC_LOG", "debug")
+    main_module._configure_logging(verbosity)
+    caplog.set_level(logging.DEBUG)
+    sdk = logging.getLogger(main_module.SDK_REQUEST_LOGGER)
+    sdk.debug(
+        'HTTP Response: %s %s "%i %s" %s', "POST", "https://h.example/x", 403, "Forbidden", {"x-echo": "e"}
+    )
+    sdk.debug("Request options: %s", {"json_data": {"messages": [{"content": "PROMPT"}]}})
+    logging.getLogger("httpcore2.http11").debug(RAW_ANSWER_HEADERS)
+    logging.getLogger("httpx2").info(
+        'HTTP Request: %s %s "%s %d %s"', "POST", "u", "HTTP/1.1", 403, ECHOED_REASON
+    )
+    names = (main_module.SDK_REQUEST_LOGGER, "httpcore2.http11", "httpx2")
+    assert [record.getMessage() for record in caplog.records if record.name in names] == [
+        'HTTP Response: POST https://h.example/x "403 Forbidden" [headers not shown]',
+        "Request options: {'json_data': {'messages': [{'content': 'PROMPT'}]}}",
+        FILTERED_ANSWER_HEADERS,
+        'HTTP Request: POST u "HTTP/1.1 403 Forbidden"',
+    ]
 
 
 # --------------------------------------------------------------------------- doctor: the GitHub setup

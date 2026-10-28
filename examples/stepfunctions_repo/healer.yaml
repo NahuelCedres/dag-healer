@@ -67,7 +67,12 @@ github:
   token: "${GITHUB_TOKEN}"
 
 llm:
-  provider: "${HEALER_LLM_PROVIDER:-fake}"   # fake: replays fixtures/fake_llm; anthropic: real diagnoses
+  provider: "${HEALER_LLM_PROVIDER:-fake}"   # fake: replays fixtures/fake_llm; anthropic or bedrock: real diagnoses
+  # bedrock (Claude on Amazon Bedrock, docs/bedrock.md) needs a Bedrock model or inference profile
+  # ID and a region of its own; its AWS credentials come from the default chain (or
+  # llm.aws_profile), never from orchestrator.options:
+  # model: eu.anthropic.claude-opus-5-5
+  # aws_region: eu-west-1
 
 store:
   url: "${HEALER_DATABASE_URL}"    # null: SQLite under $HEALER_HOME (single process only)

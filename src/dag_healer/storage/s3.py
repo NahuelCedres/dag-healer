@@ -24,10 +24,20 @@ retries, short timeouts) is built on first use. boto3 (the ``aws`` extra) is imp
 lazily; pandas only when an object is parsed.
 
 botocore logs whole request parameters and response bodies at DEBUG level (``dag-healer -vv``
-puts the root logger there): :func:`quiet_botocore_payloads` installs :class:`PayloadLogFilter`,
-which drops those records, on botocore's loggers. It is installed when a default client is built
-here and when the Step Functions adapter builds its clients, so a debug run never writes
-execution input or output, causes, log lines or data rows into the logs.
+puts the root logger there), every signed request with its headers (``Sending http request``:
+``Authorization`` and the ``X-Amz-Security-Token`` of temporary credentials, an instance or task
+role's), and the canonical request of every SigV4 signature: :func:`quiet_botocore_payloads`
+installs :class:`PayloadLogFilter`, which drops those records, on every botocore logger. As a
+backstop, the filter also drops any botocore record whose text holds an ``Authorization`` or
+``X-Amz-Security-Token`` header or an AWS credential field (``SessionToken``,
+``SecretAccessKey``...). It is installed when a default client is built here, when the Step
+Functions adapter builds its clients and when the Amazon Bedrock LLM provider builds its
+client; a client of :func:`set_client_factory` installs nothing by itself. From then on, a
+debug run writes none of those records: no execution input or output, cause, log line or data
+row that botocore logs, no signed request or signature, and no botocore record that holds one
+of those credential headers or fields. The filter sees botocore's records only: those of the
+anthropic SDK and of the HTTP transports under it have a filter of their own
+(:mod:`dag_healer.cli.main`).
 """
 
 from __future__ import annotations
@@ -87,12 +97,61 @@ _CONNECTION_ERRORS = frozenset(
 )
 _CREDENTIAL_ERRORS = frozenset({"NoCredentialsError", "PartialCredentialsError", "CredentialRetrievalError"})
 
-#: botocore DEBUG records that carry request parameters or response bodies:
-#: ``logger name -> message prefixes`` (the format strings botocore logs them with).
+#: botocore DEBUG records that carry request parameters, response bodies or the signed request
+#: (its ``Authorization`` and ``X-Amz-Security-Token`` headers, the canonical request of its
+#: signature): ``logger name -> message prefixes`` (the format strings botocore logs them with).
 PAYLOAD_LOG_RECORDS: Mapping[str, tuple[str, ...]] = {
-    "botocore.endpoint": ("Making request for",),
+    "botocore.endpoint": ("Making request for", "Sending http request"),
     "botocore.parsers": ("Response body", "Response headers"),
+    "botocore.auth": ("CanonicalRequest", "StringToSign", "Signature", "String to sign"),
 }
+#: Every logger of botocore (one per module that logs): :func:`quiet_botocore_payloads` installs
+#: the filter on each of them, ahead of their creation, and on any other ``botocore.*`` logger
+#: that already exists then. A logger's filters see only the records logged on that logger.
+BOTOCORE_LOGGERS: tuple[str, ...] = (
+    "botocore",
+    "botocore.args",
+    "botocore.auth",
+    "botocore.awsrequest",
+    "botocore.client",
+    "botocore.compat",
+    "botocore.compress",
+    "botocore.configprovider",
+    "botocore.credentials",
+    "botocore.discovery",
+    "botocore.endpoint",
+    "botocore.endpoint_provider",
+    "botocore.handlers",
+    "botocore.history",
+    "botocore.hooks",
+    "botocore.httpchecksum",
+    "botocore.httpsession",
+    "botocore.loaders",
+    "botocore.monitoring",
+    "botocore.paginate",
+    "botocore.parsers",
+    "botocore.plugin",
+    "botocore.regions",
+    "botocore.response",
+    "botocore.retries.adaptive",
+    "botocore.retries.special",
+    "botocore.retries.standard",
+    "botocore.retryhandler",
+    "botocore.session",
+    "botocore.signers",
+    "botocore.tokens",
+    "botocore.useragent",
+    "botocore.utils",
+    "botocore.waiter",
+)
+#: The backstop: a header or a field that holds a credential, in any botocore record's text
+#: (``'Authorization': b'AWS4-HMAC-SHA256 ...'``, ``x-amz-security-token:...``,
+#: ``"SessionToken": "..."``, ``<SecretAccessKey>...``, ``aws_session_token = ...``).
+_CREDENTIAL_FIELD = re.compile(
+    r"\b(?:authorization|x-amz-security-token|(?:aws_)?session_?token|(?:aws_)?secret_?access_?key|token)\b"
+    r"['\"]?\s*(?:[:=>]|%3D)",
+    re.I,
+)
 
 _lock = threading.Lock()
 _factory: Callable[[], Any] | None = None
@@ -100,21 +159,35 @@ _client: Any | None = None
 
 
 class PayloadLogFilter(logging.Filter):
-    """Drops the botocore records of :data:`PAYLOAD_LOG_RECORDS` (the others pass)."""
+    """Drops the botocore records of :data:`PAYLOAD_LOG_RECORDS`, and any botocore record whose
+    text holds a credential header or field (the backstop); the others pass."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if not record.name.startswith("botocore"):
+            return True
         prefixes = PAYLOAD_LOG_RECORDS.get(record.name)
         message = record.msg
-        return not (prefixes and isinstance(message, str) and message.startswith(prefixes))
+        if prefixes and isinstance(message, str) and message.startswith(prefixes):
+            return False
+        try:
+            text = record.getMessage()
+        except Exception:  # a record whose arguments do not format: judge its format string
+            text = str(message)
+        return _CREDENTIAL_FIELD.search(text) is None
 
 
 _PAYLOAD_FILTER = PayloadLogFilter()
 
 
 def quiet_botocore_payloads() -> None:
-    """Install :class:`PayloadLogFilter` on botocore's payload loggers (idempotent; no import of
-    botocore: loggers are found by name)."""
-    for name in PAYLOAD_LOG_RECORDS:
+    """Install :class:`PayloadLogFilter` on every botocore logger (idempotent; no import of
+    botocore: loggers are found, or made ahead of botocore, by name)."""
+    existing = [
+        name
+        for name in list(logging.Logger.manager.loggerDict)
+        if name == "botocore" or name.startswith("botocore.")
+    ]
+    for name in dict.fromkeys([*BOTOCORE_LOGGERS, *existing]):
         target = logging.getLogger(name)
         if not any(isinstance(item, PayloadLogFilter) for item in target.filters):
             target.addFilter(_PAYLOAD_FILTER)

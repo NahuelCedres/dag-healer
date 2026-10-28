@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from dag_healer.agent.bedrock import BedrockProvider
 from dag_healer.agent.fake import FakeProvider
 from dag_healer.agent.llm import AnthropicProvider
 from dag_healer.airflow.adapter import AirflowAdapter
@@ -509,8 +510,13 @@ def test_build_provider_names(cfg: HealerConfig, monkeypatch: pytest.MonkeyPatch
 
     assert isinstance(build_provider(cfg, "fake"), FakeProvider)
     assert isinstance(build_provider(cfg, "anthropic"), AnthropicProvider)
+    bedrock = build_provider(cfg, "bedrock")  # built without any AWS call or setting
+    assert isinstance(bedrock, BedrockProvider) and bedrock.name == "bedrock"
     monkeypatch.setenv("HEALER_LLM_PROVIDER", "fake")
     assert isinstance(build_provider(cfg, None), FakeProvider)
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "bedrock")
+    assert isinstance(build_provider(cfg, None), BedrockProvider)
+    assert type(build_provider(cfg, "anthropic")) is AnthropicProvider  # --provider wins
     monkeypatch.setenv("HEALER_LLM_PROVIDER", "nope")
     with pytest.raises(ValueError):
         build_provider(cfg, None)

@@ -562,8 +562,9 @@ def test_botocore_never_logs_execution_data(caplog: pytest.LogCaptureFixture) ->
         input=json.dumps({"requested_by": PII}),
     )
     assert _leaks(caplog) == []
-    sent = [record for record in caplog.records if record.getMessage().startswith("Sending http request")]
-    assert sent and sent[0].name == "botocore.endpoint", "botocore logged at DEBUG, without the data"
+    # botocore logged at DEBUG, without the data nor the signed request with its headers
+    assert any(record.name == "botocore.hooks" for record in caplog.records)
+    assert not [record for record in caplog.records if record.getMessage().startswith("Sending http request")]
 
     parsers, endpoint = logging.getLogger("botocore.parsers"), logging.getLogger("botocore.endpoint")
     installed = [(target, item) for target in (parsers, endpoint) for item in target.filters]
@@ -577,6 +578,37 @@ def test_botocore_never_logs_execution_data(caplog: pytest.LogCaptureFixture) ->
     finally:
         for target, item in installed:
             target.addFilter(item)
+
+
+def test_botocore_never_logs_the_session_token_or_the_signature(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Temporary credentials held by a profile file only (as an instance or task role's are held
+    by no variable): at DEBUG, no botocore record of a signed call holds the session token, the
+    secret key or the ``Authorization`` header (``Sending http request`` quotes them all)."""
+    token = "example/role+value=temporary/held-in-no-variable"
+    secret = "example/role+value=private/held-in-no-variable"
+    credentials = tmp_path / "credentials"
+    credentials.write_text(
+        f"[role]\naws_access_key_id = ASIAEXAMPLEROLEKEY01\naws_secret_access_key = {secret}\n"
+        f"aws_session_token = {token}\n",
+        encoding="utf-8",
+    )
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(credentials))
+    caplog.set_level(logging.DEBUG)
+    clients = AwsClients(StepFunctionsOptions(region=REGION, profile="role"))
+    sfn = clients.sfn
+    _answered_over_http(sfn, {"stateMachines": []})
+    call(sfn, "list_state_machines", what="ListStateMachines")
+    signed = [record for record in caplog.records if record.name == "botocore.auth"]
+    assert signed, "botocore signed the call and logged at DEBUG"
+    for record in caplog.records:
+        text = record.getMessage()
+        assert token not in text and secret not in text, record.name
+        assert "Authorization" not in text and "X-Amz-Security-Token" not in text, record.name
+    clients.close()
 
 
 def test_the_payload_filter_is_installed_once_and_keeps_the_other_records() -> None:
@@ -594,3 +626,5 @@ def test_the_payload_filter_is_installed_once_and_keeps_the_other_records() -> N
         "botocore.hooks", logging.DEBUG, __file__, 1, "Response body:\n%r", (b"x",), None
     )
     assert [s3.PayloadLogFilter().filter(record) for record in (keep, drop, other)] == [True, False, True]
+    for name in s3.BOTOCORE_LOGGERS:  # on every botocore logger, not only the payload ones
+        assert sum(isinstance(item, s3.PayloadLogFilter) for item in logging.getLogger(name).filters) == 1

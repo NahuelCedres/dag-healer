@@ -6,8 +6,10 @@
   set) give the ``dag-healer check`` YAML and the secret literals recorded with the phase-5
   ``config.py`` (``effective_settings.json``; re-record with ``HEALER_UPDATE_GOLDEN=1``).
 * The Airflow template is the phase-5 one plus a commented ``orchestrator:`` block, the
-  ``repo.sandbox`` block and ``github.skip_ci`` (true, the default, so the effective settings
-  do not change); the Step Functions template (section 9.14) is valid and shares the common
+  ``repo.sandbox`` block, ``github.skip_ci`` (true, the default, so the effective settings
+  do not change) and the Amazon Bedrock lines of ``llm:`` (``llm.model`` reads
+  ``$HEALER_LLM_MODEL``, whose default is the phase-5 model; the Bedrock settings are
+  commented); the Step Functions template (section 9.14) is valid and shares the common
   sections.
 * ``orchestrator:``, ``serve:`` (auth backends, tokens as hashes only, RBAC rules), the
   ``monitor.dags``/``pipelines`` alias, the widened modes with ``MonitorConfig.wants`` and the
@@ -39,6 +41,7 @@ from dag_healer.config import (
     TEMPLATE_ORCHESTRATORS,
     ConfigError,
     HealerConfig,
+    LlmConfig,
     MonitorConfig,
     OrchestratorConfig,
     RbacRule,
@@ -106,6 +109,7 @@ CLEARED = (
     "GITHUB_REPO",
     "ANTHROPIC_API_KEY",
     "HEALER_SANDBOX_IMAGE",
+    "HEALER_LLM_MODEL",
 )
 #: The filled environment of the recording (``"unset"`` is the empty one).
 SET_ENV = {
@@ -358,9 +362,38 @@ def _without_skip_ci_block(text: str) -> str:
     return text[: start + 1] + text[end:]
 
 
+#: The ``llm`` lines that changed since phase 5, and their phase-5 text.
+PHASE5_LLM_LINES = {
+    '  provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | bedrock | fake (offline tests)': (
+        '  provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | fake (offline tests)'
+    ),
+    '  model: "${HEALER_LLM_MODEL:-claude-opus-5-5}"   # bedrock: a Bedrock model or inference profile ID': (
+        "  model: claude-opus-5-5"
+    ),
+}
+
+
+def _bedrock_block(text: str) -> list[str]:
+    """The commented Amazon Bedrock lines of ``llm:``: from their comment to the blank line after them."""
+    start = text.index("\n  # Claude on Amazon Bedrock") + 1
+    end = text.index("\n\n", start)
+    return text[start:end].splitlines()
+
+
+def _without_bedrock_lines(text: str) -> str:
+    """The template's ``llm:`` as phase 5 wrote it: the provider and model lines of phase 5 back,
+    the commented Amazon Bedrock block out (``llm.model`` defaults to the phase-5 model)."""
+    text = text.replace("".join(f"{line}\n" for line in _bedrock_block(text)), "", 1)
+    for line, phase5 in PHASE5_LLM_LINES.items():
+        assert text.count(f"\n{line}\n") == 1, line
+        text = text.replace(f"\n{line}\n", f"\n{phase5}\n")
+    return text
+
+
 def _phase5_view(text: str) -> str:
     """The template without the blocks phase 5 did not have (the comment-only ones included)."""
-    return _without_orchestrator_block(_without_sandbox_block(_without_skip_ci_block(text)))
+    without_new_blocks = _without_sandbox_block(_without_skip_ci_block(_without_bedrock_lines(text)))
+    return _without_orchestrator_block(without_new_blocks)
 
 
 def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> None:
@@ -373,13 +406,30 @@ def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> Non
     raw = yaml.safe_load(text)
     assert raw["repo"].pop("sandbox")["backend"] == "container"  # the blocks phase 5 did not have
     assert raw["github"].pop("skip_ci") is True
-    assert raw == yaml.safe_load(phase5)
+    assert raw["llm"].pop("model") == "${HEALER_LLM_MODEL:-claude-opus-5-5}"
+    expected = yaml.safe_load(phase5)
+    assert expected["llm"].pop("model") == "claude-opus-5-5"
+    assert raw == expected
     assert default_config_yaml(orchestrator="airflow") == text
 
 
 def test_airflow_template_with_datasets_is_the_phase5_init_file_plus_the_block() -> None:
     text = default_config_yaml(repo_path=".", dags_dir="dags", tests_dir=None, datasets=EXAMPLE_DATASETS)
     assert _phase5_view(text) == (PHASE5 / "init_example_repo.yaml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("orchestrator", TEMPLATE_ORCHESTRATORS)
+def test_the_commented_bedrock_settings_validate(clean_env: Path, orchestrator: str) -> None:
+    text = default_config_yaml(orchestrator=orchestrator)
+    block = _bedrock_block(text)
+    assert all(line.startswith("  # ") for line in block)
+    settings = [line for line in block if line[4:].split(":", 1)[0] in LlmConfig.model_fields]
+    uncommented = "\n".join("  " + line[4:] for line in settings)
+    section = yaml.safe_load(f"llm:\n{uncommented}\n")["llm"]
+    assert section == {"aws_region": "eu-west-1", "aws_profile": None, "endpoint_url": None}
+    llm = LlmConfig.model_validate(section)
+    assert (llm.aws_region, llm.aws_profile, llm.endpoint_url) == ("eu-west-1", None, None)
+    assert load(text).llm == LlmConfig(model="claude-opus-5-5")  # commented, they change nothing
 
 
 def test_commented_orchestrator_block_documents_the_defaults() -> None:

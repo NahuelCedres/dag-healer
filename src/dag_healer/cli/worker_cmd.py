@@ -1,9 +1,10 @@
-"""``dag-healer worker [--once] [--provider fake|anthropic]``: run the incident worker.
+"""``dag-healer worker [--once] [--provider fake|anthropic|bedrock]``: run the incident worker.
 
 Without ``--once`` the worker polls forever (stop it with SIGTERM / Ctrl+C); with it, one
 iteration runs (apply commands, reconcile, process every claimable incident) and the exit
 code is 1 when that iteration hit errors. ``--provider`` overrides ``llm.provider`` and
-``$HEALER_LLM_PROVIDER``. A worker that cannot start (the orchestrator adapter does not load,
+``$HEALER_LLM_PROVIDER``: ``fake`` (offline), ``anthropic`` (the Claude API) or ``bedrock``
+(Claude on Amazon Bedrock). A worker that cannot start (the orchestrator adapter does not load,
 it cannot serve ``monitor.modes`` / ``monitor.trigger``, or the store already belongs to
 another orchestrator type under this instance id) prints the reason and exits with 1. Heavy
 imports stay inside the handler so ``--help`` is fast.
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PROVIDERS = ("fake", "anthropic")
+#: The names of ``dag_healer.agent.llm.PROVIDER_NAMES`` (a test keeps them equal), spelled out here
+#: so that ``--help`` imports no pydantic; ``fake`` first, as the offline default of the demo.
+PROVIDERS = ("fake", "anthropic", "bedrock")
 
 
 def _configure(parser: argparse.ArgumentParser) -> None:
@@ -36,7 +39,10 @@ def _configure(parser: argparse.ArgumentParser) -> None:
         "--provider",
         choices=PROVIDERS,
         default=None,
-        help="LLM provider (overrides llm.provider and $HEALER_LLM_PROVIDER).",
+        help=(
+            "LLM provider: fake (offline), anthropic (the Claude API) or bedrock (Claude on Amazon "
+            "Bedrock); overrides llm.provider and $HEALER_LLM_PROVIDER."
+        ),
     )
     add_config_option(parser)
 
@@ -51,6 +57,10 @@ def build_provider(cfg: object, name: str | None) -> object:
         from dag_healer.agent.llm import AnthropicProvider
 
         return AnthropicProvider(cfg)
+    if name == "bedrock":
+        from dag_healer.agent.bedrock import BedrockProvider
+
+        return BedrockProvider(cfg)
     from dag_healer.agent.llm import get_provider
 
     return get_provider(cfg)

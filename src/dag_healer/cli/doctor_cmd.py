@@ -16,6 +16,23 @@ that can run the healer branch's code with the repository's secrets) makes docto
 could not be checked is a warning, and checks that fail unexpectedly are one ``github setup``
 warning. Without a token or a repository nothing is called.
 
+The ``llm`` check is about the provider the worker will run (``$HEALER_LLM_PROVIDER`` overrides
+``llm.provider``): ``fake`` needs nothing, ``anthropic`` needs ``ANTHROPIC_API_KEY``. For
+``bedrock`` (Claude on Amazon Bedrock) the line shows the model, the region and whether AWS
+credentials resolve through the default AWS chain (only how they were found, never a value), and
+it is an error that names each problem, in this order: boto3 missing (``pip install
+"dag-healer[aws]"``); every rule of the provider's settings
+(:func:`dag_healer.agent.bedrock.settings_problems`: the model, a profile next to a Bedrock API
+key, a credential variable with whitespace, a control character or a non-ASCII character within
+its value, the endpoint, a region that is no AWS Region code, a blank region variable); no
+region, or a region of the AWS profile that is no AWS Region code; then an error of the AWS
+chain (expired keys of the environment among them) or no credentials. It never calls the model,
+STS or the Bedrock control plane; resolving an instance role asks the instance metadata service
+with one attempt per request and a :data:`METADATA_TIMEOUT_SECONDS` timeout. AWS SDK errors are
+shown without any credential (:func:`dag_healer.agent.bedrock.hide_credentials`, shared with the
+provider). ``check`` warns about an explicit ``llm.fallbacks: true`` with the bedrock provider,
+which sends no fallbacks.
+
 For the container backend the ``sandbox`` check starts one container of the configured image
 (no repository code in it) to prove that it runs as a non-root user, without network, with
 pytest importable. ``doctor`` and ``check`` warn about the ``process`` backend, which runs the
@@ -40,7 +57,7 @@ from dag_healer.cli.main import register_command
 if TYPE_CHECKING:
     import httpx
 
-    from dag_healer.config import HealerConfig
+    from dag_healer.config import HealerConfig, LlmConfig
     from dag_healer.core.ports import OrchestratorAdapter
 
 OK = "ok"
@@ -50,7 +67,14 @@ SKIP = "skip"
 
 NETWORK_TIMEOUT_SECONDS = 3.0
 API_KEY_ENV = "ANTHROPIC_API_KEY"
+#: Seconds the AWS credential probe waits for each request to the instance metadata service
+#: (one attempt each).
+METADATA_TIMEOUT_SECONDS = 1
 _LABELS = {OK: "[ OK ]", WARN: "[WARN]", ERROR: "[FAIL]", SKIP: "[SKIP]"}
+#: Characters of an AWS SDK error message the llm check keeps.
+_AWS_ERROR_CHARS = 300
+#: What the bedrock line shows for a region that is no AWS Region code (never the value).
+_INVALID_REGION = "invalid"
 
 
 @dataclass
@@ -173,14 +197,149 @@ def check_plugin_entry_point() -> CheckResult:
 
 
 def check_llm(cfg: HealerConfig | None) -> CheckResult:
-    """An API key is available for the configured LLM provider (the value is never shown)."""
-    provider = cfg.llm.provider if cfg is not None else "anthropic"
+    """The LLM provider the worker will run can be used (no secret value is ever shown).
+
+    The provider is the worker's: ``$HEALER_LLM_PROVIDER``, else ``llm.provider``. ``fake``
+    needs nothing and ``anthropic`` an API key; ``bedrock`` is :func:`_check_bedrock`. An
+    unknown name is an error. No model is called.
+    """
+    from dag_healer.agent.llm import PROVIDER_NAMES, provider_name
+
+    provider = provider_name(cfg)
     if provider == "fake":
         return CheckResult("llm", OK, "provider 'fake' (offline); no API key needed")
+    if provider == "bedrock":
+        from dag_healer.config import LlmConfig
+
+        return _check_bedrock(cfg.llm if cfg is not None else LlmConfig())
+    if provider != "anthropic":
+        expected = f"{', '.join(PROVIDER_NAMES[:-1])} or {PROVIDER_NAMES[-1]}"
+        return CheckResult(
+            "llm",
+            ERROR,
+            f"unknown LLM provider '{provider}': expected {expected} (llm.provider or HEALER_LLM_PROVIDER)",
+        )
     if os.environ.get(API_KEY_ENV, "").strip():
         model = cfg.llm.model if cfg is not None else "?"
         return CheckResult("llm", OK, f"{API_KEY_ENV} is set (value hidden); model {model}")
     return CheckResult("llm", ERROR, f"{API_KEY_ENV} is not set; the worker cannot classify or repair")
+
+
+def _check_bedrock(llm: LlmConfig) -> CheckResult:
+    """The ``llm`` line of the bedrock provider: what it needs, and whether AWS credentials resolve.
+
+    ``provider bedrock (model M, region R[, endpoint E])``, then either how the credentials were
+    found (``AWS credentials resolve (<method>; values hidden)``, or that
+    ``AWS_BEARER_TOKEN_BEDROCK`` is set) or every problem the provider would hit, in this order:
+    boto3 missing (alone: nothing else can be checked then); the provider's settings rules
+    (:func:`dag_healer.agent.bedrock.settings_problems`: a Claude API model ID, a profile next to
+    a Bedrock API key or next to an empty one, a credential variable that holds whitespace, a
+    control character or a non-ASCII character within its value, an endpoint that is empty or no
+    valid endpoint URL, a region that is no AWS Region code, a blank region variable); no region,
+    or a region of the AWS profile that is no AWS Region code; then the error of the credential
+    probe (:func:`_aws_credentials`: an unknown profile, a credential process that fails, expired
+    keys of the environment...) or no credentials. The region is ``llm.aws_region``,
+    ``AWS_REGION``, ``AWS_DEFAULT_REGION``, else the AWS profile's; ``R`` is ``invalid`` for a
+    region that is no AWS Region code (never its value). As for the provider, empty variables
+    count as unset, and one of spaces only is an error when no other region is set. No model, STS
+    or Bedrock control-plane call is made, and a Bedrock API key is never resolved or shown.
+    """
+    from dag_healer.agent import bedrock
+
+    region = bedrock.configured_region(llm)
+    shown = region if region is None or bedrock.is_aws_region(region) else _INVALID_REGION
+    if bedrock.missing_aws_sdk():
+        return CheckResult("llm", ERROR, f"{_bedrock_summary(llm, shown)}: {bedrock.AWS_SDK_MISSING}")
+    problems = bedrock.settings_problems(llm)
+    api_key = bool((os.environ.get(bedrock.API_KEY_ENV) or "").strip())
+    blank = bedrock.blank_region_variable() is not None  # a problem already: the SDK would read it
+    method = probe_error = None
+    if region is None or not api_key:  # with an API key only a missing region sends the probe
+        profile_region, method, probe_error = _aws_credentials(llm.aws_profile, resolve=not api_key)
+        if region is None and not blank:
+            if profile_region is None:
+                problems.append(bedrock.NO_REGION)
+            elif bedrock.is_aws_region(profile_region):
+                shown = profile_region
+            else:
+                problems.append(bedrock.REGION_INVALID.format(source=bedrock.PROFILE_REGION))
+                shown = _INVALID_REGION
+    if probe_error is not None:
+        problems.append(f"the AWS credentials for the bedrock provider cannot be resolved: {probe_error}")
+    elif not api_key and method is None:
+        problems.append(bedrock.NO_CREDENTIALS)
+    summary = _bedrock_summary(llm, shown)
+    if problems:
+        return CheckResult("llm", ERROR, f"{summary}: {'; '.join(problems)}")
+    if api_key:
+        return CheckResult("llm", OK, f"{summary}: {bedrock.API_KEY_ENV} is set (value hidden)")
+    return CheckResult("llm", OK, f"{summary}: AWS credentials resolve ({method}; values hidden)")
+
+
+def _bedrock_summary(llm: LlmConfig, region: str | None) -> str:
+    """``provider bedrock (model M, region R[, endpoint E])``."""
+    parts = [f"model {llm.model.strip() or '(empty)'}", f"region {region or 'unset'}"]
+    if llm.endpoint_url:
+        parts.append(f"endpoint {mask_url(llm.endpoint_url)}")
+    return f"provider bedrock ({', '.join(parts)})"
+
+
+def _aws_error_text(exc: BaseException) -> str:
+    """``<Type>: <message>`` of an AWS SDK error: without any credential, masked and cut.
+
+    botocore's messages name settings, not values, but a credential process's error output is
+    quoted as it is: :func:`dag_healer.agent.bedrock.hide_credentials` (shared with the provider)
+    decodes it and hides the values of the environment's credential variables (as they are,
+    URL-encoded, JSON-escaped, or as a fragment of 16 or more characters), the values after a
+    credential's name, access key IDs and long random-looking strings.
+    """
+    from dag_healer.agent.bedrock import hide_credentials
+    from dag_healer.masking import mask_text
+
+    text = mask_text(hide_credentials(str(exc), mask=MASK))
+    if len(text) > _AWS_ERROR_CHARS:
+        text = text[: _AWS_ERROR_CHARS - 3] + "..."
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _aws_credentials(
+    profile: str | None, *, resolve: bool = True
+) -> tuple[str | None, str | None, str | None]:
+    """``(the profile's region, how the credentials were found, error)`` of the default AWS chain.
+
+    A botocore session of ``profile`` (``None``: ``$AWS_PROFILE``, else the default profile)
+    resolves what the bedrock provider's client would. Only ``credentials.method`` is kept
+    (``env``, ``shared-credentials-file``, ``iam-role``, ``container-role``, ``assume-role``,
+    ``sso``...), never a key, secret or token, and credentials that are fetched on first use
+    (an assumed role, SSO) are not fetched, so STS is never called. The environment's keys are
+    read as the client's signature reads them: botocore checks their expiry
+    (``AWS_CREDENTIAL_EXPIRATION``) and reads the variables again, without any request, so
+    expired ones are an error here as they are for the worker. Each request to the instance
+    metadata service (a token, then the role) gets one attempt with a
+    :data:`METADATA_TIMEOUT_SECONDS` timeout, so finding an instance role, or that there is
+    none, takes a few seconds at most. Without ``resolve`` only the region is read. Any error
+    (``ProfileNotFound``, ``CredentialRetrievalError``, an SSO error, expired keys of the
+    environment...) is ``"<Type>: <message>"`` (:func:`_aws_error_text`); a region read before it
+    is kept.
+    """
+    import botocore.session
+
+    region: str | None = None
+    try:
+        session = botocore.session.Session(profile=profile)
+        session.set_config_variable("metadata_service_timeout", METADATA_TIMEOUT_SECONDS)
+        session.set_config_variable("metadata_service_num_attempts", 1)
+        region = str(session.get_config_variable("region") or "").strip() or None
+        credentials = session.get_credentials() if resolve else None
+        if credentials is not None and getattr(credentials, "method", None) == "env":
+            # Expired keys raise here (the values are never kept): botocore refreshes them from
+            # the environment, which still holds the past AWS_CREDENTIAL_EXPIRATION.
+            credentials.get_frozen_credentials()
+    except Exception as exc:  # botocore's errors, and anything a broken AWS configuration raises
+        return region, None, _aws_error_text(exc)
+    if credentials is None:
+        return region, None, None
+    return region, str(getattr(credentials, "method", None) or "unknown"), None
 
 
 def check_sandbox(cfg: HealerConfig) -> CheckResult:
@@ -427,7 +586,7 @@ def run_checks(config_path: str | None = None) -> list[CheckResult]:
     config_result, cfg = check_config(config_path)
     results = [config_result]
     if cfg is None:
-        results += [check_bundle(), check_plugin_entry_point(), check_llm(None)]
+        results += [check_bundle(), check_plugin_entry_point(), _guarded("llm", lambda: check_llm(None))]
         return results
     results += [
         _guarded("repository", lambda: check_repo(cfg)),
@@ -521,8 +680,26 @@ def _cmd_check(args: argparse.Namespace) -> int:
         from dag_healer.repo.sandbox import PROCESS_BACKEND_WARNING
 
         warn(PROCESS_BACKEND_WARNING)
+    ignored = _ignored_fallbacks(cfg)
+    if ignored is not None:
+        warn(ignored)
     print("\nConfiguration is valid.")
     return 0
+
+
+def _ignored_fallbacks(cfg: HealerConfig) -> str | None:
+    """The bedrock provider's warning when the file itself sets ``llm.fallbacks: true``.
+
+    Amazon Bedrock has no server-side refusal fallbacks; the default (true, not written) is
+    silent, like an unset ``${VAR}`` or an empty value.
+    """
+    from dag_healer.agent.llm import provider_name
+
+    if provider_name(cfg) != "bedrock":
+        return None
+    from dag_healer.agent.bedrock import FALLBACKS_IGNORED, fallbacks_written
+
+    return FALLBACKS_IGNORED if fallbacks_written(cfg.llm) else None
 
 
 def _configure(parser: argparse.ArgumentParser) -> None:
@@ -532,8 +709,8 @@ def _configure(parser: argparse.ArgumentParser) -> None:
 register_command(
     "doctor",
     help=(
-        "Check configuration, store, UI bundle, test sandbox, Airflow API, SMTP, secrets and the "
-        "GitHub setup."
+        "Check configuration, store, UI bundle, LLM provider, test sandbox, Airflow API, SMTP, "
+        "secrets and the GitHub setup."
     ),
     handler=_cmd_doctor,
     configure=_configure,

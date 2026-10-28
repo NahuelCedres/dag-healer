@@ -11,7 +11,9 @@
 #   - healer-worker (`dag-healer worker`) starts with the stack; it waits for healer.yaml
 #   - profile "tests" (pytest on tests/airflow inside the image)
 #   - without ANTHROPIC_API_KEY the LLM provider defaults to the offline "fake" one; set
-#     HEALER_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in docker/.env to use Claude
+#     HEALER_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in docker/.env to use Claude, or
+#     HEALER_LLM_PROVIDER=bedrock, HEALER_LLM_MODEL and AWS_REGION for Claude on Amazon Bedrock
+#     with AWS credentials exported in the shell (docs/bedrock.md)
 #
 # WARNING: development configuration with fixed, publicly known secrets. Never expose it.
 #
@@ -74,9 +76,13 @@ x-healer-secrets-env: &healer-secrets-env
   ANTHROPIC_API_KEY:
   GITHUB_TOKEN:
   GITHUB_REPO:
-  # "fake" (offline, scripted; the default) or "anthropic" (Claude, needs ANTHROPIC_API_KEY).
+  # "fake" (offline, scripted; the default), "anthropic" (Claude, needs ANTHROPIC_API_KEY) or
+  # "bedrock" (Claude on Amazon Bedrock: the AWS settings of healer-worker below).
   # To use Claude set HEALER_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in docker/.env.
   HEALER_LLM_PROVIDER: ${HEALER_LLM_PROVIDER:-fake}
+  # The model, read by the healer.yaml that `dag-healer init` writes (unset: claude-opus-5-5);
+  # with bedrock, a Bedrock model or inference profile ID such as eu.anthropic.claude-opus-5-5.
+  HEALER_LLM_MODEL:
 
 x-airflow-common: &airflow-common
   image: ${HEALER_IMAGE:-dag-healer/airflow:dev}
@@ -325,6 +331,16 @@ services:
       HEALER_SANDBOX_IMAGE: ${HEALER_IMAGE:-dag-healer/airflow:dev}
       # Scripts of the offline "fake" LLM provider (used when HEALER_LLM_PROVIDER=fake).
       HEALER_FAKE_LLM_DIR: /opt/airflow/repo/fixtures/fake_llm
+      # Claude on Amazon Bedrock (HEALER_LLM_PROVIDER=bedrock, docs/bedrock.md): the region, and
+      # AWS credentials exported in the shell that starts the stack (never written in docker/.env)
+      # or a Bedrock API key. Passed through when defined, to this service only; the test sandbox
+      # never gets the credentials. No AWS_PROFILE: the container has no ~/.aws.
+      AWS_REGION:
+      AWS_DEFAULT_REGION:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
+      AWS_BEARER_TOKEN_BEDROCK:
       # Identity of the fix commits on the healer/* branches.
       GIT_AUTHOR_NAME: dag-healer
       GIT_AUTHOR_EMAIL: dag-healer@localhost

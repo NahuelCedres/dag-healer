@@ -594,6 +594,65 @@ def test_container_environment_is_passed_by_name_without_host_settings(
     assert not {"GITHUB_TOKEN", "ANTHROPIC_API_KEY"} & {key.upper() for key in call["env_keys"]}
 
 
+#: The AWS credentials a worker may hold (an instance or task role, a profile, an Amazon Bedrock
+#: API key and endpoints), each with a canary value that must never reach a container.
+AWS_CANARIES = {
+    "AWS_ACCESS_KEY_ID": "AKIDEXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    "AWS_SESSION_TOKEN": "canary-session-token",
+    "AWS_SECURITY_TOKEN": "canary-security-token",
+    "AWS_BEARER_TOKEN_BEDROCK": "canary-bedrock-api-key",
+    "AWS_PROFILE": "canary-profile",
+    "AWS_DEFAULT_PROFILE": "canary-default-profile",
+    "AWS_CONFIG_FILE": "/home/worker/.aws/canary-config",
+    "AWS_SHARED_CREDENTIALS_FILE": "/home/worker/.aws/canary-credentials",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/canary-relative",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://169.254.170.23/v1/canary-full",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN": "canary-container-authorization-token",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/canary/authorization-token",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/secrets/canary/web-identity",
+    "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/canary-bedrock-worker",
+    "AWS_ROLE_SESSION_NAME": "canary-role-session",
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://canary-vpce.bedrock-runtime.eu-west-1.vpce.amazonaws.com",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL": "https://canary-mantle.invalid/anthropic",
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://canary-runtime-endpoint.invalid",
+}
+
+
+def test_aws_credentials_never_reach_a_container(
+    engine: FakeEngine, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name, value in AWS_CANARIES.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "false")
+    engine.scenario(run={"mode": "script", "stdout": "1 passed in 0.01s\n"})
+    # an orchestrator override cannot bring one back either
+    overrides = {
+        "AWS_BEARER_TOKEN_BEDROCK": "canary-override-key",
+        "ANTHROPIC_BEDROCK_BASE_URL": "https://canary.invalid",
+    }
+
+    result = run_pytest(
+        project, ["tests/test_ok.py"], timeout=60, sandbox=engine.sandbox(), extra_env=overrides
+    )
+
+    assert result.ok and result.passed == 1, result.output_tail
+    (call,) = engine.runs()
+    passed = {name.upper(): value or "" for name, value in call["env"].items()}
+    credentials = set(AWS_CANARIES) - {"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"}
+    assert not credentials & set(passed)  # never passed with -e
+    assert not credentials & {key.upper() for key in call["env_keys"]}  # nor set for the engine CLI
+    canaries = [*AWS_CANARIES.values(), *overrides.values()]
+    assert not [value for value in passed.values() for canary in canaries if canary in value]
+    # the AWS SDKs in the container get no credential file and no instance metadata, and the
+    # container has no network to reach 169.254.169.254 or the container-credential endpoint anyway
+    assert (passed["AWS_CONFIG_FILE"], passed["AWS_SHARED_CREDENTIALS_FILE"]) == ("", "")
+    assert passed["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert ("--network", "none") in _pairs(call["args"])
+    assert passed["AWS_REGION"] == "eu-west-1"  # not a credential
+
+
 def test_container_environment_and_engine_environment() -> None:
     base = {
         "_": "/home/worker/.venv/bin/dag-healer",

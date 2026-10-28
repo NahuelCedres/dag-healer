@@ -16,6 +16,9 @@ Every failure is classified as one of:
 - **AMBIGUOUS** - a human decides from the dag-healer views inside the Airflow UI, and
   the agent resumes from there.
 
+The diagnosis and the repairs use Claude, through the Claude API or Amazon Bedrock in your own
+AWS account ([docs/bedrock.md](docs/bedrock.md)).
+
 It integrates with Airflow through a plugin (`fastapi_apps`, `react_apps` and a task
 listener), so the UI lives inside Airflow and respects its users and permissions.
 

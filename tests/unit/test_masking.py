@@ -19,7 +19,10 @@ import pytest
 from dag_healer.masking import (
     MaskingHookError,
     dataframe_to_records,
+    hide_secrets,
+    holds_secret,
     is_sensitive_column,
+    known_secrets,
     load_hook,
     mask_dataframe,
     mask_text,
@@ -204,6 +207,38 @@ class TestMaskText:
     def test_long_input_is_fast(self) -> None:
         text = ("x" * 5000 + " ") * 100
         assert mask_text(text) == text
+
+
+# --------------------------------------------------------------------------- known secrets
+
+#: A fictional value of a credential variable.
+SECRET_VALUE = "example-value/held+in=a-variable"
+
+
+def test_known_secrets_are_the_long_values_without_their_whitespace() -> None:
+    longer = SECRET_VALUE + "-and-more"
+    assert known_secrets([f" {SECRET_VALUE}\n", "short", None, 7, SECRET_VALUE, longer]) == [
+        longer,
+        SECRET_VALUE,
+    ]
+    assert known_secrets([]) == []
+
+
+def test_hide_secrets_hides_a_secret_whole_or_cut() -> None:
+    """A fragment of 16 or more characters counts as the secret: the run it makes is hidden once."""
+    secrets = known_secrets([SECRET_VALUE])
+    text = f"echo {SECRET_VALUE} and {SECRET_VALUE[3:-3]}; {SECRET_VALUE[:15]} stays"
+    assert hide_secrets(text, secrets, "[hidden]") == f"echo [hidden] and [hidden]; {SECRET_VALUE[:15]} stays"
+    assert hide_secrets("nothing to hide", secrets, "***") == "nothing to hide"
+    assert hide_secrets(text, [], "[hidden]") == text
+
+
+def test_holds_secret_finds_a_secret_whole_or_as_a_fragment() -> None:
+    secrets = known_secrets([SECRET_VALUE])
+    assert holds_secret(f"x{SECRET_VALUE}y", secrets)
+    assert holds_secret(f"x{SECRET_VALUE[5:21]}y", secrets)
+    assert not holds_secret(SECRET_VALUE[:15], secrets)
+    assert not holds_secret(SECRET_VALUE, [])
 
 
 # --------------------------------------------------------------------------- DataFrames

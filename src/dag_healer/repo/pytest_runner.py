@@ -13,12 +13,17 @@ change the clone that the worker commits and pushes.
   (``CI``, ``BUILD_NUMBER``), and nothing whose name looks like a secret.
   Airflow is pointed at a throw-away ``AIRFLOW_HOME`` with an SQLite database in
   unit-test mode, so tests that import Airflow never touch the real deployment.
-* **Cloud credentials** are always removed, whatever the orchestrator (the worker may run
-  with cloud permissions, e.g. an AWS task role): the AWS, Google and Azure credential
-  variables (:data:`CLOUD_SCRUB_EXACT`, :data:`CLOUD_SCRUB_PREFIXES`), and the AWS SDKs get no
-  instance-metadata credentials and no shared credential or config file
-  (:data:`CLOUD_SANDBOX_ENV`). These rules are applied after the caller's ``extra_env``, so an
-  orchestrator override can never bring a credential back.
+* **Cloud credentials** are always removed, whatever the orchestrator and the LLM provider (the
+  worker may run with cloud permissions, e.g. an AWS task or instance role for Amazon Bedrock):
+  the AWS, Google and Azure credential variables (the legacy ``AWS_ACCESS_KEY``,
+  ``AWS_SECRET_KEY``, ``AWS_CREDENTIAL_FILE`` and ``EC2_*_KEY`` names included), the Amazon
+  Bedrock API key, every setting of the Anthropic SDK (Bedrock endpoints included) and
+  botocore's Bedrock endpoint overrides (:data:`CLOUD_SCRUB_EXACT`, :data:`CLOUD_SCRUB_PREFIXES`),
+  and the AWS SDKs get no instance-metadata credentials, no shared credential or config file
+  and no boto config file (:data:`CLOUD_SANDBOX_ENV`). These rules are applied after the
+  caller's ``extra_env``, so an orchestrator override can never bring a credential back.
+  ``AWS_REGION``, ``AWS_DEFAULT_REGION`` and the generic ``AWS_ENDPOINT_URL`` stay: they are not
+  credentials.
 * **Output** goes to a temporary file (not memory) and only the last
   :data:`MAX_OUTPUT_CHARS` characters are kept.
 * **Launch failures** (the sandbox could not run pytest at all: an unreachable container
@@ -125,30 +130,50 @@ SCRUB_MARKERS: tuple[str, ...] = (
     "PRIVATE_KEY",
     "CREDENTIAL",
 )
-#: Cloud credential variables always removed, even when ``extra_env`` sets them.
+#: Cloud credential variables always removed, even when ``extra_env`` sets them: the AWS keys,
+#: profiles and roles (a worker on AWS may run with them, and with an Amazon Bedrock API key),
+#: the legacy names of AWS keys and credential files that older AWS tools read, the Google key
+#: file and the Azure secret.
 CLOUD_SCRUB_EXACT = frozenset(
     {
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "AWS_SECURITY_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
         "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
         "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME",
         "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ACCESS_KEY",
+        "AWS_SECRET_KEY",
+        "AWS_CREDENTIAL_FILE",
+        "EC2_ACCESS_KEY",
+        "EC2_SECRET_KEY",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "AZURE_CLIENT_SECRET",
     }
 )
-#: Prefixes of cloud credential variables always removed (the ECS/EKS container credentials).
+#: Prefixes of cloud credential variables always removed: the ECS/EKS container credentials,
+#: every setting of the Anthropic SDK (its API keys, and the base URLs of the Claude API and of
+#: Amazon Bedrock) and botocore's Bedrock endpoint overrides (``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``...).
 CLOUD_SCRUB_PREFIXES: tuple[str, ...] = (
     "AWS_CONTAINER_CREDENTIALS_",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "ANTHROPIC_",
+    "AWS_ENDPOINT_URL_BEDROCK",
 )
-#: Always set: no EC2 instance-metadata credentials, no shared credential or config file.
+#: Always set: no EC2 instance-metadata credentials, no shared credential or config file, no boto
+#: config file. The file variables are set to an empty value rather than removed: without them
+#: botocore and boto3 under the ``process`` backend would read the worker user's
+#: ``~/.aws/credentials`` and ``~/.aws/config``, and its ``~/.boto`` or ``/etc/boto.cfg`` (the
+#: ``boto-config`` credential provider); with an empty value they read none of them.
 CLOUD_SANDBOX_ENV: dict[str, str] = {
     "AWS_EC2_METADATA_DISABLED": "true",
     "AWS_SHARED_CREDENTIALS_FILE": "",
     "AWS_CONFIG_FILE": "",
+    "BOTO_CONFIG": "",
 }
 
 _SUMMARY_RE = re.compile(r"^=*\s*(?P<body>.*?)\s+in\s+(?P<secs>\d+(?:\.\d+)?)s(?:\s+\([^)]*\))?\s*=*\s*$")
@@ -272,14 +297,18 @@ def scrubbed_env(
     settings, ``PYTHONPATH``, ``PYTEST_*``, ``CI``, ``BUILD_NUMBER`` and any name containing
     SECRET/TOKEN/PASSWORD/...)
     and the cloud credentials (``CLOUD_SCRUB_*``: ``AWS_ACCESS_KEY_ID``,
-    ``AWS_SECRET_ACCESS_KEY``, ``AWS_SESSION_TOKEN``, ``AWS_SECURITY_TOKEN``, ``AWS_PROFILE``,
-    ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE``, ``AWS_CONTAINER_CREDENTIALS_*``,
-    ``AWS_CONTAINER_AUTHORIZATION_TOKEN*``, ``GOOGLE_APPLICATION_CREDENTIALS``,
-    ``AZURE_CLIENT_SECRET``), and sets ``AIRFLOW_HOME``, ``AIRFLOW__CORE__UNIT_TEST_MODE=True``,
+    ``AWS_SECRET_ACCESS_KEY``, ``AWS_SESSION_TOKEN``, ``AWS_SECURITY_TOKEN``,
+    ``AWS_BEARER_TOKEN_BEDROCK``, ``AWS_PROFILE``, ``AWS_DEFAULT_PROFILE``, ``AWS_ROLE_ARN``,
+    ``AWS_ROLE_SESSION_NAME``, ``AWS_WEB_IDENTITY_TOKEN_FILE``, the legacy ``AWS_ACCESS_KEY``,
+    ``AWS_SECRET_KEY``, ``AWS_CREDENTIAL_FILE``, ``EC2_ACCESS_KEY`` and ``EC2_SECRET_KEY``,
+    ``AWS_CONTAINER_CREDENTIALS_*``, ``AWS_CONTAINER_AUTHORIZATION_TOKEN*``, ``ANTHROPIC_*``
+    (``ANTHROPIC_BEDROCK_BASE_URL`` and ``ANTHROPIC_BEDROCK_MANTLE_BASE_URL`` included),
+    ``AWS_ENDPOINT_URL_BEDROCK*``, ``GOOGLE_APPLICATION_CREDENTIALS``, ``AZURE_CLIENT_SECRET``), and
+    sets ``AIRFLOW_HOME``, ``AIRFLOW__CORE__UNIT_TEST_MODE=True``,
     ``AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:///<home>/unittests.db``,
     ``AIRFLOW__CORE__LOAD_EXAMPLES=False``, ``PYTHONDONTWRITEBYTECODE=1``,
     ``PYTHONIOENCODING=utf-8``, ``PY_COLORS=0``, ``AWS_EC2_METADATA_DISABLED=true`` and empty
-    ``AWS_SHARED_CREDENTIALS_FILE`` / ``AWS_CONFIG_FILE``.
+    ``AWS_SHARED_CREDENTIALS_FILE`` / ``AWS_CONFIG_FILE`` / ``BOTO_CONFIG``.
     """
     source = os.environ if base is None else base
     env = {key: value for key, value in source.items() if not _is_scrubbed(key)}

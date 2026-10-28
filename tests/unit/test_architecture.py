@@ -3,8 +3,11 @@
 * The import rules of section 4, checked on the source with :mod:`ast` (module level,
   function bodies and ``if TYPE_CHECKING:`` blocks alike): the neutral core never imports an
   orchestrator's code or SDK; only the Airflow adapter's runtime modules and ``api/auth.py``
-  import Airflow; boto3 / botocore are imported lazily by the modules that own them, and by
-  no module yet.
+  import Airflow; boto3 / botocore are imported only lazily, by the modules that own them (the
+  Step Functions adapter and its offline AWS, the S3 dataset reader, doctor's AWS credential
+  probe). The anthropic SDK is imported only lazily, by the two LLM providers; the Amazon
+  Bedrock provider (``agent/bedrock.py``) is core, so it reaches boto3 / botocore only through
+  that SDK, never with an import of its own.
 * The standalone host (step 7): ``hosting/`` and ``cli/serve_cmd.py`` follow the core's rules
   (FastAPI and Starlette are fine); only ``cli/serve_cmd.py`` imports ``hosting``, and neither
   the core nor ``hosting`` imports the CLI; the authentication backends never import the host
@@ -69,8 +72,16 @@ AIRFLOW_AT_MODULE_LEVEL = frozenset({"airflow/plugin.py", "airflow/listener.py"}
 #: Modules that import ``airflow`` inside functions, which only run in Airflow processes.
 AIRFLOW_LAZILY = frozenset({"airflow/__init__.py", "api/auth.py"})
 #: The only modules that may import boto3 / botocore, and only inside functions (section 4).
-#: ``stepfunctions/testing.py`` is the offline AWS of the tests: it builds real botocore clients.
-AWS_SDK_LAZILY = frozenset({"stepfunctions/aws.py", "stepfunctions/testing.py", "storage/s3.py"})
+#: ``stepfunctions/testing.py`` is the offline AWS of the tests: it builds real botocore clients;
+#: ``cli/doctor_cmd.py`` resolves the bedrock provider's AWS credentials with a botocore session.
+AWS_SDK_LAZILY = frozenset(
+    {"stepfunctions/aws.py", "stepfunctions/testing.py", "storage/s3.py", "cli/doctor_cmd.py"}
+)
+#: The only modules that may import the anthropic SDK (the LLM providers), and only inside
+#: functions: importing the agent loads no SDK, and the ``aws`` extra stays optional.
+ANTHROPIC_SDK_LAZILY = frozenset({"agent/llm.py", "agent/bedrock.py"})
+#: Claude on Amazon Bedrock: core, so boto3 / botocore reach it only through the anthropic SDK.
+BEDROCK_PROVIDER = "agent/bedrock.py"
 
 #: The standalone host (``dag-healer serve``): the package and the command that runs it.
 HOSTING_DIR = "hosting"
@@ -234,6 +245,7 @@ def _airflow_importers() -> Iterator[tuple[str, Import]]:
 def test_the_core_scope_exists_and_leaves_out_the_airflow_host() -> None:
     files = {_relative(path) for path in _core_files()}
     assert {"agent/context.py", "worker/pipeline.py", "api/views.py", "links.py", "repo/git.py"} <= files
+    assert BEDROCK_PROVIDER in files
     assert "api/auth.py" not in files
     assert not {name for name in files if name.startswith(("airflow/", "orchestrators/", "core/", "cli/"))}
     for name in (*CORE_MODULES, *BRIDGE_MODULES, *AIRFLOW_AT_MODULE_LEVEL, *AIRFLOW_LAZILY):
@@ -324,8 +336,29 @@ def test_the_aws_sdk_is_imported_only_lazily_by_its_owners() -> None:
         if item.module.split(".")[0] in ("boto3", "botocore")
     }
     owners = {name.split(":")[0] for name in importers}
-    assert owners <= AWS_SDK_LAZILY, importers
+    assert owners == AWS_SDK_LAZILY, importers  # the guard sees every owner
     assert all(importers.values()), importers
+
+
+def test_the_anthropic_sdk_is_imported_only_lazily_by_the_llm_providers() -> None:
+    importers = {
+        f"{_relative(path)}:{item.line}": item.lazy
+        for path in _package_files()
+        for item in imports_of(path)
+        if item.module.split(".")[0] == "anthropic"
+    }
+    owners = {name.split(":")[0] for name in importers}
+    assert owners == ANTHROPIC_SDK_LAZILY, importers
+    assert all(importers.values()), importers
+
+
+def test_the_bedrock_provider_reaches_the_aws_sdk_only_through_anthropic() -> None:
+    """No boto3 / botocore import of its own, not even a lazy one: it checks that the ``aws``
+    extra is installed with ``importlib.util.find_spec`` and lets the anthropic SDK import it."""
+    found = imports_of(PACKAGE_DIR / BEDROCK_PROVIDER)
+    assert [item for item in found if item.module.split(".")[0] in ("boto3", "botocore")] == []
+    assert {"anthropic", "importlib.util"} <= {item.module for item in found}  # the guard sees them
+    assert all(item.lazy for item in found if item.module == "anthropic")
 
 
 # =========================================================================== the standalone host (step 7)

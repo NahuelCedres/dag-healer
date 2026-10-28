@@ -65,6 +65,7 @@ def aws_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
         "AWS_ROLE_ARN",
         "AWS_WEB_IDENTITY_TOKEN_FILE",
         "AWS_ENDPOINT_URL",
+        "AWS_CREDENTIAL_EXPIRATION",
     ):
         monkeypatch.delenv(name, raising=False)
     empty = tmp_path / "aws-config"
@@ -473,6 +474,98 @@ def test_the_default_client_keeps_payloads_out_of_botocore_debug_logs(
     s3_client()
     for name in s3_module.PAYLOAD_LOG_RECORDS:
         assert any(isinstance(item, s3_module.PayloadLogFilter) for item in logging.getLogger(name).filters)
+
+
+def test_the_payload_filter_drops_the_signing_records() -> None:
+    """botocore's SigV4 signer logs the canonical request, with the ``x-amz-security-token`` of
+    temporary credentials (an instance or task role), at DEBUG level, and its endpoint every
+    signed request with its headers (``Sending http request``)."""
+    from dag_healer.storage.s3 import PayloadLogFilter
+
+    signed = "<AWSPreparedRequest method=GET, headers={'X-Amz-Security-Token': b'v', 'Authorization': b'w'}>"
+    records = [
+        logging.LogRecord(name, logging.DEBUG, __file__, 1, text, args, None)
+        for name, text, args in (
+            ("botocore.auth", "CanonicalRequest:\n%s", ()),
+            ("botocore.auth", "StringToSign:\n%s", ()),
+            ("botocore.auth", "Signature:\n%s", ()),
+            ("botocore.auth", "String to sign: %s", ("v2",)),
+            ("botocore.endpoint", "Sending http request: %s", (signed,)),
+            ("botocore.auth", "Calculating signature using v4 auth.", ()),
+            ("botocore.hooks", "Event before-send.s3.GetObject: calling handler %s", ("<function x>",)),
+        )
+    ]
+    assert [PayloadLogFilter().filter(record) for record in records] == [False] * 5 + [True, True]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "headers={'Authorization': b'AWS4-HMAC-SHA256 Credential=...'}",
+        "x-amz-security-token:IQoJb3JpZ2luX2VjEXAMPLE",
+        "https://bucket.s3.amazonaws.com/key?X-Amz-Security-Token=IQoJb3JpZ2lu&X-Amz-Signature=abc",
+        'content body: b\'{"Code" : "Success", "AccessKeyId" : "ASIA...", "Token" : "IQoJ"}\'',
+        "<SessionToken>IQoJb3JpZ2lu</SessionToken>",
+        "aws_secret_access_key = wJalrXUtnFEMI",
+    ],
+    ids=["authorization", "canonical-header", "presigned-query", "imds-body", "sts-xml", "setting"],
+)
+def test_the_payload_filter_drops_any_botocore_record_that_holds_a_credential(text: str) -> None:
+    """The backstop: whatever botocore logger logs it, and whatever its format string."""
+    from dag_healer.storage.s3 import PayloadLogFilter
+
+    for name in ("botocore.utils", "botocore.credentials", "botocore.retryhandler", "botocore"):
+        record = logging.LogRecord(name, logging.DEBUG, __file__, 1, "%s", (text,), None)
+        assert PayloadLogFilter().filter(record) is False, name
+    other = logging.LogRecord("dag_healer.worker", logging.DEBUG, __file__, 1, "%s", (text,), None)
+    assert PayloadLogFilter().filter(other) is True  # only botocore's records are judged
+    kept = logging.LogRecord(
+        "botocore.utils", logging.DEBUG, __file__, 1, "Checking for cached token at: %s", ("x",), None
+    )
+    assert PayloadLogFilter().filter(kept) is True
+
+
+def test_the_default_client_never_logs_the_session_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Temporary credentials held by a profile file only (an instance or task role's are held by no
+    variable), the default client, a GetObject answered at the HTTP level: at DEBUG, no record
+    holds the token, the secret key or the ``Authorization`` header."""
+    from botocore.awsrequest import AWSResponse
+
+    token = "example/role+value=temporary/held-in-no-variable"
+    secret = "example/role+value=private/held-in-no-variable"
+    credentials = tmp_path / "credentials"
+    credentials.write_text(
+        f"[role]\naws_access_key_id = ASIAEXAMPLEROLEKEY01\naws_secret_access_key = {secret}\n"
+        f"aws_session_token = {token}\n",
+        encoding="utf-8",
+    )
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(credentials))
+    monkeypatch.setenv("AWS_PROFILE", "role")
+    caplog.set_level(logging.DEBUG)
+    set_client_factory(None)
+    client = s3_client()
+
+    class _Raw(io.BytesIO):
+        """The raw body of an HTTP answer (read by the streaming body, or streamed whole)."""
+
+        def stream(self, **_kwargs: Any) -> Iterator[bytes]:
+            yield self.getvalue()
+
+    def send(request: Any, **_kwargs: Any) -> Any:
+        assert request.headers["X-Amz-Security-Token"] == token.encode()  # signed with the file's
+        return AWSResponse(request.url, 200, {"Content-Length": str(len(ORDERS_CSV))}, _Raw(ORDERS_CSV))
+
+    client.meta.events.register("before-send", send)
+    assert len(load_s3_dataset({"type": "csv", "path": URI}, max_bytes=len(ORDERS_CSV) + 1)) == 6
+    assert any(record.name == "botocore.auth" for record in caplog.records)  # botocore logged at DEBUG
+    for record in caplog.records:
+        text = record.getMessage()
+        assert token not in text and secret not in text, record.name
+        assert "Authorization" not in text and "X-Amz-Security-Token" not in text, record.name
 
 
 def test_without_boto3_the_error_names_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:

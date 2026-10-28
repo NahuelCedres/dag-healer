@@ -105,7 +105,12 @@ dag-healer incidents list
 
 `llm.provider` defaults to `fake` here: dag-healer classifies with its deterministic policy and
 replays `fixtures/fake_llm` for the repair, without an API key. Set `HEALER_LLM_PROVIDER=anthropic`
-(and `ANTHROPIC_API_KEY`) for real diagnoses. The outcomes are the ones of the table above. The
+(and `ANTHROPIC_API_KEY`) for real diagnoses, or `HEALER_LLM_PROVIDER=bedrock` for Claude on
+Amazon Bedrock in your AWS account: then `llm.model` holds the Bedrock model or inference profile
+ID (such as `eu.anthropic.claude-opus-5-5`) and `llm.aws_region` or `AWS_REGION` the region (the
+commented lines of the `llm` block), the credentials come from the default chain rather than the
+adapter's `profile` or `role_arn`, and their identity needs `bedrock:InvokeModel` on that model
+([docs/bedrock.md](../../docs/bedrock.md)). The outcomes are the ones of the table above. The
 CODE fix is a pull request (with `github.repo` and `GITHUB_TOKEN`; see
 [docs/github/README.md](../../docs/github/README.md) for the token and the base branch's rules)
 or a `PR.md`; it changes `src/etl/customers.py` and adds a test, and it reaches AWS only through

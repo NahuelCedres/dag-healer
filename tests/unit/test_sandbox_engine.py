@@ -300,6 +300,41 @@ def test_the_worker_environment_never_reaches_the_container(
     assert facts["canary_in_environ"] == [] and facts["canary_in_proc"] == []
 
 
+#: The worker's AWS credentials, profile, role and file settings, and the Amazon Bedrock endpoint
+#: of the anthropic SDK (``llm.provider: bedrock``).
+AWS_SETTINGS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_ROLE_ARN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+)
+
+
+def test_the_aws_credentials_never_reach_the_container(
+    sandbox: ContainerSandbox, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No value of the worker's AWS settings, and no network: the instance metadata service and
+    the container-credential endpoint are out of reach."""
+    for name in AWS_SETTINGS:
+        monkeypatch.setenv(name, f"{CANARY}-{name.lower()}")
+    result = run_pytest(project, ["tests/test_facts.py"], timeout=120, extra_args=["-s"], sandbox=sandbox)
+    assert result.ok, result.output_tail
+    line = next(line for line in result.output_tail.splitlines() if line.startswith("FACTS "))
+    facts = json.loads(line[len("FACTS ") :])
+    assert facts["canary_in_environ"] == [] and facts["canary_in_proc"] == []
+    assert facts["interfaces"] == ["lo"] and facts["connect"].startswith("blocked: ")
+
+
 def test_the_clone_never_changes(sandbox: ContainerSandbox, project: Path) -> None:
     before = snapshot(project)
     result = run_pytest(project, ["tests/test_vandal.py"], timeout=120, sandbox=sandbox)

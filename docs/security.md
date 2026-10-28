@@ -11,8 +11,9 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
 
 - dag-healer turns untrusted text into model prompts. Whoever controls a task's code or its input
   data can write task logs, tracebacks, exception messages, dataset rows and pushed failure
-  events. That text is masked and sent to the model through the Anthropic API, and the model's
-  answers drive what happens next.
+  events. That text is masked and sent to the model provider (the Claude API, or Amazon Bedrock
+  in the owner's AWS account: [`docs/bedrock.md`](bedrock.md)), and the model's answers drive
+  what happens next.
 - The model's output is untrusted too. A deterministic policy bounds the classification, the
   repair agent's file tools enforce path rules and size limits, and nothing is merged
   automatically.
@@ -44,7 +45,7 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
 | Component | Runs in | Holds |
 |---|---|---|
 | Airflow plugin: the API under `/healer`, the React views and the task listener | The Airflow api-server; the listener runs in every task process | The ingest token (API and listener), the store URL (API) |
-| Worker (`dag-healer worker`) | Its own process or container | Airflow API credentials, Anthropic API key, GitHub token, SMTP password, store URL, access to the container engine |
+| Worker (`dag-healer worker`) | Its own process or container | Airflow API credentials, the Anthropic API key or AWS credentials for Amazon Bedrock (an instance role), GitHub token, SMTP password, store URL, access to the container engine |
 | Store | SQLite under `HEALER_HOME`, or the database at `store.url` / `HEALER_DATABASE_URL` | Incidents, events, commands, alerts |
 | Repair workspace | `<healer_home>/work/<incident_id>`: a clone of the repository | The committed history of the repository |
 | Test sandbox (`repo.sandbox`) | A fresh container for every pytest run, started by the worker with the `docker` or `podman` CLI on its container engine. The `process` backend (development and tests only): a child process of the worker | A throw-away copy of the clone without `.git`, and the scrubbed test environment |
@@ -59,8 +60,9 @@ The path of one failure:
    file and the repository files named in the traceback, validates the DAG's data contract
    against the dataset files and builds a masked sample. Free text is masked before it is stored
    or sent anywhere.
-3. **Classification.** The masked evidence goes to the model in one structured-output call. A
-   deterministic policy takes the final decision.
+3. **Classification.** The masked evidence goes to the model in one structured-output call (on
+   Amazon Bedrock, when the model refuses structured outputs, a JSON answer checked against the
+   same schema). A deterministic policy takes the final decision.
 4. **Follow-up.**
    - DATA: an alert with the violated rule and the masked sample.
    - AMBIGUOUS: the incident waits for a person in the dag-healer views.
@@ -85,6 +87,7 @@ The path of one failure:
 |---|---|---|
 | GitHub token (`github.token`, usually `GITHUB_TOKEN`) | The worker's environment. git gets it through `GIT_ASKPASS`, the REST API through a header | Pushing to the DAG repository (any branch that the token's scope and the repository's rules allow), opening pull requests, reading private code. A classic token with the `repo` scope reaches every repository the account can write to. |
 | Anthropic API key (`ANTHROPIC_API_KEY`) | The worker's environment, read by the Anthropic SDK | Model usage billed to the owner's account. |
+| AWS credentials for Amazon Bedrock (`llm.provider: bedrock`) | Where the AWS SDK's default chain finds them for the worker: the EC2 instance role, through the instance metadata service; the credentials of an ECS task or EKS pod; the worker's environment (`AWS_*`, a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`); the shared AWS files. Never `healer.yaml` | Model usage billed to the owner's AWS account, and whatever else the role or key allows. Give the worker's role only `bedrock:InvokeModel` on the chosen model or inference profile ([`docs/bedrock.md`](bedrock.md)). |
 | Airflow API credentials (`airflow.username`, `airflow.password`) | The worker's environment; exchanged for a JWT | Whatever the account's Airflow role allows. For an Admin: managing connections and variables, and clearing or triggering any run. |
 | Ingest token (`ingest.token`, `HEALER_INGEST_TOKEN`) | The api-server, and every task process that runs the listener | Posting failure hints (each one is confirmed through the Airflow API). |
 | Store URL (`store.url`, `HEALER_DATABASE_URL`) | The worker and the api-server (in the development stack, every Airflow container) | Reading every incident; queuing commands that the worker applies without further checks: approving contracts, starting repairs, retrying tasks (G6). |
@@ -141,8 +144,10 @@ Enforced:
     whatever the model says.
   - An answer below `classification.min_confidence` (default 0.75) goes to a person. So does any
     decision that needs the model when the model call fails or no model is configured.
-- The classification is a structured-output call. The category must be `data`, `code` or
-  `ambiguous`; anything else becomes ambiguous. The confidence is clamped to [0, 1].
+- The classification is a structured-output call (on Amazon Bedrock, when the model refuses
+  structured outputs, a JSON answer validated against the same schema, with one retry). The
+  category must be `data`, `code` or `ambiguous`; anything else becomes ambiguous. The confidence
+  is clamped to [0, 1].
 - At most `limits.max_incidents_per_hour` (default 10) automatic triages start in any rolling
   hour.
 
@@ -324,10 +329,36 @@ Enforced for every backend (`repo/sandbox.py`, `repo/pytest_runner.py`, `repo/gi
   - `PYTHONPATH`, `PYTHONSTARTUP`, `PYTEST_*`, `GIT_ASKPASS`, `SSH_ASKPASS` and `SSH_AUTH_SOCK`;
   - any variable whose name contains `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `API_KEY`,
     `APIKEY`, `PRIVATE_KEY` or `CREDENTIAL`.
-- **Cloud credentials.** The AWS credential variables (including the ECS and EKS
-  container-credential variables), `GOOGLE_APPLICATION_CREDENTIALS` and `AZURE_CLIENT_SECRET` are
-  always removed, after any override from the orchestrator adapter. AWS SDKs are told not to use
-  instance metadata or the shared credential and config files.
+- **Cloud credentials.** These are always removed, after any override from the orchestrator
+  adapter:
+  - the AWS credential, profile and role variables: `AWS_ACCESS_KEY_ID`,
+    `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_SECURITY_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`
+    (a Bedrock API key), `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, `AWS_ROLE_ARN`,
+    `AWS_ROLE_SESSION_NAME` and `AWS_WEB_IDENTITY_TOKEN_FILE`;
+  - the legacy names that older AWS tools read: `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`,
+    `AWS_CREDENTIAL_FILE`, `EC2_ACCESS_KEY` and `EC2_SECRET_KEY`;
+  - the ECS and EKS container-credential variables (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+    `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` and
+    `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`);
+  - every `ANTHROPIC_*` variable: the Anthropic SDK's keys and its endpoint settings for the
+    Claude API and Amazon Bedrock (`ANTHROPIC_BEDROCK_BASE_URL`,
+    `ANTHROPIC_BEDROCK_MANTLE_BASE_URL`);
+  - botocore's Bedrock endpoint overrides (`AWS_ENDPOINT_URL_BEDROCK*`);
+  - `GOOGLE_APPLICATION_CREDENTIALS` and `AZURE_CLIENT_SECRET`.
+
+  `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE` and `BOTO_CONFIG` are set to empty values and
+  `AWS_EC2_METADATA_DISABLED` to `true`. botocore and boto3 (the AWS CLI and the Python SDK) then
+  read neither the shared credential and config files (not even the default ones under `~/.aws`)
+  nor a boto config file (`~/.boto`, `/etc/boto.cfg`: botocore's `boto-config` credential
+  provider), and the AWS SDKs do not ask the instance metadata service for credentials. The
+  JavaScript v3 and Go v2 SDKs treat an empty file variable as unset and read `~/.aws`: under
+  `process`, which isolates nothing anyway, code that uses them finds the worker user's files.
+  `AWS_REGION`, `AWS_DEFAULT_REGION` and the generic `AWS_ENDPOINT_URL` stay: they hold no
+  credential. Under the container backend, the run also has no network (below), so neither the
+  instance metadata service (`169.254.169.254`, `fd00:ec2::254`) nor the container-credential
+  endpoint (`169.254.170.2`) is reachable. Under `process`, code on an EC2 instance can still
+  query the instance metadata service itself and get the instance role's credentials:
+  `AWS_EC2_METADATA_DISABLED` only advises the SDKs.
 - **Airflow** inside the tests points at a throw-away `AIRFLOW_HOME` with an SQLite database in
   unit-test mode.
 - **Time.** After `repo.pytest_timeout` seconds (default 600), the run is killed. A container is
@@ -413,8 +444,13 @@ What remains:
   its rules reaches the tests, inside the container as well.
 - **`process` is not a sandbox.** Under the `process` backend, the code runs as the worker's OS
   user, with the worker's network access and file system (G1, G11):
-  - it can read the worker's environment from `/proc/<parent pid>/environ` on Linux, including
-    every credential that the scrub removed from its own environment;
+  - it can read the worker's environment, from `/proc/<parent pid>/environ` on Linux or with
+    `ps -E -p <parent pid>` on macOS, including every credential that the scrub removed from its
+    own environment;
+  - it can open the files that the worker's AWS variables point at, and the worker user's
+    `~/.aws` and `~/.boto`;
+  - on an EC2 instance, it can get the instance role's credentials from the instance metadata
+    service, and with them the worker's Amazon Bedrock permissions;
   - it can change the clone before and after the worker commits it: its files, its git
     configuration and its object files. The worker's git ignores the clone's hooks, fsmonitor,
     replace refs, graft file and commit-graph, but still uses the rest of its configuration,
@@ -482,6 +518,75 @@ Enforced:
   then be printable ASCII, or the configuration is refused without echoing it. The setup checks
   (4.5) name only its kind, told from its prefix (classic, fine-grained, OAuth, GitHub App
   installation or GitHub App user), never the token or any part of it.
+- **The Anthropic API key.** When the Claude API provider quotes an error answer (an API error
+  other than 401, 403, 404 and 429), the values of `ANTHROPIC_API_KEY` and
+  `ANTHROPIC_AUTH_TOKEN`, and every fragment of 16 or more characters of them, are replaced by
+  `[hidden]`, so a gateway in `ANTHROPIC_BASE_URL` that echoes the key leaves it out of the
+  diagnosis. When the key can still be read once the answer is URL-decoded and its whitespace
+  is taken out, `[hidden]` stands in for the whole answer.
+- **AWS credentials** (`llm.provider: bedrock`) never come from `healer.yaml`: the AWS SDK finds
+  them through its default chain, or in the profile that `llm.aws_profile` names.
+  `dag-healer doctor` shows only where they come from (`iam-role`, `env`, ...) or that
+  `AWS_BEARER_TOKEN_BEDROCK` is set, never a value.
+  - **No redirect is followed.** The HTTP clients of both LLM providers (the Claude API's and
+    Amazon Bedrock's) never follow one: a 3xx answer ends the call after that one request, so
+    neither the request, with its credentials (the API key, the Bedrock API key, or the signature
+    and the session token of temporary AWS credentials), nor the prompt reaches the host that the
+    redirect names. The bedrock provider's region, wherever it comes from, must be an AWS Region
+    code, and `ANTHROPIC_BEDROCK_BASE_URL` follows the rules of `llm.endpoint_url` (https, http
+    only for a loopback host, no user info, query, fragment or backslash): both name the host
+    that receives the signed requests. An `http` endpoint never goes through a proxy of the
+    environment (`HTTP_PROXY`, `ALL_PROXY`), which would receive its signed requests and prompts
+    in cleartext.
+  - **Credential variables.** The whitespace around the values of `AWS_BEARER_TOKEN_BEDROCK` and
+    of the environment's AWS keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and the session
+    token, in `AWS_SESSION_TOKEN` or in `AWS_SECURITY_TOKEN`, its legacy name, which botocore
+    reads first) falls away before the client signs, since a newline left in a header makes h11
+    refuse it and quote it whole. A value with whitespace, a control character or a non-ASCII
+    character within it, in one of these five variables, is refused before any request, and the
+    message names the variable only.
+  - **Error messages.** The bedrock provider's error messages hide the values of the credentials
+    that the client authenticates with (the Bedrock API key; the access key, secret key and
+    session token of its AWS session, from a profile or a role as well as from the environment)
+    and of the environment's credential variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+    `AWS_SESSION_TOKEN`, `AWS_SECURITY_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`). The AWS errors that
+    `dag-healer doctor` shows hide the latter: doctor builds no Bedrock client. Both hide them as
+    they are, URL-encoded, JSON-escaped, or as a fragment of 16 or more characters, and hide a
+    whole message in which one of them can still be read once its spaces are taken out. They
+    also hide access key IDs, the value after a credential's name (`x-amz-security-token`,
+    `Authorization`, `SessionToken`, `SecretAccessKey`, `aws_session_token`, `Credential=`,
+    `Signature=`...) and long random-looking strings, and they cut off the canonical request that
+    AWS quotes when it refuses a signature. AWS's own message is left out whole when it talks
+    about a token, a signature, a secret, an API key, a password, a bearer token, authorization
+    or an `x-amz-` header (the AWS error type of the answer, when it has one, stands in for it),
+    and an answer without a JSON message is never quoted. The error type itself is shown only
+    when it is shaped like AWS's names of errors (capitalised words of letters, 3 to 64 in all,
+    such as `AccessDeniedException`) and holds no credential, and a refusal's category only when
+    it is lower-case letters and `_` (32 at most) and holds no credential (one check for both
+    providers, for the refusal of a classification and the worker's warning about a refusal
+    during a repair): `an unknown error type` and `unspecified` stand in for any other value.
+  - **Debug logs.** botocore's records that quote a request or an answer are dropped from the
+    worker's logs, on every botocore logger and for every client (the Bedrock provider, the S3
+    dataset reader, the Step Functions adapter): `Making request for` (the parameters), `Sending
+    http request` (the signed request with its `Authorization` and `X-Amz-Security-Token`
+    headers), `Response headers` and `Response body` (an STS answer holds new credentials), and
+    the canonical request, string to sign and signature of SigV4. As a backstop, any botocore
+    record whose text holds an `Authorization` or `X-Amz-Security-Token` header or a credential
+    field (`SessionToken`, `SecretAccessKey`, `Token`...) is dropped too. Under `-vv`, the
+    anthropic SDK's own `Request options` record, which quotes every request body (the prompts),
+    is dropped for both providers, unless `ANTHROPIC_LOG=debug` asks for the SDK's debug logs.
+    At every verbosity, the records of the anthropic SDK, of the HTTP clients under it (httpx2,
+    httpx) and of their transports (httpcore) show no headers of an answer, which AWS or a
+    gateway can fill with an echo of a credential (`[headers not shown]` stands in for them), and
+    the reason phrase of the status line only as the standard one of the status code (`403
+    Forbidden`), since the endpoint writes that phrase too. Any of their records that names an
+    `Authorization`, `x-api-key` or `x-amz-security-token` header, quotes a header value that h11
+    refused or other bytes that it could not read (a status line, a chunk header or footer),
+    quotes httpx's `HTTPStatusError`, or holds the value of a credential variable (or a fragment
+    of 16 characters of one) is dropped, and so is the SDK's record of the stop reason of a
+    repair's last turn. The bedrock provider's own line at the end of a repair names a stop
+    reason of Claude's only (`other` stands in for any other value) and it logs no server-side
+    fallback: the SDK does not check these fields of an answer, and Bedrock has no fallbacks.
 - **Configuration.** The secret fields are `airflow.password`, `notify.email.password`,
   `github.token`, `ingest.token`, the adapter's secret options and a password inside `store.url`.
   They are meant to be `${ENV}` references. `dag-healer doctor` and `dag-healer check` warn about
@@ -497,8 +602,20 @@ request body (G10).
 
 Data that leaves the deployment:
 
-- **To the Anthropic API:** the masked evidence, the DAG file, every repository file named in the
-  traceback, every repository file that the repair agent reads, and the masked pytest output.
+- **To the model provider:** the masked evidence, the DAG file, every repository file named in
+  the traceback, every repository file that the repair agent reads, and the masked pytest output.
+  - With `llm.provider: anthropic`, that is the Claude API (`api.anthropic.com`).
+  - With `bedrock`, it is Amazon Bedrock in the owner's AWS account
+    ([`docs/bedrock.md`](bedrock.md)). The requests go to the runtime endpoint of the configured
+    region (`bedrock-runtime.<region>.amazonaws.com`), or to the VPC endpoint or gateway of
+    `llm.endpoint_url`. Where the model processes them follows `llm.model`: an in-Region model ID
+    keeps them in that Region (for Claude Opus 5.5, `eu-west-2` only); a geographic inference
+    profile (`eu.`, `us.`, `au.`, `jp.`) sends them to one of the Regions of that geography that
+    the profile lists; a global profile (`global.`) to any commercial Region. Amazon Bedrock gives
+    model providers no access to the prompts and answers. Whether AWS keeps them depends on the
+    account's data retention mode in the Region; Claude Fable 5 and Fable 5.1 require a mode in
+    which AWS keeps them for up to 30 days and may review them. Model invocation logging, when the
+    owner turns it on, stores them in the owner's account.
 - **To GitHub:** the branch and the pull request, with their masked text, the generated test and
   the diff, visible to everyone who can see the repository.
 
@@ -747,9 +864,11 @@ credentials or host paths, as a non-root user without capabilities (4.3). What r
 
 Under the `process` backend, none of this isolation applies, and G1 is Critical. The code runs as
 the worker's OS user, with the worker's network access (the Airflow API and metadata database,
-internal services, the internet and cloud metadata endpoints). On Linux, it can read the worker's
-environment, including every credential that the scrub removed, from
-`/proc/<parent pid>/environ`. It can change the clone, its git configuration and its object files
+internal services, the internet and cloud metadata endpoints: on EC2, the instance role's
+credentials, and with them the worker's Amazon Bedrock permissions). It can read the worker's
+environment, including every credential that the scrub removed, from `/proc/<parent pid>/environ`
+on Linux or with `ps -E -p <parent pid>` on macOS, and open the worker user's `~/.aws` and
+`~/.boto`. It can change the clone, its git configuration and its object files
 before and after the worker commits (4.3), and write wherever the worker can: the repository
 working tree (in the development stack, the folder that Airflow loads DAGs from), `healer.yaml`,
 `HEALER_HOME` (the SQLite store, the PR artifacts) and the data files that the repair tools refuse
@@ -1005,11 +1124,13 @@ These recommendations close or reduce the gaps above until the code does.
    - run `dag-healer doctor` after every change: its `sandbox` check must be OK;
    - for a boundary stronger than a shared kernel, consider gVisor or Kata Containers as the
      engine's runtime.
-3. **Restrict network egress** to what the worker needs: the Anthropic API (`api.anthropic.com`),
-   GitHub (`github.com`, `api.github.com`), the Airflow API, the store and the SMTP server. Block
-   the Airflow metadata database, other internal services and the cloud metadata endpoints
-   (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`, `metadata.google.internal`), unless the
-   worker itself needs them (G1).
+3. **Restrict network egress** to what the worker needs: the model provider (the Claude API,
+   `api.anthropic.com`, or the Amazon Bedrock runtime endpoint of the region,
+   `bedrock-runtime.<region>.amazonaws.com`, or its VPC endpoint), GitHub (`github.com`,
+   `api.github.com`), the Airflow API, the store and the SMTP server. Block the Airflow metadata
+   database, other internal services and the cloud metadata endpoints (`169.254.169.254`,
+   `169.254.170.2`, `fd00:ec2::254`, `metadata.google.internal`), unless the worker itself needs
+   them (G1): a worker that uses an EC2 instance role needs the instance metadata service.
 4. **GitHub** (G2, G3), as [`docs/github/README.md`](github/README.md) describes:
    - use a fine-grained personal access token limited to the one repository, with "Contents"
      and "Pull requests" set to read and write, "Metadata: read" (which GitHub adds by itself)
@@ -1031,37 +1152,57 @@ These recommendations close or reduce the gaps above until the code does.
      token, the rules or the workflows: its `github ...` lines must be OK. The pull request's
      own report comes after the `create` and `pull_request_target` workflows have run;
    - or run without a token, and apply `fix.patch` yourself.
-5. **Airflow** (G7): give the worker a dedicated account with the smallest role that works, never
+5. **Amazon Bedrock** (`llm.provider: bedrock`, G1), as [`docs/bedrock.md`](bedrock.md)
+   describes:
+   - give the worker a role of its own (on EC2, an instance role) whose only permission is
+     `bedrock:InvokeModel` on the chosen inference profile and the foundation models behind it,
+     or on the in-Region model. Let an administrator enable the model once (the First Time Use
+     form and the AWS Marketplace subscription), so that the role needs no `aws-marketplace`
+     permission;
+   - for health data and other regulated data, choose an in-Region model ID or the geographic
+     inference profile of the data's jurisdiction, never a `global.` profile, deny global routing
+     in the role's policy (`aws:RequestedRegion` equal to `unspecified`), and check the account's
+     data retention mode in that Region;
+   - reach Bedrock through a VPC endpoint (`com.amazonaws.<region>.bedrock-runtime`) whose policy
+     allows only `bedrock:InvokeModel`;
+   - keep the container backend of the test sandbox: under `process`, the code that pytest runs
+     can get the instance role's credentials from the instance metadata service;
+   - require IMDSv2, and raise its hop limit to 2 only on a host where the worker itself runs in
+     a container: every container with network access on that host can then get the role's
+     credentials;
+   - prefer the role to Bedrock API keys (`AWS_BEARER_TOKEN_BEDROCK`) and to access keys in the
+     environment, and run `dag-healer doctor` where the worker runs: its `llm` line must be OK.
+6. **Airflow** (G7): give the worker a dedicated account with the smallest role that works, never
    Admin.
-6. **Secrets** (G1, G8):
+7. **Secrets** (G1, G8):
    - give the worker only the credentials it needs, in variables whose names contain `TOKEN`,
      `SECRET`, `PASSWORD` or `API_KEY`;
    - keep the Airflow deployment's own secrets (metadata database URL, Fernet key, JWT secret,
      connections) out of the worker's environment: the worker talks to Airflow through its REST
      API only;
    - task processes need only `HEALER_API_URL` and `HEALER_INGEST_TOKEN`. The development
-     compose file keeps the Anthropic, GitHub and Airflow API credentials away from the
+     compose file keeps the Anthropic, AWS, GitHub and Airflow API credentials away from the
      scheduler, which runs task code, but it still gives every container the store URL (G6).
-7. **The store** (G6): give the store URL only to the api-server and the worker, with a database
+8. **The store** (G6): give the store URL only to the api-server and the worker, with a database
    user of its own.
-8. **Configuration** (section 7): protect `healer.yaml` like deployment configuration, for
+9. **Configuration** (section 7): protect `healer.yaml` like deployment configuration, for
    example with a code-owner review, when it lives in the repository.
-9. **The repository** (G1, G4, G5):
-   - under the container backend, the code that pytest runs cannot reach the repository working
-     tree. Under the `process` backend it can: give the worker a working tree that Airflow does
-     not load DAGs from, or accept that a repair can change live DAG files;
-   - keep secrets and real data out of the repository, and out of the working tree that the
-     worker reads.
-10. **Masking** (G5): flag personal columns with `pii: true`, add `masking.columns`, prefer
+10. **The repository** (G1, G4, G5):
+    - under the container backend, the code that pytest runs cannot reach the repository working
+      tree. Under the `process` backend it can: give the worker a working tree that Airflow does
+      not load DAGs from, or accept that a repair can change live DAG files;
+    - keep secrets and real data out of the repository, and out of the working tree that the
+      worker reads.
+11. **Masking** (G5): flag personal columns with `pii: true`, add `masking.columns`, prefer
     `redact` for identifiers from a small set of values, and use a `masking.hook` for
     data-specific rules. Do not log raw rows, credentials or personal data from tasks.
-11. **Transport** (G13): use STARTTLS or SMTPS for alerts, and HTTPS for the Airflow API when it
+12. **Transport** (G13): use STARTTLS or SMTPS for alerts, and HTTPS for the Airflow API when it
     is not local.
-12. **Debug** (G16): keep `debug` and `HEALER_DEBUG` off in production.
-13. **Review** every healer pull request like an outside contribution, the test as well as the
+13. **Debug** (G16): keep `debug` and `HEALER_DEBUG` off in production.
+14. **Review** every healer pull request like an outside contribution, the test as well as the
     fix. Watch for file, network, subprocess or environment access in either. Read its "Before
     you merge" section first, and start CI only once you have read the change.
-14. **The development stack** under `docker/` uses fixed, publicly known secrets and gives the
+15. **The development stack** under `docker/` uses fixed, publicly known secrets and gives the
     worker the Airflow `admin` account. It also mounts the host's container engine socket into
     `healer-worker`, so that the worker can start the test sandbox, which makes that container
     root-equivalent on the engine's host (on Docker Desktop and OrbStack, their Linux VM). Keep
@@ -1082,7 +1223,9 @@ These recommendations close or reduce the gaps above until the code does.
   already runs in Airflow, and it also runs in the test sandbox during repairs.
 - dag-healer relies on Airflow's own authentication and authorization, and inherits their
   strengths and weaknesses.
-- The owner's agreement with Anthropic governs how the Anthropic API handles prompts.
+- The owner's agreement with Anthropic governs how the Claude API handles prompts. With Amazon
+  Bedrock, the owner's agreements with AWS and Amazon Bedrock's data protection govern them
+  instead.
 - The offline `fake` LLM provider replays scripts from the repository. It is meant for demos and
   tests only.
 - This document covers the Airflow adapter. Other orchestrator adapters, such as the AWS Step

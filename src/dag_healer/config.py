@@ -22,14 +22,19 @@ the adapter (absent: Airflow, configured by the ``airflow:`` section as before),
 ``serve:`` configures the standalone host ``dag-healer serve`` and ``repo.sandbox``
 where a repair runs pytest. The three are left out of dumps while they hold their
 defaults, so ``dag-healer check`` prints an existing ``healer.yaml`` exactly as before;
-``github.skip_ci`` (default true) is left out the same way.
+``github.skip_ci`` (default true) is left out the same way, and so are the Amazon Bedrock
+settings ``llm.aws_region``, ``llm.aws_profile`` and ``llm.endpoint_url`` while they are unset.
 
 ``repo.allowed_paths`` cannot name a path that a fix never changes (the policy of
 :mod:`dag_healer.repo.protected_paths`), the contracts folder of ``contracts.dir`` included;
 ``.`` stays allowed, and the policy still applies inside it. ``github.token`` loses the
-whitespace around it and must be printable ASCII. A rejected value is never part of an error:
-pydantic's ``ValidationError`` of every model hides it from its text (``hide_input_in_errors``),
-since it may be a secret, and :class:`ConfigError` names only where and why.
+whitespace around it and must be printable ASCII; ``llm.endpoint_url`` is an https URL (http
+only for a loopback host) without user info, query, fragment or backslash, so it never carries
+a credential (:func:`valid_endpoint_url`); ``llm.model`` loses the whitespace around it and
+holds no whitespace or control character; ``llm.aws_region`` is an AWS Region code
+(:data:`AWS_REGION_CODE`). A rejected value is never part of an error: pydantic's
+``ValidationError`` of every model hides it from its text (``hide_input_in_errors``), since it
+may be a secret, and :class:`ConfigError` names only where and why.
 """
 
 from __future__ import annotations
@@ -105,6 +110,8 @@ ServeAuthBackend = Literal["dev", "token", "trusted_header", "alb_oidc"]
 #: ``repo.sandbox.backend`` / ``engine`` values (``dag_healer.repo.sandbox`` implements them).
 SandboxBackend = Literal["container", "process"]
 SandboxEngine = Literal["docker", "podman"]
+#: ``llm.provider`` values: the Claude API, Claude on Amazon Bedrock and the offline fake.
+LlmProvider = Literal["anthropic", "bedrock", "fake"]
 
 _BASE_SECRET_FIELDS: tuple[str, ...] = SECRET_FIELDS
 _secret_fields_lock = threading.Lock()
@@ -121,6 +128,10 @@ _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 _HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _REGION = r"[a-z]{2}(?:-[a-z]+)+-\d{1,2}"
 _AWS_REGION = re.compile(rf"^{_REGION}$")
+#: An AWS Region code as ``llm.aws_region`` and the bedrock provider's region must be written:
+#: ``eu-west-1``, ``us-gov-west-1``, or one with a longer prefix such as the AWS European
+#: Sovereign Cloud's ``eusc-de-east-1``. The region names the host that receives the requests.
+AWS_REGION_CODE = re.compile(r"^[a-z]{2,4}(?:-[a-z]+)+-\d{1,2}$")
 _ALB_ARN = re.compile(
     rf"^arn:aws[a-z-]*:elasticloadbalancing:(?P<region>{_REGION}):\d{{12}}:loadbalancer/app/[^/\s]+/[^/\s]+$"
 )
@@ -632,15 +643,146 @@ class GithubConfig(_Model):
         return token
 
 
-class LlmConfig(_Model):
-    """Language model used for classification and repairs."""
+#: The ``llm`` settings of the bedrock provider only; dumps leave each out while it is unset.
+_BEDROCK_SETTINGS: tuple[str, ...] = ("aws_region", "aws_profile", "endpoint_url")
+_ENDPOINT_URL_PROBLEM = (
+    "expected an https URL (http only for a loopback host) without credentials, query or fragment, "
+    "such as https://vpce-0123456789abcdef0-abcdefgh.bedrock-runtime.eu-west-1.vpce.amazonaws.com"
+)
+_MODEL_PROBLEM = "expected a model ID without whitespace or control characters"
+#: A host name of an endpoint: letters, digits, dots and hyphens (an IP address is checked apart).
+_ENDPOINT_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.?$")
 
-    provider: Literal["anthropic", "fake"] = "anthropic"
+
+def _has_space_or_control(text: str) -> bool:
+    return any(char.isspace() or not char.isprintable() for char in text)
+
+
+def _ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _loopback(host: str) -> bool:
+    """``localhost``, ``127.0.0.0/8`` or ``::1``."""
+    address = _ip_address(host)
+    return host.lower() == "localhost" if address is None else address.is_loopback
+
+
+def valid_endpoint_url(value: str) -> str | None:
+    """``value`` as an endpoint in front of bedrock-runtime, or ``None`` when it breaks a rule.
+
+    The whitespace around it and a trailing ``/`` fall away. It must be an ``https`` URL
+    (``http`` only for a loopback host: ``localhost``, ``127.0.0.0/8``, ``::1``) with a host
+    name or an IP address, an optional port and path, and no user info, query, fragment,
+    backslash, whitespace or control character: nothing in it can hold a credential, nothing
+    can make a client read another host than the one written, and the signed requests never
+    travel in cleartext. ``llm.endpoint_url`` and the SDK's ``ANTHROPIC_BEDROCK_BASE_URL`` follow
+    these rules (``dag_healer.agent.bedrock``).
+    """
+    url = value.strip().rstrip("/")
+    if not url or _has_space_or_control(url) or any(char in url for char in "?#\\"):
+        return None
+    try:
+        parts = urlsplit(url)
+        _ = parts.port  # a port that is not a number from 0 to 65535 raises ValueError
+    except ValueError:
+        return None
+    host = parts.hostname or ""
+    if "@" in parts.netloc or not (_ENDPOINT_HOST.match(host) or _ip_address(host) is not None):
+        return None
+    if parts.scheme == "https" or (parts.scheme == "http" and _loopback(host)):
+        return url
+    return None
+
+
+class LlmConfig(_Model):
+    """Language model used for classification and repairs.
+
+    ``provider``: ``anthropic`` (the Claude API, ``ANTHROPIC_API_KEY``), ``bedrock`` (Claude on
+    Amazon Bedrock in your AWS account, see docs/bedrock.md) or ``fake`` (offline answers for
+    tests and the demo); ``$HEALER_LLM_PROVIDER`` overrides it at run time. ``model`` is a
+    Claude API model ID for ``anthropic`` and a Bedrock model ID, inference profile ID or ARN for
+    ``bedrock`` (such as ``eu.anthropic.claude-opus-5-5``); the default is a Claude API ID, which
+    the bedrock provider refuses. ``fallbacks`` turns on the Claude API's server-side refusal
+    fallbacks; Amazon Bedrock has none, so the bedrock provider never sends them and warns only
+    when the file sets ``fallbacks: true`` itself (``"fallbacks" in model_fields_set``: an
+    unset ``${VAR}`` or an empty value does not count).
+
+    ``aws_region``, ``aws_profile`` and ``endpoint_url`` are read by the bedrock provider only
+    (the others ignore them, since ``$HEALER_LLM_PROVIDER`` may pick another provider than the
+    file): the region (an AWS Region code; default: ``AWS_REGION``, ``AWS_DEFAULT_REGION``, then
+    the profile's region), a profile of the shared AWS config files (local development) and an
+    endpoint in front of bedrock-runtime (a VPC endpoint or a gateway: https, or http on a
+    loopback host). The AWS credentials always come from the default AWS chain (an instance or
+    container role, the environment, the profile), never from this file. Dumps leave the three
+    out while they are unset, so an existing ``healer.yaml`` dumps exactly as before.
+    """
+
+    provider: LlmProvider = "anthropic"
     model: str = "claude-opus-5-5"
     effort: str = "high"
     max_tokens: int = Field(default=16000, ge=1)
-    #: Opt into server-side refusal fallbacks (``fallbacks: "default"`` beta).
+    #: Opt into server-side refusal fallbacks (``fallbacks: "default"`` beta; the Claude API only).
     fallbacks: bool = True
+    aws_region: str | None = None
+    aws_profile: str | None = None
+    endpoint_url: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _leave_out_unset_bedrock_settings(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Dump as usual, without the Bedrock settings that are unset (an older dump stays the same)."""
+        data = handler(self)
+        if isinstance(data, dict):
+            for name in _BEDROCK_SETTINGS:
+                if name in data and _holds_default(self, name):
+                    del data[name]
+        return data
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _model_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("model")
+    @classmethod
+    def _model_id(cls, value: str) -> str:
+        """No model ID holds whitespace or a control character (it reaches logs and messages)."""
+        if _has_space_or_control(value):
+            raise ValueError(_MODEL_PROBLEM)
+        return value
+
+    @field_validator("aws_region", "aws_profile", "endpoint_url", mode="before")
+    @classmethod
+    def _optional_text(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
+    @field_validator("aws_region")
+    @classmethod
+    def _region_format(cls, value: str | None) -> str | None:
+        if value is not None and not AWS_REGION_CODE.match(value):
+            raise ValueError("expected an AWS region such as eu-west-1")
+        return value
+
+    @field_validator("aws_profile")
+    @classmethod
+    def _profile_name(cls, value: str | None) -> str | None:
+        if value is not None and _has_space_or_control(value):
+            raise ValueError("expected the name of a profile of the shared AWS config files")
+        return value
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def _endpoint(cls, value: str | None) -> str | None:
+        """An https URL with a host, without the trailing slash (:func:`valid_endpoint_url`)."""
+        if value is None:
+            return None
+        url = valid_endpoint_url(value)
+        if url is None:
+            raise ValueError(_ENDPOINT_URL_PROBLEM)
+        return url
 
 
 class LimitsConfig(_Model):
@@ -1402,8 +1544,10 @@ def _yaml_str(value: str | Path | None) -> str:
 
 
 # The templates are str.format strings: literal braces are doubled. The Airflow template is the
-# phase-5 one plus the commented ``orchestrator:`` block, ``repo.sandbox`` and ``github.skip_ci``;
-# both share the sections between ``classification:`` and ``masking:``.
+# phase-5 one plus the commented ``orchestrator:`` block, ``repo.sandbox``, ``github.skip_ci``
+# and the Amazon Bedrock lines of ``llm:`` (``llm.model`` reads ``$HEALER_LLM_MODEL``, the
+# commented settings change nothing); both share the sections between ``classification:`` and
+# ``masking:``.
 _AIRFLOW_HEAD = """\
 # dag-healer configuration (healer.yaml), generated by `dag-healer init`.
 # Review it and commit it next to your DAGs.
@@ -1500,11 +1644,20 @@ github:
   skip_ci: true
 
 llm:
-  provider: "${{HEALER_LLM_PROVIDER:-anthropic}}"   # anthropic | fake (offline tests)
-  model: claude-opus-5-5
+  provider: "${{HEALER_LLM_PROVIDER:-anthropic}}"   # anthropic | bedrock | fake (offline tests)
+  model: "${{HEALER_LLM_MODEL:-claude-opus-5-5}}"   # bedrock: a Bedrock model or inference profile ID
   effort: high
   max_tokens: 16000
   fallbacks: true                # server-side refusal fallbacks (Claude API only)
+  # Claude on Amazon Bedrock (provider: bedrock; docs/bedrock.md): AWS credentials come from the
+  # default AWS chain (instance role, environment, AWS profile), never from this file. model is
+  # then a Bedrock model ID or inference profile ID such as eu.anthropic.claude-opus-5-5 (its
+  # prefix decides the Regions where inference runs): the Bedrock console lists them under
+  # "Cross-Region inference" and on each model card of the Model catalog. Bedrock has no
+  # server-side fallbacks: set fallbacks: false with it (true logs a warning).
+  # aws_region: eu-west-1        # default: AWS_REGION, AWS_DEFAULT_REGION, then the profile's region
+  # aws_profile: null            # a profile of the shared AWS config files (local development)
+  # endpoint_url: null           # a VPC endpoint (PrivateLink) or a gateway in front of bedrock-runtime
 
 limits:
   max_fix_attempts: 3
@@ -1702,6 +1855,7 @@ def default_config_yaml(
 
 
 __all__ = [
+    "AWS_REGION_CODE",
     "INSTANCE_PATTERN",
     "MODE_KINDS",
     "MONITOR_MODES",
@@ -1733,4 +1887,5 @@ __all__ = [
     "interpolate_env",
     "load_config",
     "load_config_file",
+    "valid_endpoint_url",
 ]
