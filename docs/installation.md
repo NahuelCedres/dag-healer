@@ -19,7 +19,8 @@ You need:
 - Airflow 3.1 or later, on Python 3.10 or later;
 - the DAGs in a git repository, with their DAG folder (`dags/` by default);
 - for the worker: a host with Python 3.10 or later, git, and Docker or Podman; a PostgreSQL
-  database for the store; an Anthropic API key; and an Airflow account of its own;
+  database for the store; an Anthropic API key, or access to Claude on Amazon Bedrock; and an
+  Airflow account of its own;
 - optionally, a GitHub token for pull requests (without one, fixes are written as `PR.md` and
   `fix.patch` files) and an SMTP server for the alerts.
 
@@ -239,6 +240,11 @@ the key as `ANTHROPIC_API_KEY` in the worker's environment, never in `healer.yam
 Airflow's processes. `limits` caps the fix attempts and the tokens of an incident, the size of a
 fix and the number of incidents triaged per hour.
 
+To use Claude on Amazon Bedrock in your own AWS account instead, with the AWS credentials of the
+worker's host (for example an EC2 instance role) and no API key, set the provider to `bedrock` and
+`model` to a Bedrock model or inference profile ID, such as `eu.anthropic.claude-opus-5-5`.
+[docs/bedrock.md](bedrock.md) covers model access, the IAM policy and the region.
+
 ## 4. Run the worker
 
 Run the worker on a host or VM of its own, as a dedicated user, and never inside the Airflow
@@ -330,7 +336,7 @@ processes, not to the worker.
 | `contracts` | The approved, draft, stale and invalid contracts of `contracts.dir` | A warning for a missing or empty folder (run `dag-healer init`), while no contract is approved (nothing is enforced), for stale contracts (edited after their approval) and for invalid files (ignored): approve the contracts (step 6), approve the stale ones again, or fix the files |
 | `store` | The store answers a query | Check `HEALER_DATABASE_URL`, the database driver and the network. The SQLite note means that the store works for one process on one machine only |
 | `ui bundle` | The bundle of the views is in the installed package | Install dag-healer from a checkout that holds `src/dag_healer/api/static/main.umd.cjs`, or build it with `python scripts/tasks.py ui` |
-| `llm` | `ANTHROPIC_API_KEY` is set (no request is sent) | Set it in the worker's environment |
+| `llm` | With `anthropic`, `ANTHROPIC_API_KEY` is set. With `bedrock`, the model and the region are valid and AWS credentials resolve. No request is sent and no value is shown | Set what the line names in the worker's environment; for Amazon Bedrock, see [docs/bedrock.md](bedrock.md) |
 | `sandbox` | The engine answers and holds the image, and a probe container runs as a non-root user, without network, with pytest | The line says what to fix: no image is set, the `docker` or `podman` CLI is missing, the engine cannot be reached (start it, or give the worker access to it: `DOCKER_HOST` or `CONTAINER_HOST`, the socket and its group), the image is missing (build it on that engine) or runs as root, or the probe found a network or no pytest. A warning means `backend: process`, which isolates nothing |
 | `orchestrator` | The orchestrator adapter loads and supports `monitor.modes` and `monitor.trigger` | Fix the setting that the line names |
 | `airflow api` | `GET <airflow.api_url>/api/v2/monitor/health` answers within 3 seconds | Check `HEALER_API_URL` and the network. A warning means that an Airflow component is not healthy |
