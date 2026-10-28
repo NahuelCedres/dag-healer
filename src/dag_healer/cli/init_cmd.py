@@ -6,7 +6,9 @@ What it does, in order:
 2. scans the repository statically with the code locator of the configured orchestrator
    (``adapter.code.scan``; for Airflow :func:`dag_healer.repo.dagscan.scan_dags` of the DAG
    folder, ``--dags-dir`` included; user code is never imported) and detects the test layout
-   (:func:`dag_healer.repo.profile.detect_test_layout`);
+   (:func:`dag_healer.repo.profile.detect_test_layout`). Without a ``healer.yaml`` the
+   configuration is the template that step 4 writes: ``--orchestrator`` picks it, Airflow's by
+   default, or the AWS Step Functions one (whose region, instance and pipelines are examples);
 3. for every DAG with resolvable datasets, loads them (from ``--samples DIR`` when given,
    matched by relative path or file name) and infers a **draft** contract written to
    ``<contracts dir>/<dag_id>.yaml``. Approved contracts are never touched; existing drafts
@@ -18,6 +20,11 @@ What it does, in order:
 6. (the command only: :func:`run_init` never opens the store) creates the incident store, or
    migrates one written by an older dag-healer (:func:`prepare_store`). A store that cannot be
    prepared is only reported: the worker creates or migrates it when it starts.
+
+The report names pipelines and steps with the words of the orchestrator's adapter (DAGs and
+tasks for Airflow, state machines and states for Step Functions). Its closing note gives the
+``contracts approve`` command of a draft, ready to run from the current directory
+(:func:`approve_command`): only the approver's name is left to fill in.
 """
 
 from __future__ import annotations
@@ -33,22 +40,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dag_healer.cli._output import add_config_option, config_arg, error, mask_url, render_table
+from dag_healer.cli._output import (
+    add_config_option,
+    config_arg,
+    error,
+    mask_url,
+    render_table,
+    shell_command,
+)
 from dag_healer.cli.main import register_command
+from dag_healer.core.vocab import Vocabulary
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from dag_healer.config import HealerConfig
     from dag_healer.contracts.schema import DatasetContract, DatasetLocator
+    from dag_healer.core.ports import OrchestratorAdapter
     from dag_healer.repo.dagscan import DagInfo, DatasetRef
     from dag_healer.repo.profile import TestLayout
 
 log = logging.getLogger(__name__)
 
-FINAL_NOTE = (
-    "Contracts are drafts: nothing is enforced until a human approves them "
-    "(dag-healer contracts approve <dag_id>)"
-)
+FINAL_NOTE = "Draft contracts are not enforced until a human approves them."
+#: Introduces the approve command of :func:`approve_command`.
+APPROVE_NOTE = "Review each draft, then approve it under your own name:"
+#: Stands for the approver in that command (``--by`` is required: the approver is a person).
+APPROVER = "NAME"
 NO_TESTS_NOTE = "no test suite found; dag-healer will create tests/ when it proposes the first fix"
+#: Notes the Step Functions template that init just wrote (its AWS values are examples).
+SFN_TEMPLATE_NOTE = (
+    "{config} was written from the AWS Step Functions template: replace the example region, "
+    "instance and pipelines of its orchestrator section with yours, then run dag-healer init "
+    "again to draft the contracts of your state machines"
+)
+
+#: The ``healer.yaml`` templates ``--orchestrator`` picks (``dag_healer.config.TEMPLATE_ORCHESTRATORS``,
+#: which a test keeps equal), spelled out here so that ``--help`` imports no pydantic.
+ORCHESTRATORS = ("airflow", "stepfunctions")
+#: The default ``--dags-dir`` of each template: the DAG folder, or the folder of the state
+#: machine definitions (``sam init``'s layout and the example repository's).
+DEFAULT_DAGS_DIRS = {"airflow": "dags", "stepfunctions": "statemachine"}
 
 WRITTEN = "written"
 OVERWRITTEN = "overwritten (--force)"
@@ -57,6 +89,8 @@ KEPT_DRAFT = "kept (draft exists; --force overwrites it)"
 KEPT_INVALID = "kept (existing file is invalid)"
 NO_DATASETS = "skipped (no datasets found)"
 NO_READABLE = "skipped (no readable datasets)"
+#: The outcomes that leave a draft contract (the ones :func:`approve_command` may name).
+DRAFT_OUTCOMES = (WRITTEN, OVERWRITTEN, KEPT_DRAFT)
 
 _NAME_CLEAN = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -104,6 +138,10 @@ class InitResult:
     python_files: int
     warnings: list[str] = field(default_factory=list)
     store: str | None = None  # set by the command (prepare_store), never by run_init
+    vocabulary: Vocabulary = field(default_factory=Vocabulary)  # the adapter's words (Airflow's)
+    # Set by the command: the next commands need ``-c config_path`` (the current directory and
+    # the environment lead them to another healer.yaml, or to none).
+    config_option: bool = False
 
     @property
     def ok(self) -> bool:
@@ -192,16 +230,14 @@ def _relative_repo_path(repo_root: Path, base: Path) -> str:
 # --------------------------------------------------------------------------- scan
 
 
-def scan_repository(cfg: HealerConfig | None, repo_root: Path, dags_dir: str) -> list[DagInfo]:
-    """Every pipeline of ``repo_root``, found by the configured orchestrator's code locator.
+@contextlib.contextmanager
+def _scan_adapter(cfg: HealerConfig | None, repo_root: Path, dags_dir: str) -> Iterator[OrchestratorAdapter]:
+    """The configured orchestrator's adapter, built for one scan (no I/O) and closed afterwards.
 
-    The adapter is built for this scan only (no I/O) from ``cfg`` (the defaults without one)
-    with ``repo.path = repo_root`` and ``repo.dags_dir = dags_dir``, and closed afterwards. For
-    Airflow this is exactly ``scan_dags(repo_root, dags_dir)``. Raises :class:`InitError` when
-    the adapter cannot be loaded or built, or the scan fails.
+    It is built from ``cfg`` (the defaults without one) with ``repo.path = repo_root`` and
+    ``repo.dags_dir = dags_dir``. Raises :class:`InitError` when it cannot be loaded or built.
     """
     from dag_healer.config import HealerConfig
-    from dag_healer.core.errors import OrchestratorError
     from dag_healer.orchestrators import registry
 
     base = cfg if cfg is not None else HealerConfig()
@@ -220,12 +256,38 @@ def scan_repository(cfg: HealerConfig | None, repo_root: Path, dags_dir: str) ->
         reason = mask_text(f"{type(exc).__name__}: {exc}")[:500]
         raise InitError(f"the orchestrator adapter cannot be built: {reason}") from None
     try:
-        return list(adapter.code.scan(repo_root))
-    except OrchestratorError as exc:
-        raise InitError(f"{adapter.display_name} could not scan {repo_root}: {exc}") from None
+        yield adapter
     finally:
         with contextlib.suppress(Exception):  # closing is best effort
             adapter.close()
+
+
+def _scan(adapter: OrchestratorAdapter, repo_root: Path) -> list[DagInfo]:
+    """Every pipeline the adapter's code locator finds in ``repo_root`` (InitError on failure)."""
+    from dag_healer.core.errors import OrchestratorError
+
+    try:
+        return list(adapter.code.scan(repo_root))
+    except OrchestratorError as exc:
+        raise InitError(f"{adapter.display_name} could not scan {repo_root}: {exc}") from None
+
+
+def scan_repository(cfg: HealerConfig | None, repo_root: Path, dags_dir: str) -> list[DagInfo]:
+    """Every pipeline of ``repo_root``, found by the configured orchestrator's code locator.
+
+    The adapter is built for this scan only (no I/O) from ``cfg`` (the defaults without one)
+    with ``repo.path = repo_root`` and ``repo.dags_dir = dags_dir``, and closed afterwards. For
+    Airflow this is exactly ``scan_dags(repo_root, dags_dir)``. Raises :class:`InitError` when
+    the adapter cannot be loaded or built, or the scan fails.
+    """
+    with _scan_adapter(cfg, repo_root, dags_dir) as adapter:
+        return _scan(adapter, repo_root)
+
+
+def _vocabulary(adapter: OrchestratorAdapter) -> Vocabulary:
+    """The adapter's words (Airflow's when it has none)."""
+    words = getattr(adapter, "vocabulary", None)
+    return words if isinstance(words, Vocabulary) else Vocabulary()
 
 
 # --------------------------------------------------------------------------- datasets
@@ -365,8 +427,12 @@ def _process_dag(
     samples_dir: Path | None,
     pii_columns: list[str],
     force: bool,
+    step: str = "task",
 ) -> tuple[DagReport, dict[str, DatasetLocator]]:
-    """Profile one DAG and write its draft contract; returns the report and task locators."""
+    """Profile one DAG and write its draft contract; returns the report and task locators.
+
+    ``step`` is the adapter's word for a task (``state`` for Step Functions).
+    """
     from dag_healer.contracts.infer import infer_contract
     from dag_healer.contracts.io import contract_path, save_contract
 
@@ -381,7 +447,7 @@ def _process_dag(
     for ref in unresolved:
         report.problems.append(
             f"unresolved dataset {ref.path} ({ref.source}); add a locator under "
-            f"datasets.{dag.dag_id}.<task_id> in healer.yaml"
+            f"datasets.{dag.dag_id}.<{step.replace(' ', '_')}_id> in healer.yaml"
         )
     task_locators: dict[str, DatasetLocator] = {}
     for candidate in candidates:
@@ -430,15 +496,16 @@ def _write_text_atomic(target: Path, text: str) -> None:
         raise
 
 
-def write_config(
+def _render_config(
     target: Path,
     *,
     repo_root: Path,
     dags_dir: str,
     tests_dir: str | None,
-    datasets: dict[str, dict[str, DatasetLocator]],
-) -> None:
-    """Render ``healer.yaml`` from the template, validate it and write it to ``target``."""
+    datasets: dict[str, dict[str, DatasetLocator]] | None,
+    orchestrator: str,
+) -> tuple[str, HealerConfig]:
+    """The ``healer.yaml`` template of ``orchestrator`` for ``target``, and its validated settings."""
     import yaml
 
     from dag_healer.config import ConfigError, config_from_mapping, default_config_yaml
@@ -448,12 +515,50 @@ def write_config(
         dags_dir=dags_dir,
         tests_dir=tests_dir,
         datasets=datasets,
+        orchestrator=orchestrator,
     )
     try:
-        config_from_mapping(yaml.safe_load(text) or {}, base_dir=target.parent, source_path=target)
-    except ConfigError as exc:  # a bug in the template, never the user's fault
+        cfg = config_from_mapping(yaml.safe_load(text) or {}, base_dir=target.parent)
+    except ConfigError as exc:  # a bug in the template, or a value of its ${ENV} references
         raise InitError(f"generated healer.yaml is invalid: {exc}") from None
+    return text, cfg
+
+
+def write_config(
+    target: Path,
+    *,
+    repo_root: Path,
+    dags_dir: str,
+    tests_dir: str | None,
+    datasets: dict[str, dict[str, DatasetLocator]],
+    orchestrator: str = "airflow",
+) -> None:
+    """Render ``healer.yaml`` from the template of ``orchestrator``, validate it and write it to
+    ``target``."""
+    text, _cfg = _render_config(
+        target,
+        repo_root=repo_root,
+        dags_dir=dags_dir,
+        tests_dir=tests_dir,
+        datasets=datasets,
+        orchestrator=orchestrator,
+    )
     _write_text_atomic(target, text)
+
+
+def _check_orchestrator(cfg: HealerConfig, path: Path, orchestrator: str | None) -> None:
+    """Refuse ``--orchestrator`` when the existing ``healer.yaml`` names another orchestrator."""
+    if orchestrator is None:
+        return
+    from dag_healer.orchestrators import registry
+
+    configured = registry.orchestrator_settings(cfg).type
+    if configured in (orchestrator, registry.BUILTIN_TYPES.get(orchestrator)):
+        return
+    raise InitError(
+        f"{path} names the orchestrator {configured!r}: --orchestrator {orchestrator} only picks "
+        "the template of a new healer.yaml, and init never changes an existing one"
+    )
 
 
 # --------------------------------------------------------------------------- driver
@@ -473,31 +578,52 @@ def run_init(
     samples: str | Path | None = None,
     force: bool = False,
     dags_dir: str | None = None,
+    orchestrator: str | None = None,
 ) -> InitResult:
     """Run ``dag-healer init`` and return what it did (it prints nothing).
 
-    Raises :class:`InitError` when the repository, DAG folder, samples folder, an existing
-    ``healer.yaml`` or the configured orchestrator adapter is unusable.
+    ``orchestrator`` (:data:`ORCHESTRATORS`) picks the template of a new ``healer.yaml``
+    (Airflow's when ``None``); with an existing file it must name that file's orchestrator.
+    Without a ``healer.yaml``, the repository is scanned with the settings of the template
+    that is then written. Raises :class:`InitError` when the repository, DAG folder, samples
+    folder, an existing ``healer.yaml``, the template or the orchestrator adapter is unusable.
     """
     from dag_healer.repo.profile import detect_test_layout, snapshot_hashes
 
     warnings: list[str] = []
     target_config, origin = _target_config_path(repo, config_path)
     cfg = _load_existing_config(target_config)
+    if cfg is not None:
+        _check_orchestrator(cfg, target_config, orchestrator)
+    template = orchestrator or "airflow"
     repo_root = _resolve_repo_root(repo, cfg, target_config, origin, warnings)
-    dags_folder = _clean_dir(dags_dir or (cfg.repo.dags_dir if cfg is not None else "dags"))
-    if not (repo_root / dags_folder).is_dir():
-        raise InitError(f"DAG folder not found: {repo_root / dags_folder} (use --dags-dir)")
+    default_dags = cfg.repo.dags_dir if cfg is not None else DEFAULT_DAGS_DIRS.get(template, "dags")
+    dags_folder = _clean_dir(dags_dir or default_dags)
+    if cfg is None:  # the settings of the template that is written below
+        _text, settings = _render_config(
+            target_config,
+            repo_root=repo_root,
+            dags_dir=dags_folder,
+            tests_dir=None,
+            datasets=None,
+            orchestrator=template,
+        )
+    else:
+        settings = cfg
     samples_dir = Path(samples).expanduser().resolve() if samples else None
-    if samples_dir is not None and not samples_dir.is_dir():
-        raise InitError(f"--samples folder not found: {samples_dir}")
 
-    before = snapshot_hashes(repo_root, ("**/*.py",))
-    dags = scan_repository(cfg, repo_root, dags_folder)
+    with _scan_adapter(settings, repo_root, dags_folder) as adapter:
+        words = _vocabulary(adapter)
+        if not (repo_root / dags_folder).is_dir():
+            raise InitError(f"{words.pipeline} folder not found: {repo_root / dags_folder} (use --dags-dir)")
+        if samples_dir is not None and not samples_dir.is_dir():
+            raise InitError(f"--samples folder not found: {samples_dir}")
+        before = snapshot_hashes(repo_root, ("**/*.py",))
+        dags = _scan(adapter, repo_root)
     layout = detect_test_layout(repo_root)
-    contracts_dir = _contracts_dir(cfg, repo_root)
-    configured = cfg.datasets if cfg is not None else {}
-    pii_columns = list(cfg.masking.columns) if cfg is not None else []
+    contracts_dir = _contracts_dir(settings, repo_root)
+    configured = settings.datasets
+    pii_columns = list(settings.masking.columns)
 
     reports: list[DagReport] = []
     yaml_datasets: dict[str, dict[str, DatasetLocator]] = {}
@@ -510,12 +636,13 @@ def run_init(
             samples_dir=samples_dir,
             pii_columns=pii_columns,
             force=force,
+            step=words.step,
         )
         reports.append(report)
         if task_locators:
             yaml_datasets[dag.dag_id] = task_locators
     if not dags:
-        warnings.append(f"no DAGs found under {repo_root / dags_folder}")
+        warnings.append(f"no {words.pipelines} found under {repo_root / dags_folder}")
 
     config_written = False
     if not target_config.exists():
@@ -525,8 +652,11 @@ def run_init(
             dags_dir=dags_folder,
             tests_dir=layout.tests_dir,
             datasets=yaml_datasets,
+            orchestrator=template,
         )
         config_written = True
+        if template == "stepfunctions":
+            warnings.append(SFN_TEMPLATE_NOTE.format(config=target_config.name))
 
     after = snapshot_hashes(repo_root, ("**/*.py",))
     return InitResult(
@@ -540,6 +670,7 @@ def run_init(
         changed_files=_diff_snapshots(before, after),
         python_files=len(after),
         warnings=warnings,
+        vocabulary=words,
     )
 
 
@@ -605,10 +736,33 @@ def _tests_line(layout: TestLayout, repo_root: Path) -> str:
     return f"{layout.tests_dir}/ ({', '.join(details)}) in {repo_root}"
 
 
+def _header(word: str) -> str:
+    """A table header made of the adapter's word (``state machine`` -> ``STATE_MACHINE``)."""
+    return word.upper().replace(" ", "_")
+
+
+def approve_command(result: InitResult) -> str | None:
+    """The ``contracts approve`` command of the first draft, quoted for this platform's shell.
+
+    ``-c <healer.yaml>`` comes first when :attr:`InitResult.config_option` is set; the approver
+    is :data:`APPROVER`, the one value left to fill in. ``None`` when no contract is a draft.
+    """
+    drafts = sorted(report.dag_id for report in result.dags if report.contract in DRAFT_OUTCOMES)
+    if not drafts:
+        return None
+    command = ["dag-healer"]
+    if result.config_option:
+        command += ["-c", str(result.config_path)]
+    command += ["contracts", "approve", drafts[0], "--by", APPROVER]
+    return shell_command(command)
+
+
 def format_report(result: InitResult) -> str:
     """Render the human-readable summary printed by ``dag-healer init``."""
+    words = result.vocabulary
     lines = [
-        f"Scanned {result.repo_root} (DAG folder: {result.dags_dir}): {len(result.dags)} DAG(s) found",
+        f"Scanned {result.repo_root} ({words.pipeline} folder: {result.dags_dir}): "
+        f"{len(result.dags)} {words.pipeline}(s) found",
         "",
     ]
     if result.dags:
@@ -616,7 +770,8 @@ def format_report(result: InitResult) -> str:
             (r.dag_id, r.file, r.tasks, _datasets_cell(r), r.contract)
             for r in sorted(result.dags, key=lambda item: item.dag_id)
         ]
-        lines += [render_table(("DAG_ID", "FILE", "TASKS", "DATASETS", "CONTRACT"), rows), ""]
+        headers = (f"{_header(words.pipeline)}_ID", "FILE", _header(words.steps), "DATASETS", "CONTRACT")
+        lines += [render_table(headers, rows), ""]
     problems = [(r.dag_id, p) for r in result.dags for p in r.problems]
     if problems or result.warnings:
         lines.append("Notes:")
@@ -633,7 +788,9 @@ def format_report(result: InitResult) -> str:
         lines.append(f"Store:         {result.store}")
     if result.ok:
         lines.append(f"Code files:    unchanged ({result.python_files} Python files verified)")
-    lines += ["", FINAL_NOTE]
+    command = approve_command(result)
+    if command is not None:
+        lines += ["", f"{FINAL_NOTE} {APPROVE_NOTE}", f"  {command}"]
     return "\n".join(lines)
 
 
@@ -656,9 +813,35 @@ def _configure(parser: argparse.ArgumentParser) -> None:
         "(matched by relative path, then file name).",
     )
     parser.add_argument(
-        "--dags-dir", metavar="DIR", default=None, help="DAG folder relative to the repo (default: dags)."
+        "--dags-dir",
+        metavar="DIR",
+        default=None,
+        help="DAG folder (Step Functions: the folder of the state machine definitions), relative to "
+        "the repo (default: repo.dags_dir of an existing healer.yaml, else dags; statemachine with "
+        "--orchestrator stepfunctions).",
+    )
+    parser.add_argument(
+        "--orchestrator",
+        choices=ORCHESTRATORS,
+        default=None,
+        help="Template of a new healer.yaml: airflow (the default) or stepfunctions (AWS Step "
+        "Functions, with example values to replace). An existing healer.yaml is never changed.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing DRAFT contracts.")
+
+
+def _needs_config_option(result: InitResult, explicit: bool) -> bool:
+    """True when ``dag-healer`` run from here, without ``-c``, would not read ``result.config_path``.
+
+    ``explicit``: the command line named the file, which ``main()`` exported as ``HEALER_CONFIG``
+    for this process only, so the next commands need ``-c`` too.
+    """
+    if explicit:
+        return True
+    from dag_healer.config import find_config_file
+
+    found = find_config_file()
+    return found is None or found.resolve() != result.config_path
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -669,12 +852,14 @@ def _run(args: argparse.Namespace) -> int:
             samples=args.samples,
             force=args.force,
             dags_dir=args.dags_dir,
+            orchestrator=args.orchestrator,
         )
     except InitError as exc:
         error(str(exc))
         return 1
     if result.ok:
         result.store = prepare_store(result.config_path)
+    result.config_option = _needs_config_option(result, config_arg(args) is not None)
     print(format_report(result))
     if not result.ok:
         error("dag-healer init changed repository code files. This must never happen; please report it:")
@@ -692,12 +877,18 @@ register_command(
 )
 
 __all__ = [
+    "APPROVER",
+    "APPROVE_NOTE",
+    "DEFAULT_DAGS_DIRS",
     "FINAL_NOTE",
     "NO_TESTS_NOTE",
+    "ORCHESTRATORS",
+    "SFN_TEMPLATE_NOTE",
     "DagReport",
     "DatasetCandidate",
     "InitError",
     "InitResult",
+    "approve_command",
     "dataset_candidates",
     "format_report",
     "prepare_store",

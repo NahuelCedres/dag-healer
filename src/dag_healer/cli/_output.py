@@ -6,6 +6,9 @@ Only the standard library is imported at module level so ``dag-healer --help`` s
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+import subprocess
 import sys
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, TextIO
@@ -39,6 +42,13 @@ def _cell(value: Any) -> str:
 
 def _join(values: Sequence[str], widths: Sequence[int]) -> str:
     return "  ".join(value.ljust(width) for value, width in zip(values, widths, strict=False)).rstrip()
+
+
+def shell_command(args: Sequence[str]) -> str:
+    """Render a command line the way the current platform's shell quotes it (to copy and run)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(list(args))
+    return shlex.join(args)
 
 
 def error(message: str, *, stream: TextIO | None = None) -> None:
@@ -103,5 +113,6 @@ __all__ = [
     "load_cli_config",
     "mask_url",
     "render_table",
+    "shell_command",
     "warn",
 ]

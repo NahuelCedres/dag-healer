@@ -7,6 +7,8 @@ approved, the day-2 sales file violates its contract (DATA), the day-2 customers
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
 import sys
 from collections.abc import Iterator
@@ -16,6 +18,7 @@ from typing import Any
 import pytest
 
 from dag_healer.cli import init_cmd
+from dag_healer.cli._output import shell_command
 from dag_healer.cli.main import main
 from dag_healer.config import load_config
 from dag_healer.contracts.io import compute_source_hash, contract_path, is_stale, load_contract
@@ -326,8 +329,9 @@ def test_init_scans_with_the_orchestrator_code_locator(
         registry.reset_adapters()
     root = demo_repo.resolve()
     assert sys.modules["init_spy_adapter"].CALLS == [("create", root, "src"), ("scan", root), ("close",)]
-    assert "(DAG folder: src): 1 DAG(s) found" in out
-    assert "spy_flow" in out and "flows/spy.py" in out
+    assert "(flow folder: src): 1 flow(s) found" in out  # the adapter's words (Fakeflow's)
+    assert out.splitlines()[2].split() == ["FLOW_ID", "FILE", "STEPS", "DATASETS", "CONTRACT"]
+    assert "spy_flow" in out and "flows/spy.py" in out and "DAG" not in out
 
 
 def test_init_dags_dir_selects_the_scanned_folder(
@@ -494,6 +498,169 @@ def test_run_init_never_opens_the_store(demo_repo: Path, isolated: Path) -> None
     assert result.ok and result.store is None
     assert "Store:" not in init_cmd.format_report(result)
     assert list(isolated.iterdir()) == []
+
+
+# --------------------------------------------------------------------------- the closing note
+
+
+def _closing_command(out: str) -> str:
+    """The command printed under the closing note of ``init``."""
+    lines = out.splitlines()
+    return lines[lines.index(f"{init_cmd.FINAL_NOTE} {init_cmd.APPROVE_NOTE}") + 1].strip()
+
+
+def _approve_args(dag_id: str, config: Path | None = None) -> list[str]:
+    options = ["-c", str(config)] if config is not None else []
+    return ["dag-healer", *options, "contracts", "approve", dag_id, "--by", init_cmd.APPROVER]
+
+
+def test_init_ends_with_an_approve_command_that_runs_as_printed(
+    demo_repo: Path, isolated: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(demo_repo)
+    assert main(["init"]) == 0
+    args = _approve_args("customers_sync")  # the first draft, as the table sorts them
+    assert _closing_command(capsys.readouterr().out) == shell_command(args)
+    assert main(args[1:]) == 0  # --by is given: the copied command no longer exits with code 2
+    assert _contract(demo_repo, "customers_sync").approved_by == init_cmd.APPROVER
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_the_approve_command_names_the_configuration_that_is_not_found_from_here(
+    demo_repo: Path,
+    isolated: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    explicit: bool,
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    config = (demo_repo / "healer.yaml").resolve()
+    option = ["-c", str(config)] if explicit else []
+    assert main(["init", "--repo", str(demo_repo), *option]) == 0
+    monkeypatch.delenv("HEALER_CONFIG", raising=False)  # what main() exported for -c, in this process only
+    args = _approve_args("customers_sync", config)
+    command = _closing_command(capsys.readouterr().out)
+    assert command == shell_command(args)
+    if os.name != "nt":
+        assert shlex.split(command) == args  # the space in "legacy repo" is quoted
+    assert main(["contracts", "approve", "customers_sync", "--by", "x"]) == 1  # not found without -c
+    capsys.readouterr()
+    assert main(args[1:]) == 0
+    assert _contract(demo_repo, "customers_sync").is_approved
+
+
+def test_init_prints_no_approve_command_without_drafts(
+    demo_repo: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init(demo_repo, capsys)
+    for dag_id in DAG_IDS:
+        _approve(demo_repo, dag_id)
+    capsys.readouterr()
+    out = _init(demo_repo, capsys)
+    assert init_cmd.FINAL_NOTE not in out and "contracts approve" not in out
+
+
+def test_the_approve_command_names_a_kept_draft(demo_repo: Path, isolated: Path) -> None:
+    result = init_cmd.run_init(demo_repo)
+    outcomes = {"customers_sync": init_cmd.KEPT_APPROVED, "inventory_report": init_cmd.KEPT_DRAFT}
+    for report in result.dags:
+        report.contract = outcomes.get(report.dag_id, init_cmd.NO_DATASETS)
+    assert init_cmd.approve_command(result) == shell_command(_approve_args("inventory_report"))
+
+
+@pytest.mark.parametrize(
+    ("os_name", "expected"),
+    [
+        ("posix", "dag-healer -c '/srv/legacy repo/healer.yaml' contracts approve sales --by NAME"),
+        ("nt", 'dag-healer -c "/srv/legacy repo/healer.yaml" contracts approve sales --by NAME'),
+    ],
+)
+def test_shell_command_quotes_for_the_platform(
+    monkeypatch: pytest.MonkeyPatch, os_name: str, expected: str
+) -> None:
+    monkeypatch.setattr(os, "name", os_name)
+    args = [
+        "dag-healer",
+        "-c",
+        "/srv/legacy repo/healer.yaml",
+        "contracts",
+        "approve",
+        "sales",
+        "--by",
+        "NAME",
+    ]
+    assert shell_command(args) == expected
+
+
+# --------------------------------------------------------------------------- --orchestrator
+
+SFN_EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "stepfunctions_repo"
+
+
+@pytest.fixture
+def sfn_repo(tmp_path: Path) -> Path:
+    """A copy of the Step Functions example repository, without its healer.yaml and contracts."""
+    target = tmp_path / "sfn repo"
+    shutil.copytree(
+        SFN_EXAMPLE, target, ignore=shutil.ignore_patterns("__pycache__", "healer.yaml", "healer")
+    )
+    return target
+
+
+def test_init_writes_the_step_functions_template_in_its_words(
+    sfn_repo: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dag_healer.config import default_config_yaml
+
+    out = _init(sfn_repo, capsys, "--orchestrator", "stepfunctions")
+    text = (sfn_repo / "healer.yaml").read_text(encoding="utf-8")
+    assert text.startswith(
+        "# dag-healer configuration (healer.yaml) for AWS Step Functions, generated by `dag-healer init`.\n"
+    )
+    assert text == default_config_yaml(dags_dir="statemachine", orchestrator="stepfunctions")
+    cfg = load_config(sfn_repo / "healer.yaml")
+    assert (cfg.orchestrator.type, cfg.repo.dags_dir) == ("stepfunctions", "statemachine")
+    assert "(state machine folder: statemachine): 1 state machine(s) found" in out
+    assert out.splitlines()[2].split() == ["STATE_MACHINE_ID", "FILE", "STATES", "DATASETS", "CONTRACT"]
+    assert init_cmd.SFN_TEMPLATE_NOTE.format(config="healer.yaml") in out
+    assert "DAG" not in out
+
+    capsys.readouterr()
+    out = _init(sfn_repo, capsys)  # the file now names the orchestrator: no option needed
+    assert "kept existing file (not modified)" in out and "1 state machine(s) found" in out
+    assert "Step Functions template" not in out
+
+
+def test_init_refuses_an_orchestrator_the_existing_file_does_not_name(
+    demo_repo: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init(demo_repo, capsys)  # an Airflow healer.yaml
+    assert main(["init", "--repo", str(demo_repo), "--orchestrator", "stepfunctions"]) == 1
+    err = capsys.readouterr().err
+    assert "names the orchestrator 'airflow'" in err and "init never changes an existing one" in err
+    assert main(["init", "--repo", str(demo_repo), "--orchestrator", "airflow"]) == 0
+
+
+def test_a_missing_state_machine_folder_is_named_in_step_functions_words(
+    tmp_path: Path, isolated: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    assert main(["init", "--repo", str(repo), "--orchestrator", "stepfunctions"]) == 1
+    err = capsys.readouterr().err
+    assert f"state machine folder not found: {repo.resolve() / 'statemachine'} (use --dags-dir)" in err
+    assert "DAG" not in err
+    assert not (repo / "healer.yaml").exists()
+
+
+def test_the_orchestrator_choices_are_the_templates() -> None:
+    from dag_healer.config import TEMPLATE_ORCHESTRATORS
+
+    assert init_cmd.ORCHESTRATORS == TEMPLATE_ORCHESTRATORS
+    assert set(init_cmd.DEFAULT_DAGS_DIRS) == set(TEMPLATE_ORCHESTRATORS)
 
 
 # --------------------------------------------------------------------------- approval and demo premises
