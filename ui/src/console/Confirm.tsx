@@ -42,6 +42,7 @@ export const ConfirmPanel = ({
 }) => {
   const text = useUiText();
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   const noteId = useId();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,7 +53,17 @@ export const ConfirmPanel = ({
     headingRef.current?.focus();
   }, [heading]);
 
+  // A refusal takes focus, so it is read out and Tab continues from it.
+  useEffect(() => {
+    if (error !== undefined) {
+      errorRef.current?.focus();
+    }
+  }, [error]);
+
   const confirm = () => {
+    if (busy) {
+      return;
+    }
     setBusy(true);
     setError(undefined);
     onConfirm(note)
@@ -127,15 +138,27 @@ export const ConfirmPanel = ({
         />
       </label>
       {error === undefined ? undefined : (
-        <Notice testId="action-error" tone="error">
-          <p>{error}</p>
-        </Notice>
+        <div ref={errorRef} tabIndex={-1}>
+          <Notice testId="action-error" tone="error">
+            <p>{error}</p>
+          </Notice>
+        </div>
       )}
+      {/* aria-disabled, not disabled: a disabled button would drop the focus while the action is sent. */}
       <div className="row">
-        <button className="btn primary" disabled={busy} onClick={confirm} type="button">
+        <button aria-disabled={busy} className="btn primary" onClick={confirm} type="button">
           {busy ? "Sending…" : consequences.confirm}
         </button>
-        <button className="btn ghost" disabled={busy} onClick={onCancel} type="button">
+        <button
+          aria-disabled={busy}
+          className="btn ghost"
+          onClick={() => {
+            if (!busy) {
+              onCancel();
+            }
+          }}
+          type="button"
+        >
           Cancel
         </button>
         <span className="faint small">The worker applies it within a few seconds.</span>

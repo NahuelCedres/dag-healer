@@ -43,7 +43,7 @@ const View = ({ route }: { readonly route: ConsoleRoute }) => {
     case "pipelines":
       return <Pipelines pipeline={route.pipeline} />;
     default:
-      return <Inbox group={route.group} key={route.group ?? "all"} />;
+      return <Inbox filters={route.filters} group={route.group} key={route.group ?? "all"} />;
   }
 };
 

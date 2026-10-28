@@ -3,6 +3,7 @@ import {
   createContext,
   type CSSProperties,
   Fragment,
+  type MouseEvent,
   type ReactNode,
   useCallback,
   useContext,
@@ -11,6 +12,8 @@ import {
   useRef,
   useState,
 } from "react";
+
+import { useUiText } from "src/vocabulary";
 
 import { categoryWord, statusMeta, type Tone } from "./labels";
 
@@ -174,13 +177,16 @@ export const Loading = ({ what = "Loading…" }: { readonly what?: string }) => 
 // Announcements: one polite live region for the whole console, plus short toasts
 // ------------------------------------------------------------------------------------------------ //
 
+/** `quiet`: read the message out without a toast (what it says is already on the screen). */
+type Announce = (message: string, options?: { readonly quiet?: boolean }) => void;
+
 interface Announcer {
-  readonly announce: (message: string) => void;
+  readonly announce: Announce;
 }
 
 const AnnounceContext = createContext<Announcer>({ announce: () => undefined });
 
-export const useAnnounce = (): ((message: string) => void) => useContext(AnnounceContext).announce;
+export const useAnnounce = (): Announce => useContext(AnnounceContext).announce;
 
 const TOAST_MS = 5000;
 
@@ -190,13 +196,16 @@ export const AnnounceProvider = ({ children }: { readonly children: ReactNode })
   const [toasts, setToasts] = useState<Array<{ id: number; text: string }>>([]);
   const counter = useRef(0);
 
-  const announce = useCallback((text: string) => {
+  const announce = useCallback<Announce>((text, options) => {
     counter.current += 1;
     const id = counter.current;
 
     setMessage("");
     // A new text node after a tick, so a repeated message is read out again.
     globalThis.setTimeout(() => setMessage(text), 50);
+    if (options?.quiet === true) {
+      return;
+    }
     setToasts((current) => [...current.slice(-2), { id, text }]);
     globalThis.setTimeout(() => setToasts((current) => current.filter((toast) => toast.id !== id)), TOAST_MS);
   }, []);
@@ -220,26 +229,87 @@ export const AnnounceProvider = ({ children }: { readonly children: ReactNode })
   );
 };
 
+/**
+ * Copy `text` the old way, for pages without the Clipboard API (served over plain HTTP from a host
+ * other than localhost): a hidden text area next to `anchor`, selected and copied. Focus returns to
+ * `anchor`. False when the browser refuses.
+ */
+const copyBySelection = (text: string, anchor: HTMLElement): boolean => {
+  const area = document.createElement("textarea");
+
+  area.value = text;
+  area.readOnly = true;
+  area.setAttribute("aria-hidden", "true");
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none";
+  // Next to the button, so the copy works inside a dialog that keeps focus to itself.
+  anchor.after(area);
+  area.select();
+  let copied = false;
+
+  try {
+    // The deprecated command is the only copy left to a page without the Clipboard API.
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  area.remove();
+  anchor.focus();
+
+  return copied;
+};
+
 /** Copy a text, saying whether it worked (clipboard access can be blocked). */
 export const CopyButton = ({ label, text }: { readonly label: string; readonly text: string }) => {
   const announce = useAnnounce();
-  const copy = () => {
+  // "Incident id" → "incident id" inside a sentence; "PR.md" stays as it is.
+  const inline = /^[A-Z][a-z]/u.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label;
+  const copy = (event: MouseEvent<HTMLButtonElement>) => {
+    const button = event.currentTarget;
     const done = () => announce(`${label} copied`);
-    const failed = () => announce(`Copying is blocked here. ${label}: ${text}`);
+    // Never the text itself: it can be long (PR.md), and it is on the screen already.
+    const fallback = () =>
+      copyBySelection(text, button)
+        ? done()
+        : announce(
+            `Copying is blocked in this browser: select the ${inline} and press Ctrl+C (⌘C on a Mac).`,
+          );
+    const clipboard = globalThis.navigator.clipboard as Clipboard | undefined;
 
-    try {
-      void globalThis.navigator.clipboard.writeText(text).then(done, failed);
-    } catch {
-      failed();
+    if (clipboard === undefined) {
+      fallback();
+
+      return;
     }
+    void clipboard.writeText(text).then(done, fallback);
   };
 
   return (
     <button className="btn sm ghost" onClick={copy} type="button">
       <Icon name="copy" size={14} />
-      Copy {/^[A-Z][a-z]/u.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label}
+      Copy {inline}
     </button>
   );
+};
+
+/**
+ * The page title of a view on `dag-healer serve` ("Inbox · Healer · Apache Airflow"), so tabs and
+ * history entries say where they lead. Inside Airflow the page and its title are Airflow's.
+ */
+export const usePageTitle = (title: string | undefined): void => {
+  const { host } = useUiText();
+
+  useEffect(() => {
+    if (host !== "standalone" || title === undefined) {
+      return undefined;
+    }
+    const before = document.title;
+
+    document.title = `${title} · ${before}`;
+
+    return () => {
+      document.title = before;
+    };
+  }, [host, title]);
 };
 
 /** Run `onKey` for keydown events on the document while mounted. */

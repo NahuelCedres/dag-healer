@@ -304,7 +304,7 @@ export const SampleCard = ({ incident }: { readonly incident: IncidentDetail }) 
       ) : (
         <div className="card flush">
           <div className="scroll">
-            <table className="tbl compact stackable">
+            <table className="tbl compact stackable data">
               <thead>
                 <tr>
                   {columns.map((column) => (

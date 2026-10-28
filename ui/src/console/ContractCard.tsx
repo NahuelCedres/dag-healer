@@ -1,5 +1,5 @@
 /** A pipeline's contract in plain words, next to its YAML file, with the approval when it is due. */
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { approveContract, type ColumnRuleView, type ContractView } from "src/api";
 import { capitalize, useUiText } from "src/vocabulary";
@@ -56,21 +56,37 @@ const statusSentence = (contract: ContractView): string => {
 export const ContractCard = ({
   contract,
   file,
+  level = 2,
   onQueued,
   pipeline,
 }: {
   /** null: the pipeline has no contract; undefined: not loaded. */
   readonly contract: ContractView | null | undefined;
   readonly file?: string;
+  /** The level of the card's heading (3 inside a pipeline's section). */
+  readonly level?: 2 | 3;
   readonly onQueued: () => void;
   readonly pipeline: string;
 }) => {
+  const Heading = level === 3 ? "h3" : "h2";
+  const SubHeading = level === 3 ? "h4" : "h3";
   const text = useUiText();
   const { words } = text;
   const id = useId();
   const announce = useAnnounce();
   const [tab, setTab] = useState<"file" | "plain">("plain");
   const [approving, setApproving] = useState(false);
+  const opener = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Where focus goes once the confirmation closes: its opener (cancelled) or the heading (queued).
+  const after = useRef<"heading" | "opener" | undefined>(undefined);
+
+  useEffect(() => {
+    if (!approving && after.current !== undefined) {
+      (after.current === "opener" ? opener : heading).current?.focus();
+      after.current = undefined;
+    }
+  }, [approving]);
 
   if (contract === undefined) {
     return null;
@@ -78,7 +94,9 @@ export const ContractCard = ({
   if (contract === null) {
     return (
       <section aria-labelledby={id} className="card" data-testid="contract">
-        <h2 id={id}>Contract</h2>
+        <Heading className="title" id={id}>
+          Contract
+        </Heading>
         <p className="muted">
           <RichText
             text={
@@ -94,9 +112,9 @@ export const ContractCard = ({
   return (
     <section aria-labelledby={id} className="card" data-testid="contract">
       <div className="card-h">
-        <h2 className="mono" id={id}>
+        <Heading className="title mono" id={id} ref={heading} tabIndex={-1}>
           {contract.path}
-        </h2>
+        </Heading>
         <div className="row">
           <span className="pill plain" style={toneStyle(contractTone(contract.status))}>
             {contractWord(contract.status)}
@@ -123,7 +141,7 @@ export const ContractCard = ({
       ) : (
         contract.datasets.map((dataset) => (
           <div className="contract-ds" data-dataset={dataset.name} key={dataset.name}>
-            {contract.datasets.length > 1 ? <h3>{dataset.name}</h3> : undefined}
+            {contract.datasets.length > 1 ? <SubHeading>{dataset.name}</SubHeading> : undefined}
             <ul className="plain-list">
               <li>
                 <RichText
@@ -193,9 +211,13 @@ export const ContractCard = ({
           <ConfirmPanel
             consequences={approvalConsequences(contract, text)}
             heading="If you approve the contract"
-            onCancel={() => setApproving(false)}
+            onCancel={() => {
+              after.current = "opener";
+              setApproving(false);
+            }}
             onConfirm={async (note) => {
               await approveContract(contract.dag_id, note);
+              after.current = "heading";
               setApproving(false);
               announce("Queued: approve the contract.");
               onQueued();
@@ -207,6 +229,7 @@ export const ContractCard = ({
               className="btn"
               data-action="approve_contract"
               onClick={() => setApproving(true)}
+              ref={opener}
               type="button"
             >
               Approve the contract

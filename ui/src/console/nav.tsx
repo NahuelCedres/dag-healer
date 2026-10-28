@@ -62,12 +62,14 @@ export const NavLink = ({
   className,
   place,
   testId,
+  title,
 }: {
   readonly ariaCurrent?: "page" | undefined;
   readonly children: ReactNode;
   readonly className?: string;
   readonly place: Place;
   readonly testId?: string;
+  readonly title?: string;
 }) => {
   const { go } = useContext(NavContext);
   const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -84,6 +86,7 @@ export const NavLink = ({
       data-testid={testId}
       href={placeHref(place, go !== undefined)}
       onClick={onClick}
+      title={title}
     >
       {children}
     </a>

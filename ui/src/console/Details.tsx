@@ -2,9 +2,9 @@
 import type { IncidentDetail, IncidentEvent } from "src/api";
 import { airflowHref } from "src/links";
 import { nativeLinks } from "src/model";
-import { capitalize, useUiText } from "src/vocabulary";
+import { capitalize, useUiText, type Vocabulary } from "src/vocabulary";
 
-import { foundBy, stepLabel } from "./labels";
+import { actionWords, foundBy, statusMeta, stepLabel } from "./labels";
 import { NavLink } from "./nav";
 import { exactTime, shortAge } from "./time";
 import { CopyButton, Icon } from "./ui";
@@ -144,9 +144,90 @@ export const Alerts = ({ incident }: { readonly incident: IncidentDetail }) => (
 
 const actorOf = (event: IncidentEvent): string => event.actor || "dag-healer";
 
+const dataOf = (event: IncidentEvent): Record<string, unknown> =>
+  event.data !== null && typeof event.data === "object" && !Array.isArray(event.data)
+    ? (event.data as Record<string, unknown>)
+    : {};
+
+/** An alert outcome in plain words: "wrote the “Needs you” alert to the worker's log". */
+const alertOutcome = (name: string, outcome: Record<string, unknown>): string => {
+  const sent = outcome.status === "sent";
+  const alert = `the “${name}” alert`;
+
+  switch (outcome.channel) {
+    case "log":
+      return sent ? `wrote ${alert} to the worker's log` : `could not write ${alert} to the worker's log`;
+    case "email":
+      return sent ? `emailed ${alert}` : `could not email ${alert}`;
+    default:
+      return `${sent ? "sent" : "could not send"} ${alert} (${String(outcome.channel)})`;
+  }
+};
+
+/**
+ * Plain words for the events whose message is a log line (an alert, the incident's creation, a
+ * queued action); undefined keeps the message the worker wrote.
+ */
+export const eventText = (event: IncidentEvent, words: Vocabulary): string | undefined => {
+  const data = dataOf(event);
+
+  switch (event.kind) {
+    case "alert": {
+      if (typeof data.event !== "string") {
+        return undefined;
+      }
+      const name = statusMeta(data.event).label;
+      const outcomes = Array.isArray(data.outcomes)
+        ? data.outcomes.filter(
+            (outcome): outcome is Record<string, unknown> => outcome !== null && typeof outcome === "object",
+          )
+        : [];
+
+      return outcomes.length === 0
+        ? `did not send the “${name}” alert: it is turned off in notify.events`
+        : outcomes.map((outcome) => alertOutcome(name, outcome)).join("; ");
+    }
+    case "command_queued":
+      return typeof data.action === "string" ? `asked to ${actionWords(data.action, words)}` : undefined;
+    case "created": {
+      const source = /^Incident created from (\S+)/u.exec(event.message)?.[1];
+      const found = source === undefined ? undefined : foundBy(source, words);
+
+      return found === undefined
+        ? undefined
+        : `opened the incident (${found.charAt(0).toLowerCase()}${found.slice(1)})`;
+    }
+    default:
+      return undefined;
+  }
+};
+
+/** The words of a message before its details ("Classified as code" of "Classified as code (…)"). */
+const clause = (message: string): string => message.split(/[(:]/u)[0]?.trim() ?? "";
+
+/**
+ * True for a status event that says again what the event before it said (the worker records a
+ * status next to the repair, error and classification events).
+ */
+const repeats = (before: IncidentEvent | undefined, event: IncidentEvent): boolean =>
+  before !== undefined &&
+  event.kind === "status" &&
+  (event.message === before.message ||
+    (clause(event.message).length >= 12 && clause(event.message) === clause(before.message)));
+
 /** "<actor> <message>", without saying the actor twice when the message starts with it. */
-const EventText = ({ event }: { readonly event: IncidentEvent }) => {
+export const EventText = ({ event }: { readonly event: IncidentEvent }) => {
+  const { words } = useUiText();
   const actor = actorOf(event);
+  const plain = eventText(event, words);
+
+  if (plain !== undefined) {
+    return (
+      <>
+        <strong>{actor}</strong> {plain}
+      </>
+    );
+  }
 
   return event.message.startsWith(`${actor} `) ? (
     <>
@@ -167,17 +248,20 @@ export const Timeline = ({ events }: { readonly events: ReadonlyArray<IncidentEv
       <p className="muted">Nothing recorded yet.</p>
     ) : (
       <ol className="tl">
-        {[...events].reverse().map((event, index) => (
-          // Events are listed newest first as recorded and never reordered.
-          <li key={`${event.at}-${event.kind}-${index}`}>
-            <span className="tt" title={exactTime(event.at)}>
-              {shortAge(event.at)}
-            </span>
-            <span className="msg">
-              <EventText event={event} />
-            </span>
-          </li>
-        ))}
+        {events
+          .filter((event, index) => !repeats(events[index - 1], event))
+          .reverse()
+          .map((event, index) => (
+            // Events are listed newest first as recorded and never reordered.
+            <li key={`${event.at}-${event.kind}-${index}`}>
+              <span className="tt" title={exactTime(event.at)}>
+                {shortAge(event.at)}
+              </span>
+              <span className="msg">
+                <EventText event={event} />
+              </span>
+            </li>
+          ))}
       </ol>
     )}
   </div>

@@ -123,6 +123,7 @@ html[data-dhc-theme] body {
 .dhc h1,
 .dhc h2,
 .dhc h3,
+.dhc h4,
 .dhc p,
 .dhc dl,
 .dhc dd,
@@ -345,6 +346,10 @@ html[data-dhc-theme] body {
 .dhc .item[aria-current="page"] {
   background: var(--hover);
 }
+/* The open incident is marked by more than its background (which differs too little to see). */
+.dhc .item[aria-current="page"] {
+  box-shadow: inset 2px 0 0 var(--text);
+}
 .dhc .item .t {
   min-width: 0;
   overflow: hidden;
@@ -366,6 +371,9 @@ html[data-dhc-theme] body {
   color: var(--faint);
   font-size: 12px;
   line-height: 16px;
+}
+.dhc .item .sub .mono {
+  font-size: 11.5px;
 }
 .dhc .item:hover .age,
 .dhc .item:hover .sub,
@@ -617,10 +625,19 @@ html[data-dhc-theme] body {
   text-transform: uppercase;
   color: var(--faint);
 }
-.dhc .card h3 {
+.dhc .card h3,
+.dhc .card h4 {
   font-size: 13px;
   line-height: 20px;
   font-weight: 600;
+}
+/* A card's title at any heading level (the contract card is an h3 inside a pipeline's section). */
+.dhc .card .title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .dhc .note-box {
   padding: 10px 12px;
@@ -843,7 +860,7 @@ html[data-dhc-theme] body {
 .dhc .seg button[aria-pressed="true"] {
   background: var(--raised);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  box-shadow: inset 0 0 0 1.5px var(--text);
 }
 
 /* filters and tables */
@@ -901,6 +918,12 @@ html[data-dhc-theme] body {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+}
+/* Column names of the data (a masked sample) keep their case and their monospace. */
+.dhc .tbl th.mono {
+  text-transform: none;
+  letter-spacing: 0;
+  font: 500 12px/16px var(--mono);
 }
 .dhc .tbl td {
   padding: 10px 14px;
@@ -1474,6 +1497,11 @@ html[data-dhc-theme] body {
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--faint);
+  }
+  .dhc .tbl.stackable.data td::before {
+    text-transform: none;
+    letter-spacing: 0;
+    font: 500 11.5px/16px var(--mono);
   }
   .dhc .tbl.stackable td.wide {
     grid-column: 1 / -1;

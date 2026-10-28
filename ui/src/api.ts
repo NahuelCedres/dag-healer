@@ -84,6 +84,8 @@ export interface IncidentSummary {
   occurrences: number;
   /** Orchestrator instance of the incident (left out for the default Airflow instance). */
   orchestrator?: string;
+  /** The action a person queued that the worker has not applied yet (left out when none). */
+  pending_command?: PendingCommand | null;
   pr_url: string | null;
   run_id: string;
   source: string;
@@ -133,6 +135,8 @@ export interface AlertRecord {
 }
 
 export interface PendingCommand {
+  /** The action as the person chose it (`resolve_data`, `retry_task`...); left out when unknown. */
+  action?: string | null;
   actor: string;
   created_at: string;
   id: number | string;

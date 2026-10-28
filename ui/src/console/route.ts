@@ -3,7 +3,8 @@
  * can be linked, reloaded and reached with the browser's Back button.
  *
  * The console lives on the Healer page (`plugin/healer`, in both hosts) and keeps its place in the
- * query string: `?dag=<id>&incident=<id>`, `?view=pipelines&pipeline=<id>`, `?group=needs`. On
+ * query string: `?dag=<id>&incident=<id>`, `?view=pipelines&pipeline=<id>`, and the inbox's group and
+ * filters, `?group=needs&q=<search>&dag=<id>&category=<category>`. On
  * `dag-healer serve` the shell also answers the plugin's other URL shapes, which open the console
  * on a pipeline (`/dags/<d>/plugin/healer-dag`) or on a task instance's incident
  * (`/dags/<d>/runs/<r>/tasks/<t>[/mapped/<i>]/plugin/healer-ti`).
@@ -15,6 +16,13 @@ import { healerPageHref, PLUGIN_ROUTES } from "src/links";
 
 import type { InboxGroup } from "./labels";
 
+/** The inbox's filters besides the group: the search, a pipeline and a category. */
+export interface InboxFilters {
+  readonly category?: string;
+  readonly pipeline?: string;
+  readonly query?: string;
+}
+
 export type ConsoleRoute =
   | { readonly dagId: string; readonly incidentId: string; readonly view: "incident" }
   | {
@@ -24,7 +32,7 @@ export type ConsoleRoute =
       readonly taskId: string;
       readonly view: "task_instance";
     }
-  | { readonly group?: InboxGroup; readonly view: "inbox" }
+  | { readonly filters?: InboxFilters; readonly group?: InboxGroup; readonly view: "inbox" }
   | { readonly pipeline?: string; readonly view: "pipelines" };
 
 const GROUPS: ReadonlyArray<InboxGroup> = ["needs", "progress", "done"];
@@ -68,8 +76,18 @@ export const parseRoute = (pathname: string, search: string, baseUri?: string): 
     }
   }
   const group = query.get("group");
+  const filters: InboxFilters = {
+    category: nonEmpty(query.get("category")),
+    pipeline: dagId,
+    query: nonEmpty(query.get("q")),
+  };
+  const filtered = Object.values(filters).some((value) => value !== undefined);
 
-  return { group: GROUPS.find((candidate) => candidate === group), view: "inbox" };
+  return {
+    filters: filtered ? filters : undefined,
+    group: GROUPS.find((candidate) => candidate === group),
+    view: "inbox",
+  };
 };
 
 /** The URL of a route: the Healer page with the route in its query string. */
@@ -94,10 +112,31 @@ export const routeHref = (route: ConsoleRoute, baseUri?: string): string => {
       if (route.group !== undefined) {
         url.searchParams.set("group", route.group);
       }
+      if (route.filters?.query !== undefined) {
+        url.searchParams.set("q", route.filters.query);
+      }
+      if (route.filters?.pipeline !== undefined) {
+        url.searchParams.set("dag", route.filters.pipeline);
+      }
+      if (route.filters?.category !== undefined) {
+        url.searchParams.set("category", route.filters.category);
+      }
       break;
   }
 
   return url.href;
+};
+
+/**
+ * Put `route` in the current history entry without a new one (the inbox's filters as they change),
+ * keeping the host's history state.
+ */
+export const replaceRoute = (route: ConsoleRoute): void => {
+  const href = routeHref(route, document.baseURI);
+
+  if (href !== globalThis.location.href) {
+    globalThis.history.replaceState(globalThis.history.state, "", href);
+  }
 };
 
 const currentRoute = (): ConsoleRoute =>

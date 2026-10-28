@@ -145,12 +145,28 @@ describe("consequencesOf", () => {
   });
 
   it("explains what approving a contract writes", () => {
-    const result = approvalConsequences(draftContract(), DEFAULT_UI_TEXT, "waiting_human");
+    const result = approvalConsequences(draftContract(), DEFAULT_UI_TEXT, {
+      status: "waiting_human",
+      violations: [],
+    });
 
     expect(result.confirm).toBe("Approve the contract");
     expect(result.does[0]).toContain("It does not commit the file or open a pull request");
     expect(result.files).toBe("Only `healer/contracts/inventory_report.yaml` changes.");
     expect(result.then).toBe("This incident is not decided again: answer the question as well.");
+    expect(result.warnings).toEqual([]);
     expect(approvalConsequences(draftContract(), DEFAULT_UI_TEXT).then).toBeUndefined();
+  });
+
+  it("warns before approving a contract this incident's input breaks", () => {
+    const result = approvalConsequences(draftContract(), DEFAULT_UI_TEXT, {
+      status: "waiting_human",
+      violations: [{ column: "qty", rule: "missing_column" }],
+    });
+
+    expect(result.warnings).toEqual([
+      "This incident's input breaks this contract (column `qty` is missing). Approve it only if the file is " +
+        "wrong; if the file changed on purpose, update `healer/contracts/inventory_report.yaml` first.",
+    ]);
   });
 });

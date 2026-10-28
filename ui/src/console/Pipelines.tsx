@@ -15,10 +15,10 @@ import { useLayout, ViewLayout } from "./Layout";
 import { ApiProblem } from "./Problems";
 import { useConsoleData, usePipelineContract } from "./data";
 import { useHeadingFocus } from "./focus";
-import { contractTone, contractWord, GROUPS, groupOf, nextStep, stepLabel } from "./labels";
+import { contractTone, contractWord, GROUPS, incidentGroup, nextStep, stepLabel } from "./labels";
 import { NavLink } from "./nav";
 import { exactTime, relativeTime } from "./time";
-import { Loading, Notice, RichText, StatusPill, toneStyle } from "./ui";
+import { Loading, Notice, RichText, StatusPill, toneStyle, usePageTitle } from "./ui";
 
 /** Incidents shown per group on a pipeline's page. */
 const PER_GROUP = 10;
@@ -78,7 +78,7 @@ export const PipelineDetail = ({ dagId }: { readonly dagId: string }) => {
           </p>
         ) : (
           GROUPS.map((group) => {
-            const items = incidents.filter((incident) => groupOf(incident.status) === group.id);
+            const items = incidents.filter((incident) => incidentGroup(incident) === group.id);
 
             return items.length === 0 ? undefined : (
               <div className="stack" key={group.id} style={{ gap: 6 }}>
@@ -114,6 +114,7 @@ export const PipelineDetail = ({ dagId }: { readonly dagId: string }) => {
       <ContractCard
         contract={contract}
         file={file}
+        level={3}
         onQueued={() => {
           refresh();
           resource.refresh();
@@ -174,6 +175,13 @@ export const Pipelines = ({ pipeline }: { readonly pipeline?: string }) => {
   const selected = pipeline ?? undefined;
 
   useHeadingFocus(heading, !embedded && selected === undefined);
+  usePageTitle(
+    embedded
+      ? undefined
+      : selected === undefined
+        ? capitalize(words.pipelines)
+        : `${selected} · ${capitalize(words.pipelines)}`,
+  );
 
   if (embedded) {
     return (

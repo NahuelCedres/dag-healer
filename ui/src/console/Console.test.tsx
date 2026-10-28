@@ -14,7 +14,7 @@ import {
   setup,
   summary,
 } from "src/test/fixtures";
-import { mockApi, renderWithPolling, type Route } from "src/test/utils";
+import { jsonResponse, mockApi, renderWithPolling, type Route } from "src/test/utils";
 
 import { PREFS_KEY } from "./prefs";
 
@@ -104,7 +104,7 @@ describe("the inbox", () => {
     const sidebar = screen.getByTestId("sidebar");
 
     expect(within(sidebar).getByRole("heading", { name: /Needs you/u })).toBeInTheDocument();
-    expect(within(sidebar).getByRole("link", { name: /inventory_report \/ build_report/u })).toHaveAttribute(
+    expect(within(sidebar).getByRole("link", { name: /build_report.*inventory_report/u })).toHaveAttribute(
       "href",
       new URL(`plugin/healer?dag=inventory_report&incident=${AMBIGUOUS.id}`, document.baseURI).href,
     );
@@ -128,6 +128,47 @@ describe("the inbox", () => {
     expect(screen.getByTestId("inbox-none")).toHaveTextContent("No incident matches.");
     fireEvent.click(screen.getByRole("button", { name: "Clear the filters" }));
     expect(within(screen.getByTestId("inbox-table")).getAllByRole("row")).toHaveLength(list.length + 1);
+  });
+
+  it("keeps its group and filters in the URL, so Back returns to the same list", async () => {
+    consoleApi();
+    at("/plugin/healer?group=needs&q=inventory");
+    renderWithPolling(<App mode="nav" />);
+    const table = await screen.findByTestId("inbox-table");
+
+    expect(screen.getByLabelText("Search")).toHaveValue("inventory");
+    expect(screen.getByRole("button", { name: "Needs you 1" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "amount" } });
+    fireEvent.click(screen.getByRole("button", { name: "All 4" }));
+    await waitFor(() => expect(globalThis.location.search).toBe("?q=amount"));
+    await waitFor(() => expect(screen.getByTestId("live-region")).toHaveTextContent("1 incident matches."));
+  });
+
+  it("moves an answered incident to In progress until the worker applies the answer", async () => {
+    const queued = {
+      ...list[0],
+      pending_command: {
+        action: "resolve_data",
+        actor: "ann",
+        created_at: "2026-10-17T12:10:00+00:00",
+        id: 3,
+        kind: "resolve",
+      },
+    };
+
+    consoleApi([
+      { handler: () => ({ incidents: [queued, ...list.slice(1)], total: list.length }), path: "incidents" },
+    ]);
+    renderWithPolling(<App mode="nav" />);
+    const table = await screen.findByTestId("inbox-table");
+
+    expect(screen.getByRole("button", { name: "Needs you 0" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "In progress 2" })).toBeInTheDocument();
+    expect(within(table).getByText("Queued: report a data problem")).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("sidebar")).getByText("Nothing needs you right now."),
+    ).toBeInTheDocument();
   });
 
   it("opens an incident in place and puts focus on its heading", async () => {
@@ -175,6 +216,54 @@ describe("an incident that waits for a person", () => {
 
     expect(post?.path).toBe(`dags/inventory_report/incidents/${AMBIGUOUS.id}/resolve`);
     expect(post?.body).toEqual({ note: "The warehouse export is broken", resolution: "data" });
+  });
+
+  it("puts focus back on the answer when its confirmation is cancelled or refused", async () => {
+    consoleApi([
+      {
+        handler: () => jsonResponse(409, { detail: "Another action is already pending for this incident" }),
+        method: "POST",
+        path: /resolve$/u,
+      },
+    ]);
+    at(`/plugin/healer?dag=inventory_report&incident=${AMBIGUOUS.id}`);
+    renderWithPolling(<App mode="nav" />);
+
+    const decision = await screen.findByTestId("decision");
+    const answer = await within(decision).findByRole("button", { name: /No, the file is wrong/u });
+
+    fireEvent.click(answer);
+    fireEvent.click(
+      within(await screen.findByTestId("confirm-panel")).getByRole("button", { name: "Cancel" }),
+    );
+    expect(screen.queryByTestId("confirm-panel")).toBeNull();
+    expect(document.activeElement).toBe(answer);
+
+    fireEvent.click(answer);
+    const panel = await screen.findByTestId("confirm-panel");
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Report a data problem" }));
+    const refusal = await within(panel).findByTestId("action-error");
+
+    expect(refusal).toHaveTextContent("This is no longer possible: Another action is already pending");
+    await waitFor(() => expect(document.activeElement).toBe(refusal.parentElement));
+    expect(within(panel).getByRole("button", { name: "Report a data problem" })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("warns before approving a contract that this incident's input breaks", async () => {
+    consoleApi();
+    at(`/plugin/healer?dag=inventory_report&incident=${AMBIGUOUS.id}`);
+    renderWithPolling(<App mode="nav" />);
+
+    const decision = await screen.findByTestId("decision");
+
+    fireEvent.click(await within(decision).findByRole("button", { name: "Approve the contract" }));
+    expect(await screen.findByTestId("confirm-panel")).toHaveTextContent(
+      "This incident's input breaks this contract (column qty is missing).",
+    );
   });
 
   it("shows the broken rule in plain words next to the lines of its YAML file", async () => {

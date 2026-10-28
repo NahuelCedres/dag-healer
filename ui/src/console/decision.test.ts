@@ -13,7 +13,7 @@ describe("decidedBy", () => {
   it("names a fixed rule for a broken approved contract", () => {
     expect(decidedBy(dataIncident(), DEFAULT_VOCABULARY)).toEqual({
       detail:
-        "the approved contract is violated (missing_column on `amount`), so this is DATA. The model's opinion " +
+        "the approved contract is violated (column `amount` is missing), so this is DATA. The model's opinion " +
         "does not change that.",
       lead: "Decided by a fixed rule",
       who: "rule",
@@ -29,7 +29,7 @@ describe("decidedBy", () => {
 
   it("gives the model's confidence and the threshold when the model took part", () => {
     expect(decidedBy(codeIncident(), DEFAULT_VOCABULARY, 0.75)).toMatchObject({
-      detail: expect.stringContaining("the model agreed with confidence 0.90; it needs 0.75."),
+      detail: expect.stringContaining("the model agreed with confidence 90%; it needs 75%."),
       lead: "Decided by a fixed rule and the model",
     });
     const unsure = classified({
@@ -40,7 +40,7 @@ describe("decidedBy", () => {
     });
 
     expect(decidedBy(unsure, DEFAULT_VOCABULARY, 0.75)).toMatchObject({
-      detail: "the model was not sure enough (confidence 0.62; it needs 0.75).",
+      detail: "the model was not sure enough (confidence 62%; it needs 75%).",
       lead: "Waiting for you",
       who: "model",
     });
@@ -125,7 +125,7 @@ describe("questionFor", () => {
       DEFAULT_VOCABULARY,
     );
 
-    expect(failed.title).toBe("The fix did not work. What now?");
+    expect(failed.title).toBe("dag-healer could not write a working fix. What now?");
     expect(failed.context[0]).toContain("What it reported: No acceptable fix after 3 attempt(s).");
     expect(failed.main.map((answer) => answer.action)).toEqual(["retry_repair", "resolve_data"]);
     const stopped = questionFor(
@@ -144,6 +144,47 @@ describe("questionFor", () => {
     expect(stopped.context).toEqual([
       "dag-healer stopped before it finished: Processing failed while gathering the context: 503",
     ]);
+    // Nothing was repaired yet: no "again", and the report carries what there is.
+    expect(stopped.main[0]?.title).toBe("Treat it as a code problem");
+    const bare = questionFor(
+      ambiguousIncident({ attempts: 2, sample: null, status: "error", violations: [] }),
+      DEFAULT_VOCABULARY,
+    );
+
+    expect(bare.main[0]?.title).toBe("Try the fix again");
+    expect(bare.main[1]?.body).toBe(
+      "Report a data problem, with the error (no contract check failed). No code changes.",
+    );
+  });
+});
+
+describe("decidedBy, before and after a person answers", () => {
+  it("says an incident that stopped early was not classified", () => {
+    expect(decidedBy(ambiguousIncident({ events: [], status: "error" }), DEFAULT_VOCABULARY)).toEqual({
+      detail: "dag-healer stopped before it could classify this failure.",
+      lead: "Not classified",
+      who: "nobody",
+    });
+  });
+
+  it("names who answered while the worker has not applied it", () => {
+    const queued = ambiguousIncident({
+      pending_commands: [
+        {
+          action: "resolve_data",
+          actor: "ann",
+          created_at: "2026-10-17T12:10:00+00:00",
+          id: 3,
+          kind: "resolve",
+        },
+      ],
+    });
+
+    expect(decidedBy(queued, DEFAULT_VOCABULARY)).toEqual({
+      detail: "report a data problem, queued for dag-healer's worker.",
+      lead: "Decided by ann",
+      who: "person",
+    });
   });
 });
 

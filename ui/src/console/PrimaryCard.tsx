@@ -17,22 +17,24 @@ import { useUiText } from "src/vocabulary";
 
 import { ConfirmPanel } from "./Confirm";
 import { approvalConsequences, consequencesOf } from "./consequences";
-import { type Answer, questionFor, reportedAnswers } from "./decision";
+import { type Answer, questionFor, reportContents, reportedAnswers } from "./decision";
 import { noteOf, repairOf } from "./events";
-import { groupOf, stepLabel } from "./labels";
+import { actionWords, groupOf, stepLabel } from "./labels";
 import { exactTime, relativeTime } from "./time";
 import { Dot, Notice, RichText } from "./ui";
 
 type Choice = IncidentAction | "approve_contract";
 
-const ACTION_WORDS: Record<string, string> = {
-  approve_contract: "approve the contract",
-  ignore: "ignore the incident",
-  resolve: "apply your decision",
-  resolve_code: "write a test and a fix",
-  resolve_data: "report a data problem",
-  retry_repair: "run the repair again",
-  retry_task: "run it again",
+/** After this long, a queued action or a step of the work is worth a word about the worker. */
+const SLOW_COMMAND_MS = 2 * 60_000;
+const SLOW_WORK_MS = 15 * 60_000;
+
+const WORKER_HINT = "check that dag-healer's worker is running (`dag-healer worker`).";
+
+const elapsedSince = (value: string | null | undefined): number => {
+  const at = value === null || value === undefined ? Number.NaN : new Date(value).getTime();
+
+  return Number.isNaN(at) ? 0 : Date.now() - at;
 };
 
 /** True when the contract can be approved from here. */
@@ -68,6 +70,7 @@ const Answers = ({
 }) => {
   const text = useUiText();
   const [choice, setChoice] = useState<Choice>();
+  const answers = useRef<HTMLDivElement>(null);
   const allowed = (answer: Answer) => incident.allowed_actions.includes(answer.action);
   const shownMain = main.filter(allowed);
   const shownOther = other.filter(allowed);
@@ -85,6 +88,14 @@ const Answers = ({
 
   const toggle = (action: Choice) => setChoice((current) => (current === action ? undefined : action));
 
+  // Cancel puts focus back on the answer that opened the confirmation.
+  const cancel = () => {
+    const opener = answers.current?.querySelector<HTMLElement>(`[data-action="${choice ?? ""}"]`);
+
+    setChoice(undefined);
+    opener?.focus();
+  };
+
   const confirm = async (note: string) => {
     if (choice === undefined) {
       return;
@@ -101,7 +112,8 @@ const Answers = ({
   };
 
   return (
-    <>
+    // A wrapper without a box: the answers lay out in the card as before.
+    <div ref={answers} style={{ display: "contents" }}>
       {first.length === 0 ? undefined : (
         <div className="choices">
           {first.map((answer) => (
@@ -155,16 +167,16 @@ const Answers = ({
         <ConfirmPanel
           consequences={
             choice === "approve_contract" && approval !== undefined
-              ? approvalConsequences(approval, text, incident.status)
+              ? approvalConsequences(approval, text, incident)
               : consequencesOf(choice as IncidentAction, incident, text, setup, contract)
           }
           heading={`If you choose “${titleOf(choice).replaceAll("`", "")}”`}
           key={choice}
-          onCancel={() => setChoice(undefined)}
+          onCancel={cancel}
           onConfirm={confirm}
         />
       )}
-    </>
+    </div>
   );
 };
 
@@ -218,6 +230,8 @@ const ProgressCard = ({ incident }: { readonly incident: IncidentDetail }) => {
     triaging: `It is reading the error, the ${words.step}'s code and the contract to classify the failure.`,
   };
 
+  const still = elapsedSince(incident.updated_at);
+
   return (
     <section aria-labelledby={id} className="card queued" data-testid="progress">
       <Dot tone="cyan" />
@@ -226,13 +240,20 @@ const ProgressCard = ({ incident }: { readonly incident: IncidentDetail }) => {
         <p className="muted">
           {doing[incident.status] ?? "It is working on this incident."} Nothing is needed from you yet.
         </p>
+        {still > SLOW_WORK_MS ? (
+          <p className="faint small" data-testid="slow-work">
+            <RichText
+              text={
+                `Nothing has changed for ${relativeTime(incident.updated_at).replace(" ago", "")}: ` +
+                WORKER_HINT
+              }
+            />
+          </p>
+        ) : undefined}
       </div>
     </section>
   );
 };
-
-/** After this long, a queued action is worth a word about the worker. */
-const SLOW_COMMAND_MS = 2 * 60_000;
 
 /** A queued action, until the worker applies it (no cancel yet: the API has no route for it). */
 const PendingCard = ({
@@ -248,18 +269,17 @@ const PendingCard = ({
   const kind =
     command === undefined
       ? queued
-      : command.kind === "resolve"
-        ? (incident.events
-            .filter((event) => event.kind === "command_queued")
-            .map((event) => (event.data as Record<string, unknown> | null)?.action)
-            .filter((action): action is string => typeof action === "string")
-            .at(-1) ?? "resolve")
-        : command.kind;
-  const what =
-    kind === "retry_task"
-      ? words.retry_action.toLowerCase()
-      : (ACTION_WORDS[kind ?? "resolve"] ?? "your action");
-  const waited = command === undefined ? 0 : Date.now() - new Date(command.created_at ?? "").getTime();
+      : (command.action ??
+        (command.kind === "resolve"
+          ? (incident.events
+              .filter((event) => event.kind === "command_queued")
+              .map((event) => (event.data as Record<string, unknown> | null)?.action)
+              .filter((action): action is string => typeof action === "string")
+              .at(-1) ?? "resolve")
+          : command.kind));
+  const what = actionWords(kind, words);
+  const waited = command === undefined ? 0 : elapsedSince(command.created_at);
+  const slow = waited > SLOW_COMMAND_MS;
 
   // Focus follows the viewer's own action only: a command someone else queued must not move it.
   const own = queued !== undefined;
@@ -279,13 +299,16 @@ const PendingCard = ({
           <span className="muted">
             {command === undefined
               ? "dag-healer's worker applies it within a few seconds."
-              : `Asked by ${command.actor} ${relativeTime(command.created_at)}; dag-healer's worker applies it within a few seconds.`}
+              : slow
+                ? `Asked by ${command.actor} ${relativeTime(command.created_at)}; the worker has not applied it yet.`
+                : `Asked by ${command.actor} ${relativeTime(command.created_at)}; dag-healer's worker applies it within a few seconds.`}
           </span>
         </p>
-        {waited > SLOW_COMMAND_MS ? (
-          <p className="faint small">
-            It has waited {relativeTime(command?.created_at).replace(" ago", "")}: check that dag-healer's
-            worker is running (dag-healer worker).
+        {slow ? (
+          <p className="faint small" data-testid="slow-command">
+            <RichText
+              text={`It has waited ${relativeTime(command?.created_at).replace(" ago", "")}: ${WORKER_HINT}`}
+            />
           </p>
         ) : undefined}
       </div>
@@ -308,7 +331,7 @@ const ReportedCard = (props: CardProps) => {
       </div>
       <p className="muted">
         {emails.length > 0
-          ? `dag-healer emailed ${emails.join(", ")} with the failed checks and a masked sample. `
+          ? `dag-healer emailed ${emails.join(", ")} with ${reportContents(incident)}. `
           : sent.length > 0
             ? "dag-healer wrote the alert to the worker's log (no email is set up). "
             : "No alert was sent. "}

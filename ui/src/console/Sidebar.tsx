@@ -9,7 +9,7 @@ import { sortNewestFirst } from "src/model";
 import { capitalize, DEFAULT_DISPLAY_NAME, useUiText } from "src/vocabulary";
 
 import { useConsoleData } from "./data";
-import { GROUPS, groupOf, nextStep, statusMeta, stepLabel } from "./labels";
+import { GROUPS, incidentGroup, nextStep, statusMeta, stepLabel } from "./labels";
 import { NavLink } from "./nav";
 import type { ConsolePrefs, ThemeChoice } from "./prefs";
 import type { ConsoleRoute } from "./route";
@@ -35,11 +35,11 @@ export const Sidebar = ({ onPrefs, onSignOut, prefs, route, themeChoice, user }:
   const themeId = useId();
   const incidents = useConsoleData().incidents;
   const sorted = useMemo(() => sortNewestFirst(incidents?.data?.incidents ?? []), [incidents?.data]);
-  const needs = sorted.filter((incident) => groupOf(incident.status) === "needs").length;
+  const needs = sorted.filter((incident) => incidentGroup(incident) === "needs").length;
   const currentIncident = route.view === "incident" ? route.incidentId : undefined;
 
   return (
-    <aside aria-label="Console" className="side" data-testid="sidebar">
+    <aside aria-label="Sidebar" className="side" data-testid="sidebar">
       <div className="brand">
         <Mark />
         <span>
@@ -72,7 +72,7 @@ export const Sidebar = ({ onPrefs, onSignOut, prefs, route, themeChoice, user }:
       </nav>
       <div className="groups">
         {GROUPS.map((group) => {
-          const items = sorted.filter((incident) => groupOf(incident.status) === group.id);
+          const items = sorted.filter((incident) => incidentGroup(incident) === group.id);
           const shown = group.id === "done" ? items.slice(0, DONE_SHOWN) : items;
 
           if (items.length === 0 && group.id !== "needs") {
@@ -91,19 +91,19 @@ export const Sidebar = ({ onPrefs, onSignOut, prefs, route, themeChoice, user }:
                 <ul>
                   {shown.map((incident) => (
                     <li key={incident.id}>
+                      {/* The step first: in a narrow column the pipeline's name would hide it. */}
                       <NavLink
                         ariaCurrent={incident.id === currentIncident ? "page" : undefined}
                         className="item"
                         place={{ incident, to: "incident" }}
+                        title={`${incident.dag_id} / ${stepLabel(incident)}: ${nextStep(incident, words)}`}
                       >
                         <Dot tone={statusMeta(incident.status).tone} />
-                        <span className="t">
-                          {incident.dag_id} / {stepLabel(incident)}
-                        </span>
+                        <span className="t">{stepLabel(incident)}</span>
                         <span className="age">{shortAge(incident.created_at)}</span>
                         <span className="sub">
                           <span className="sr-only">{statusMeta(incident.status).label}: </span>
-                          {nextStep(incident, words)}
+                          <span className="mono">{incident.dag_id}</span> · {nextStep(incident, words)}
                         </span>
                       </NavLink>
                     </li>

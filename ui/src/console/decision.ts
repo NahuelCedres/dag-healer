@@ -10,9 +10,10 @@ import type { ContractView, IncidentAction, IncidentDetail, Violation } from "sr
 import type { Vocabulary } from "src/vocabulary";
 
 import { classificationOf, contextOf, processingErrorOf, repairOf } from "./events";
-import { categoryWord, stepLabel } from "./labels";
+import { actionWords, categoryWord, groupOf, stepLabel, violationShort } from "./labels";
 
-const percent = (value: number): string => value.toFixed(2);
+/** A confidence as a percentage: 0.62 → "62%". */
+export const percent = (value: number): string => `${Math.round(value * 100)}%`;
 
 const contractPhrase = (status: string | undefined, pipeline: string, short = false): string => {
   switch (status) {
@@ -30,12 +31,26 @@ const contractPhrase = (status: string | undefined, pipeline: string, short = fa
 const threshold = (minConfidence: number | undefined): string =>
   minConfidence === undefined ? "" : `; it needs ${percent(minConfidence)}`;
 
-/** "missing_column on `amount`, nulls_not_allowed on `amt`". */
+/** "column `amount` is missing, empty values in `amt`". */
 const violationList = (violations: ReadonlyArray<Violation>): string =>
-  violations
-    .slice(0, 4)
-    .map((violation) => (violation.column ? `${violation.rule} on \`${violation.column}\`` : violation.rule))
-    .join(", ");
+  violations.slice(0, 4).map(violationShort).join(", ");
+
+/**
+ * What a data report carries for this incident: the failed checks, the masked sample, or only the
+ * error ("with the failed checks and a masked sample").
+ */
+export const reportContents = (incident: Pick<IncidentDetail, "sample" | "violations">): string => {
+  const checks = incident.violations.length > 0;
+  const sample = incident.sample !== null;
+
+  if (checks) {
+    return sample ? "the failed checks and a masked sample" : "the failed checks";
+  }
+
+  return sample
+    ? "the error and a masked sample (no contract check failed)"
+    : "the error (no contract check failed)";
+};
 
 export interface DecidedBy {
   /** "Decided by a fixed rule", "Waiting for you"... */
@@ -51,6 +66,16 @@ export interface DecidedBy {
  */
 export const decidedBy = (incident: IncidentDetail, words: Vocabulary, minConfidence?: number): DecidedBy => {
   const pipeline = incident.dag_id;
+  const queued = incident.pending_commands[0];
+
+  // A person answered and the worker has not applied it yet: nobody waits for "you" any more.
+  if (queued !== undefined && groupOf(incident.status) === "needs") {
+    return {
+      detail: `${actionWords(queued.action ?? queued.kind, words)}, queued for dag-healer's worker.`,
+      lead: `Decided by ${queued.actor}`,
+      who: "person",
+    };
+  }
 
   if (incident.resolution === "ignore") {
     return {
@@ -62,11 +87,17 @@ export const decidedBy = (incident: IncidentDetail, words: Vocabulary, minConfid
   const found = classificationOf(incident.events);
 
   if (found === undefined) {
-    return {
-      detail: "dag-healer has not classified this failure yet.",
-      lead: "Not decided yet",
-      who: "nobody",
-    };
+    return incident.status === "error"
+      ? {
+          detail: "dag-healer stopped before it could classify this failure.",
+          lead: "Not classified",
+          who: "nobody",
+        }
+      : {
+          detail: "dag-healer has not classified this failure yet.",
+          lead: "Not decided yet",
+          who: "nobody",
+        };
   }
   const category = categoryWord(found.category).toUpperCase();
   const model = found.llmConfidence ?? found.confidence;
@@ -259,9 +290,9 @@ const errorText = (incident: IncidentDetail): string => {
   return type ?? (incident.error_summary.split("\n")[0] ?? "").trim();
 };
 
-const DATA_ANSWER = (title: string): Answer => ({
+const dataAnswer = (title: string, incident: IncidentDetail): Answer => ({
   action: "resolve_data",
-  body: "Report a data problem, with the failed checks and a masked sample. No code changes.",
+  body: `Report a data problem, with ${reportContents(incident)}. No code changes.`,
   title,
 });
 
@@ -306,14 +337,15 @@ export const questionFor = (
           body: "Run the repair again on a fresh copy of the repository: a new test, a new fix, a new branch.",
           title: "Try the fix again",
         },
-        DATA_ANSWER("It is a data problem after all"),
+        dataAnswer("It is a data problem after all", incident),
       ],
       other: [IGNORE_ANSWER],
-      title: "The fix did not work. What now?",
+      title: "dag-healer could not write a working fix. What now?",
     };
   }
   if (incident.status === "error") {
     const failure = processingErrorOf(incident.events);
+    const repaired = incident.attempts > 0;
 
     return {
       context: [
@@ -322,12 +354,18 @@ export const questionFor = (
           : `dag-healer stopped before it finished: ${failure.message}`,
       ],
       main: [
-        {
-          action: "retry_repair",
-          body: "Treat it as a code problem and run the repair: a test, a minimal fix and a pull request.",
-          title: "Try again as a code problem",
-        },
-        DATA_ANSWER("It is a data problem"),
+        repaired
+          ? {
+              action: "retry_repair",
+              body: "Run the repair again on a fresh copy of the repository: a new test, a new fix, a new branch.",
+              title: "Try the fix again",
+            }
+          : {
+              action: "retry_repair",
+              body: "dag-healer writes a test that reproduces the failure and a minimal fix, for you to review.",
+              title: "Treat it as a code problem",
+            },
+        dataAnswer("It is a data problem", incident),
       ],
       other: [IGNORE_ANSWER],
       title: "dag-healer stopped with an error. What now?",
@@ -345,7 +383,7 @@ export const questionFor = (
           "connection, memory...), not bad data or a bug in the code.",
       ],
       main: [retryAnswer(words, "Yes, run it again"), { ...IGNORE_ANSWER, title: "No, close it" }],
-      other: [DATA_ANSWER("It is a data problem"), CODE_ANSWER("It is a code problem")],
+      other: [dataAnswer("It is a data problem", incident), CODE_ANSWER("It is a code problem")],
       title: `Run ${step} again?`,
     };
   }
@@ -356,7 +394,7 @@ export const questionFor = (
         retryAnswer(words, "I fixed the definition: run it again"),
         { ...IGNORE_ANSWER, title: "Close it" },
       ],
-      other: [DATA_ANSWER("It is a data problem"), CODE_ANSWER("It is a code problem")],
+      other: [dataAnswer("It is a data problem", incident), CODE_ANSWER("It is a code problem")],
       title: `Fix the ${words.pipeline} definition, then run it again?`,
     };
   }
@@ -380,7 +418,7 @@ export const questionFor = (
           "Yes, it changed on purpose",
           "The code should follow the new columns: dag-healer writes a test and a minimal fix, for you to review.",
         ),
-        DATA_ANSWER("No, the file is wrong"),
+        dataAnswer("No, the file is wrong", incident),
       ],
       other: [retryAnswer(words), IGNORE_ANSWER],
       title: `Did \`${file}\` change on purpose?`,
@@ -412,7 +450,7 @@ export const questionFor = (
   return {
     context,
     main: [
-      DATA_ANSWER("The input is wrong"),
+      dataAnswer("The input is wrong", incident),
       CODE_ANSWER(
         "The code should accept it",
         "dag-healer writes a test that reproduces the failure and a minimal fix so the code handles this input.",

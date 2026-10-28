@@ -6,7 +6,7 @@
  * person must act on; "In progress" the ones dag-healer is still working on; "Done" the ones whose
  * pipeline of work has ended (a data problem reported, a fix proposed, an incident ignored).
  */
-import type { IncidentStatus, IncidentSummary } from "src/api";
+import type { IncidentStatus, IncidentSummary, Violation } from "src/api";
 import type { Vocabulary } from "src/vocabulary";
 
 export type InboxGroup = "done" | "needs" | "progress";
@@ -48,6 +48,28 @@ export const statusMeta = (status: string): StatusMeta =>
 
 export const groupOf = (status: string): InboxGroup => statusMeta(status).group;
 
+/**
+ * The group of an incident in the inbox and the sidebar: an action a person queued moves it to In
+ * progress until the worker applies it.
+ */
+export const incidentGroup = (incident: Pick<IncidentSummary, "pending_command" | "status">): InboxGroup =>
+  incident.pending_command ? "progress" : groupOf(incident.status);
+
+const ACTION_WORDS: Record<string, string> = {
+  approve_contract: "approve the contract",
+  ignore: "ignore the incident",
+  resolve: "apply a decision",
+  resolve_code: "write a test and a fix",
+  resolve_data: "report a data problem",
+  retry_repair: "run the repair",
+};
+
+/** A queued action in a few words ("report a data problem", "retry task", "redrive execution"). */
+export const actionWords = (action: string | null | undefined, words: Vocabulary): string =>
+  action === "retry_task"
+    ? words.retry_action.toLowerCase()
+    : (ACTION_WORDS[action ?? "resolve"] ?? ACTION_WORDS.resolve ?? "");
+
 export const CATEGORY_WORDS: Record<string, string> = {
   ambiguous: "Ambiguous",
   code: "Code",
@@ -60,6 +82,11 @@ export const categoryWord = (category: string | null | undefined): string =>
 
 /** What the incident waits for, in a few words (the inbox's "Next step" column). */
 export const nextStep = (incident: IncidentSummary, words: Vocabulary): string => {
+  const queued = incident.pending_command;
+
+  if (queued) {
+    return `Queued: ${actionWords(queued.action ?? queued.kind, words)}`;
+  }
   switch (incident.status) {
     case "waiting_human":
       return "Decide what happens next";
@@ -130,6 +157,29 @@ export const RULE_WORDS: Record<string, string> = {
 };
 
 export const ruleWord = (rule: string): string => RULE_WORDS[rule] ?? rule.replaceAll("_", " ");
+
+/** A broken check in a few words, with and without its column. */
+const SHORT_RULES: Record<string, [string, string]> = {
+  dataset_unreadable: ["the file cannot be read", "the file cannot be read"],
+  dtype_mismatch: ["wrong type in {}", "values of the wrong type"],
+  missing_column: ["column {} is missing", "a column is missing"],
+  not_allowed_value: ["values not allowed in {}", "values not allowed"],
+  nulls_not_allowed: ["empty values in {}", "empty values"],
+  out_of_range: ["values out of range in {}", "values out of range"],
+  row_count_out_of_band: ["an unexpected row count", "an unexpected row count"],
+  unexpected_column: ["unknown column {}", "an unknown column"],
+};
+
+/** A broken contract check in a few words: "column `qty` is missing". */
+export const violationShort = (violation: Pick<Violation, "column" | "rule">): string => {
+  const column = violation.column ? `\`${violation.column}\`` : undefined;
+  const [withColumn, without] = SHORT_RULES[violation.rule] ?? [
+    `${ruleWord(violation.rule).toLowerCase()} in {}`,
+    ruleWord(violation.rule).toLowerCase(),
+  ];
+
+  return column === undefined ? without : withColumn.replace("{}", column);
+};
 
 /** Contract dtypes in plain words. */
 export const DTYPE_WORDS: Record<string, string> = {

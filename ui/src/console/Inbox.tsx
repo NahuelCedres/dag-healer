@@ -2,7 +2,7 @@
  * The inbox: every incident of every pipeline this dag-healer watches, grouped by what it needs
  * (Needs you, In progress, Done), with filters and a search over pipelines, steps, errors and runs.
  */
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { IncidentSummary } from "src/api";
 import { sortNewestFirst } from "src/model";
@@ -12,10 +12,11 @@ import { ViewLayout } from "./Layout";
 import { ApiProblem } from "./Problems";
 import { useConsoleData } from "./data";
 import { useHeadingFocus } from "./focus";
-import { categoryWord, GROUPS, groupOf, type InboxGroup, nextStep, stepLabel } from "./labels";
+import { categoryWord, GROUPS, type InboxGroup, incidentGroup, nextStep, stepLabel } from "./labels";
 import { NavLink } from "./nav";
+import { type InboxFilters, replaceRoute } from "./route";
 import { exactTime, relativeTime } from "./time";
-import { CategoryChip, Icon, Loading, StatusPill } from "./ui";
+import { CategoryChip, Icon, Loading, StatusPill, useAnnounce, usePageTitle } from "./ui";
 
 const ALL = "";
 const UNCLASSIFIED = "none";
@@ -102,15 +103,25 @@ const HowItWorks = () => {
   );
 };
 
-export const Inbox = ({ group }: { readonly group?: InboxGroup }) => {
+const matchText = (count: number): string =>
+  count === 0 ? "No incident matches." : `${count} ${count === 1 ? "incident matches" : "incidents match"}.`;
+
+export const Inbox = ({
+  filters,
+  group,
+}: {
+  readonly filters?: InboxFilters;
+  readonly group?: InboxGroup;
+}) => {
   const { words } = useUiText();
+  const announce = useAnnounce();
   const resource = useConsoleData().incidents;
   const heading = useRef<HTMLHeadingElement>(null);
   const searchId = useId();
   const [shown, setShown] = useState<InboxGroup | typeof ALL>(group ?? ALL);
-  const [query, setQuery] = useState("");
-  const [pipeline, setPipeline] = useState(ALL);
-  const [category, setCategory] = useState(ALL);
+  const [query, setQuery] = useState(filters?.query ?? "");
+  const [pipeline, setPipeline] = useState(filters?.pipeline ?? ALL);
+  const [category, setCategory] = useState(filters?.category ?? ALL);
   const incidents = useMemo(() => sortNewestFirst(resource?.data?.incidents ?? []), [resource?.data]);
 
   useHeadingFocus(heading, true);
@@ -119,18 +130,25 @@ export const Inbox = ({ group }: { readonly group?: InboxGroup }) => {
     const result: Record<string, number> = { done: 0, needs: 0, progress: 0 };
 
     for (const incident of incidents) {
-      result[groupOf(incident.status)] = (result[groupOf(incident.status)] ?? 0) + 1;
+      result[incidentGroup(incident)] = (result[incidentGroup(incident)] ?? 0) + 1;
     }
 
     return result;
   }, [incidents]);
+  // A pipeline from the URL stays selectable while it has no incident in the list.
   const pipelines = useMemo(
-    () => [...new Set(incidents.map((incident) => incident.dag_id))].sort(),
-    [incidents],
+    () =>
+      [
+        ...new Set([
+          ...incidents.map((incident) => incident.dag_id),
+          ...(pipeline === ALL ? [] : [pipeline]),
+        ]),
+      ].sort(),
+    [incidents, pipeline],
   );
   const rows = incidents.filter(
     (incident) =>
-      (shown === ALL || groupOf(incident.status) === shown) &&
+      (shown === ALL || incidentGroup(incident) === shown) &&
       (pipeline === ALL || incident.dag_id === pipeline) &&
       (category === ALL || (incident.category ?? UNCLASSIFIED) === category) &&
       matches(incident, query),
@@ -142,6 +160,38 @@ export const Inbox = ({ group }: { readonly group?: InboxGroup }) => {
     setPipeline(ALL);
     setCategory(ALL);
   };
+  const filterKey = [shown, query.trim(), pipeline, category].join("\n");
+  const announced = useRef(filterKey);
+
+  const needs = counts.needs ?? 0;
+
+  usePageTitle(needs > 0 ? `Inbox (${needs} need you)` : "Inbox");
+
+  // The filters live in the URL, so Back from an incident returns to the same list.
+  useEffect(() => {
+    replaceRoute({
+      filters: {
+        category: category === ALL ? undefined : category,
+        pipeline: pipeline === ALL ? undefined : pipeline,
+        query: query.trim() === "" ? undefined : query.trim(),
+      },
+      group: shown === ALL ? undefined : shown,
+      view: "inbox",
+    });
+  }, [category, pipeline, query, shown]);
+
+  // How many incidents a change of the filters leaves, once the typing pauses (the table shows it).
+  useEffect(() => {
+    if (announced.current === filterKey) {
+      return undefined;
+    }
+    const timer = globalThis.setTimeout(() => {
+      announced.current = filterKey;
+      announce(matchText(rows.length), { quiet: true });
+    }, 500);
+
+    return () => globalThis.clearTimeout(timer);
+  }, [announce, filterKey, rows.length]);
 
   return (
     <ViewLayout panel={<HowItWorks />} panelTitle="About dag-healer" testId="inbox">

@@ -18,7 +18,7 @@ import { usePolledResource, usePollingIntervals } from "src/hooks/usePolledResou
 import { noStepInstanceIncidentMessage } from "src/messages";
 import { useUiText } from "src/vocabulary";
 
-import { Alerts, IncidentDetails, Timeline } from "./Details";
+import { Alerts, EventText, IncidentDetails, Timeline } from "./Details";
 import { ContractCheck, ErrorDetails, HowDecided, SampleCard, WhatHappened } from "./Evidence";
 import { FixCard } from "./Fix";
 import { useLayout, ViewLayout } from "./Layout";
@@ -31,7 +31,7 @@ import { useHeadingFocus } from "./focus";
 import { foundBy, groupOf, statusMeta, stepLabel } from "./labels";
 import { NavLink } from "./nav";
 import { exactTime, relativeTime, shortAge } from "./time";
-import { CategoryChip, Loading, Notice, RichText, StatusPill, useAnnounce } from "./ui";
+import { CategoryChip, Loading, Notice, RichText, StatusPill, useAnnounce, usePageTitle } from "./ui";
 
 export type IncidentSource =
   | { readonly dagId: string; readonly incidentId: string }
@@ -102,6 +102,7 @@ const IncidentView = ({
   const error = incident.error_name ?? (incident.error_summary.split("\n")[0] ?? "").trim();
 
   useHeadingFocus(heading, true);
+  usePageTitle(`${stepLabel(incident)} failed · ${incident.dag_id}`);
 
   const queuedAction = (action: Queued) => {
     if (action === "approve_contract") {
@@ -116,7 +117,7 @@ const IncidentView = ({
         latest === undefined ? undefined : (
           <p className="latest" data-testid="latest">
             <span>
-              Latest: <strong>{latest.actor}</strong> {latest.message} · {shortAge(latest.at)}
+              Latest: <EventText event={latest} /> · {shortAge(latest.at)}
             </span>
             <button className="linkish" onClick={() => setPanelOpen(true)} type="button">
               Show the timeline

@@ -216,8 +216,8 @@ Copy-Item -Recurse ui\dist\standalone src\dag_healer\api\static\standalone
 downloads pnpm. On Windows a bind-mounted `node_modules` is slow (the first install takes minutes); mounting a named
 volume over it (`-v dag-healer-ui-modules:/app/node_modules`) makes repeated builds take seconds.
 
-Output in `ui/dist/` (gitignored): `main.umd.cjs` (about 130 kB, 36 kB gzipped; React is not bundled), plus
-`main.d.ts` and `main.d.ts.map`, and `standalone/index.js` (about 320 kB, 95 kB gzipped; React included). **Commit both rebuilt bundles** in `src/dag_healer/api/static/` (`main.umd.cjs` and `standalone/`): the
+Output in `ui/dist/` (gitignored): `main.umd.cjs` (about 135 kB, 38 kB gzipped; React is not bundled), plus
+`main.d.ts` and `main.d.ts.map`, and `standalone/index.js` (about 330 kB, 98 kB gzipped; React included). **Commit both rebuilt bundles** in `src/dag_healer/api/static/` (`main.umd.cjs` and `standalone/`): the
 wheel ships them, so end users install dag-healer without Node. `hatch_build.py` refuses a wheel without
 `main.umd.cjs` and only warns without `standalone/index.js` (then `dag-healer serve` answers 503 on its pages). The
 CI job "UI bundle and wheel" builds both, warns when the committed bundles differ from that build and checks that the

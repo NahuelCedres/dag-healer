@@ -8,7 +8,8 @@ import type { ContractView, IncidentAction, IncidentDetail, SetupResponse } from
 import { actionWarnings } from "src/model";
 import { orchestratorType, type UiText } from "src/vocabulary";
 
-import { stepLabel } from "./labels";
+import { reportContents } from "./decision";
+import { stepLabel, violationShort } from "./labels";
 
 export interface Consequences {
   /** The label of the confirm button ("Report a data problem"). */
@@ -165,7 +166,7 @@ export const consequencesOf = (
         alert: alertLine(setup, ["reported"]),
         confirm: "Report a data problem",
         does: [
-          "dag-healer treats this as a data problem: it reports the failed checks with a masked sample. No code changes.",
+          `dag-healer treats this as a data problem: it reports it with ${reportContents(incident)}. No code changes.`,
           ...[contractStillOpen(contract, incident)].filter((line): line is string => line !== undefined),
         ],
         then:
@@ -176,12 +177,14 @@ export const consequencesOf = (
     case "resolve_code":
     case "retry_repair": {
       const retry = action === "retry_repair";
+      // An incident that stopped before its first repair has nothing to run "again".
+      const again = retry && incident.attempts > 0;
 
       return {
         alert: alertLine(setup, ["repaired", "repair_failed"]),
-        confirm: retry ? "Run the repair again" : "Write a test and a fix",
+        confirm: again ? "Run the repair again" : retry ? "Run the repair" : "Write a test and a fix",
         does: [
-          (retry
+          (again
             ? "dag-healer runs the repair again on a fresh copy of the repository, as a code problem: "
             : "dag-healer treats this as a code problem: ") +
             "it writes a test that reproduces the failure, then the smallest fix that makes it pass, and runs " +
@@ -232,13 +235,14 @@ export const consequencesOf = (
 };
 
 /**
- * The consequences of approving `contract`. `incidentStatus` is the status of the incident the
- * approval is offered on, if any: an open incident is not decided again by the approval.
+ * The consequences of approving `contract`. `incident` is the incident the approval is offered on,
+ * if any: an open incident is not decided again by the approval, and an input that breaks the
+ * contract is worth a warning (approving makes the next such failure DATA).
  */
 export const approvalConsequences = (
   contract: ContractView,
   text: UiText,
-  incidentStatus?: string,
+  incident?: Pick<IncidentDetail, "status" | "violations">,
 ): Consequences => ({
   confirm: "Approve the contract",
   does: [
@@ -251,8 +255,17 @@ export const approvalConsequences = (
   ],
   files: `Only \`${contract.path}\` changes.`,
   then:
-    incidentStatus !== undefined && OPEN.has(incidentStatus)
+    incident !== undefined && OPEN.has(incident.status)
       ? "This incident is not decided again: answer the question as well."
       : undefined,
-  warnings: [],
+  warnings:
+    incident === undefined || incident.violations.length === 0
+      ? []
+      : [
+          `This incident's input breaks this contract (${incident.violations
+            .slice(0, 3)
+            .map(violationShort)
+            .join(", ")}). Approve it only if the file is wrong; if the file changed on purpose, update ` +
+            `\`${contract.path}\` first.`,
+        ],
 });

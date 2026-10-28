@@ -17,14 +17,30 @@ const parse = (value: string | null | undefined): Date | undefined => {
   return Number.isNaN(date.getTime()) ? undefined : date;
 };
 
-/** `2026-10-17 14:03` in the browser's time zone ("" when missing). */
+/** The browser's offset from UTC on `date`: "UTC", "UTC-3", "UTC+5:30". */
+export const utcOffset = (date: Date): string => {
+  const minutes = -date.getTimezoneOffset();
+
+  if (minutes === 0) {
+    return "UTC";
+  }
+  const size = Math.abs(minutes);
+  const rest = size % 60;
+
+  return `UTC${minutes > 0 ? "+" : "-"}${Math.floor(size / 60)}${rest === 0 ? "" : `:${pad(rest)}`}`;
+};
+
+/**
+ * `2026-10-17 14:03 UTC-3` in the browser's time zone, named, since run ids and logs are often in
+ * UTC ("" when missing).
+ */
 export const exactTime = (value: string | null | undefined): string => {
   const date = parse(value);
 
   return date === undefined
     ? ""
     : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-        `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        `${pad(date.getHours())}:${pad(date.getMinutes())} ${utcOffset(date)}`;
 };
 
 /** "just now", "4 min ago", "3 h ago", "2 days ago", then "Oct 17" ("" when missing). */
