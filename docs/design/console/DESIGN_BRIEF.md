@@ -41,6 +41,8 @@ State colours, muted, on small markers only, always with a text label next to th
 | lime | `#8DBE6C` | `#3F7A27` | passing tests, added lines, an approved contract |
 | idle | `#6B7487` | `#6E7788` | ignored, not run |
 
+As text, a state colour is mixed with the text colour (70% in a pill, 85% in a diff line), so a pill's label and a diff line pass AA on every surface, a hovered row and their own tinted background included; `idle` alone never colours text.
+
 The category (DATA / CODE / AMBIGUOUS) is a neutral chip: colour is kept for the state. The primary button is neutral (text colour on the ground colour), not a state colour.
 
 Themes: inside Airflow the console follows Airflow's light or dark mode (the `dark` or `light` class Airflow puts on `<html>`); on `dag-healer serve` the viewer picks system, light or dark (kept in localStorage).

@@ -653,7 +653,8 @@ html[data-dhc-theme] body {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--c, var(--muted));
+  /* nudged toward the text colour: AA on every surface, a hovered row included */
+  color: color-mix(in srgb, var(--c, var(--muted)) 70%, var(--text));
   border: 1px solid color-mix(in srgb, var(--c, var(--muted)) 32%, transparent);
   background: color-mix(in srgb, var(--c, var(--muted)) 8%, transparent);
 }
@@ -1239,15 +1240,15 @@ html[data-dhc-theme] body {
 }
 .dhc .diff .add {
   background: var(--add-bg);
-  color: var(--lime);
+  color: color-mix(in srgb, var(--lime) 85%, var(--text));
 }
 .dhc .diff .del {
   background: var(--del-bg);
-  color: var(--pink);
+  color: color-mix(in srgb, var(--pink) 85%, var(--text));
 }
 .dhc .diff .hunk {
   background: var(--hunk-bg);
-  color: var(--blue);
+  color: color-mix(in srgb, var(--blue) 85%, var(--text));
 }
 .dhc .diff .meta-l {
   color: var(--faint);
@@ -1391,8 +1392,11 @@ html[data-dhc-theme] body {
   .dhc {
     --gutter: 16px;
   }
+  /* One line: a wrapping column would size the work area before it is stretched to the window's
+     width, at the near-zero width its container query gives it, and make it thousands of pixels tall. */
   .dhc .shell {
     flex-direction: column;
+    flex-wrap: nowrap;
     min-height: 0;
   }
   .dhc .side {
