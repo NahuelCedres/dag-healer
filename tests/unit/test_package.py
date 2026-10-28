@@ -232,6 +232,65 @@ def test_plugin_definition(
     assert fastapi_app == {"app": sentinel, "url_prefix": "/healer", "name": "dag-healer"}
 
 
+FAB = "airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager"
+
+
+def _airflow_configuration(monkeypatch: pytest.MonkeyPatch, auth_manager: Any) -> None:
+    """A fake ``airflow.configuration`` whose ``[core] auth_manager`` is ``auth_manager`` (an
+    exception is raised by ``conf.get``)."""
+
+    class Conf:
+        def get(self, section: str, key: str, fallback: Any = None) -> Any:
+            assert (section, key) == ("core", "auth_manager")
+            if isinstance(auth_manager, Exception):
+                raise auth_manager
+            return auth_manager
+
+    module = types.ModuleType("airflow.configuration")
+    module.conf = Conf()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "airflow.configuration", module)
+
+
+def test_the_plugin_notes_the_fab_permission_once_where_its_api_is_built(
+    fake_airflow: dict[str, types.ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from dag_healer.airflow import FAB_GRANT_COMMAND
+    from dag_healer.api import app as app_module
+
+    plugin_module = importlib.import_module("dag_healer.airflow.plugin")
+    monkeypatch.setattr(app_module, "get_app", lambda: "the healer app")
+    _airflow_configuration(monkeypatch, FAB)
+    caplog.set_level("INFO", logger=plugin_module.__name__)
+    plugin = plugin_module.HealerPlugin()
+    assert [app["app"] for app in plugin.fastapi_apps + plugin.fastapi_apps] == ["the healer app"] * 2
+    notes = [record for record in caplog.records if record.name == plugin_module.__name__]
+    assert [(record.levelname, record.getMessage()) for record in notes] == [("INFO", plugin_module.FAB_NOTE)]
+    assert "'Plugins: can_read'" in plugin_module.FAB_NOTE and FAB_GRANT_COMMAND in plugin_module.FAB_NOTE
+
+
+@pytest.mark.parametrize(
+    "auth_manager",
+    [
+        "airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager",
+        None,
+        RuntimeError("no configuration"),
+    ],
+)
+def test_the_plugin_says_nothing_of_fab_otherwise(
+    fake_airflow: dict[str, types.ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    auth_manager: Any,
+) -> None:
+    plugin_module = importlib.import_module("dag_healer.airflow.plugin")
+    _airflow_configuration(monkeypatch, auth_manager)
+    caplog.set_level("INFO", logger=plugin_module.__name__)
+    plugin_module.note_fab_permission()  # never raises
+    assert [record for record in caplog.records if record.levelname == "INFO"] == []
+
+
 def test_listener_reports_and_never_raises(
     fake_airflow: dict[str, types.ModuleType], monkeypatch: pytest.MonkeyPatch
 ) -> None:

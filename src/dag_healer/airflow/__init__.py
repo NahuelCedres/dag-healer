@@ -13,7 +13,26 @@ from dag_healer.ingest import api_base_from_execution_url, resolve_api_url
 
 log = logging.getLogger(__name__)
 
-__all__ = ["airflow_api_url"]
+#: The class of Airflow's FAB auth manager, as ``[core] auth_manager`` names it.
+FAB_AUTH_MANAGER = "FabAuthManager"
+#: The FAB permission a role needs to see the dag-healer views: the Airflow UI builds them from
+#: the plugin list (``GET /api/v2/plugins``), which only the Admin and Op roles can read by default.
+FAB_PLUGINS_PERMISSION = "Plugins: can_read"
+#: Grants :data:`FAB_PLUGINS_PERMISSION` to the built-in roles that lack it (additive, idempotent).
+FAB_GRANT_COMMAND = "airflow roles add-perms Viewer User --resource Plugins --action can_read"
+
+__all__ = [
+    "FAB_AUTH_MANAGER",
+    "FAB_GRANT_COMMAND",
+    "FAB_PLUGINS_PERMISSION",
+    "airflow_api_url",
+    "is_fab_auth_manager",
+]
+
+
+def is_fab_auth_manager(value: object) -> bool:
+    """True when ``value`` (Airflow's ``[core] auth_manager``) names the FAB auth manager."""
+    return isinstance(value, str) and value.strip().rsplit(".", 1)[-1] == FAB_AUTH_MANAGER
 
 
 def airflow_api_url() -> str | None:

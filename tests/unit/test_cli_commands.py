@@ -36,6 +36,7 @@ def isolated(healer_env: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("HEALER_CONFIG")
     for name in (
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
         "HEALER_LLM_PROVIDER",
         "HEALER_LLM_MODEL",
         "HEALER_SMTP_HOST",
@@ -554,17 +555,220 @@ def test_doctor_runs_the_smoke_test_of_a_usable_container_sandbox(
     ],
 )
 def test_airflow_auth_and_ingest_follow_the_detection_modes(
-    isolated: Path, modes: list[str], auth: str, ingest: str
+    isolated: Path, monkeypatch: pytest.MonkeyPatch, modes: list[str], auth: str, ingest: str
 ) -> None:
     from dag_healer.config import config_from_mapping
 
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: True)  # Airflow's environment
     cfg = config_from_mapping({"monitor": {"modes": modes}})
     auth_result, ingest_result = doctor_cmd.check_airflow_auth(cfg, True), doctor_cmd.check_ingest(cfg)
     assert (auth_result.status, ingest_result.status) == (auth, ingest)
     if auth == doctor_cmd.SKIP:
         assert auth_result.detail == "REST polling disabled (monitor.modes)"
     if ingest == doctor_cmd.SKIP:
-        assert ingest_result.detail == "listener/callback modes disabled"
+        assert ingest_result.detail == "no listener, callback or push mode (monitor.modes)"
+    else:
+        assert ingest_result.detail.startswith(
+            "HEALER_INGEST_TOKEN is not set in this environment, where Airflow is installed: the "
+            "api-server refuses the events of the listener and the failure callback without it"
+        )
+        polls = auth != doctor_cmd.SKIP
+        assert ingest_result.detail.endswith(" (the REST poll still finds the failures)") is polls
+
+
+# --------------------------------------------------------------------------- doctor: where it runs
+
+FAB = "airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager"
+SIMPLE = "airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager"
+ENTRY_POINT = "dag_healer.airflow.plugin:HealerPlugin"
+
+
+def test_the_ingest_token_is_skipped_where_the_worker_runs(
+    isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dag_healer.config import config_from_mapping
+
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: False)  # the worker's host
+    result = doctor_cmd.check_ingest(config_from_mapping({}))
+    assert (result.status, result.detail) == (
+        doctor_cmd.SKIP,
+        "no ingest token in this environment: the worker does not use one (the api-server and "
+        "Airflow's task processes need HEALER_INGEST_TOKEN)",
+    )
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: True)  # not Airflow's token anyway
+    other = doctor_cmd.check_ingest(
+        config_from_mapping({"orchestrator": {"type": "fake"}, "monitor": {"modes": ["push"]}})
+    )
+    assert (other.status, other.detail) == (
+        doctor_cmd.SKIP,
+        "no ingest token in this environment: the worker does not use one (dag-healer serve, which "
+        "receives the pushed events, needs HEALER_INGEST_TOKEN)",
+    )
+
+    monkeypatch.setenv("HEALER_INGEST_TOKEN", "ingest-token-value")
+    result = doctor_cmd.check_ingest(config_from_mapping({}))
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        "an ingest token is set in this environment (value hidden)",
+    )
+
+
+def test_the_plugin_line_is_skipped_where_airflow_is_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: False)
+    result = doctor_cmd.check_plugin_entry_point()
+    assert (result.status, result.detail) == (
+        doctor_cmd.SKIP,
+        "Airflow is not installed here, so doctor cannot tell whether Airflow loaded the plugin "
+        "(run: airflow plugins, where Airflow runs; it lists dag_healer)",
+    )
+
+
+def test_the_plugin_line_where_airflow_is_installed(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.metadata
+
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: True)
+    monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path))  # no airflow.cfg: Airflow's default auth manager
+    result = doctor_cmd.check_plugin_entry_point()
+    installed = (
+        f"entry point {ENTRY_POINT} is installed next to Airflow (run: airflow plugins, to see that Airflow "
+        "loaded it)"
+    )
+    assert (result.status, result.detail) == (doctor_cmd.OK, installed)
+
+    monkeypatch.setenv("AIRFLOW__CORE__AUTH_MANAGER", FAB)
+    result = doctor_cmd.check_plugin_entry_point()
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        f"{installed}; the auth manager is FAB: roles other than Admin and Op need Plugins: can_read "
+        "to see the views",
+    )
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda group: [])
+    result = doctor_cmd.check_plugin_entry_point()
+    assert (result.status, result.detail) == (
+        doctor_cmd.WARN,
+        "Airflow is installed here but the entry point 'dag_healer' is not, so Airflow cannot load the "
+        "plugin (is dag-healer pip-installed here?)",
+    )
+
+
+def test_airflow_auth_manager_is_read_without_importing_airflow(
+    isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "airflow", raising=False)  # whatever an earlier test imported
+    home = tmp_path / "airflow home"
+    home.mkdir()
+    monkeypatch.setenv("AIRFLOW_HOME", str(home))
+    assert doctor_cmd.airflow_auth_manager() is None  # no airflow.cfg
+    (home / "airflow.cfg").write_text(
+        f"[core]\n# 100% of the roles\nexecutor = LocalExecutor\nauth_manager = {FAB}\n", encoding="utf-8"
+    )
+    assert doctor_cmd.airflow_auth_manager() == FAB
+    other = tmp_path / "other.cfg"
+    other.write_text(f"[core]\nauth_manager = {SIMPLE}\n", encoding="utf-8")
+    monkeypatch.setenv("AIRFLOW_CONFIG", str(other))
+    assert doctor_cmd.airflow_auth_manager() == SIMPLE
+    monkeypatch.setenv("AIRFLOW__CORE__AUTH_MANAGER", f" {FAB} ")
+    assert doctor_cmd.airflow_auth_manager() == FAB
+    monkeypatch.delenv("AIRFLOW__CORE__AUTH_MANAGER")
+    other.write_bytes(b"\xff\xfe[core\n")
+    assert doctor_cmd.airflow_auth_manager() is None  # unreadable: nothing is guessed
+    assert "airflow" not in sys.modules
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (FAB, True),
+        ("FabAuthManager", True),
+        (f" {FAB}\n", True),
+        (SIMPLE, False),
+        ("x.FabAuthManagers", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_fab_auth_manager(value: Any, expected: bool) -> None:
+    from dag_healer.airflow import is_fab_auth_manager
+
+    assert is_fab_auth_manager(value) is expected
+
+
+def test_airflow_installed_ignores_a_folder_named_airflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "airflow").mkdir()  # a namespace package, such as this repository's tests/airflow
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "airflow", raising=False)
+    assert doctor_cmd.airflow_installed() is False
+    (tmp_path / "airflow" / "__init__.py").write_text("", encoding="utf-8")
+    import importlib
+
+    importlib.invalidate_caches()
+    assert doctor_cmd.airflow_installed() is True
+
+
+def test_doctor_on_the_workers_host_skips_what_it_cannot_see_and_calls_nothing_new(
+    repo: Path,
+    healthy_network: list[tuple[str, int]],
+    working_sandbox: SandboxProbe,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def get(url: str) -> _Response:
+        calls.append(("GET", url))
+        return _healthy(url)
+
+    def post(url: str, payload: dict[str, Any]) -> _Response:
+        calls.append(("POST", url))
+        return _Response(201, {"access_token": "t"})
+
+    monkeypatch.setattr(doctor_cmd, "_http_get", get)
+    monkeypatch.setattr(doctor_cmd, "_http_post", post)
+    monkeypatch.setattr(doctor_cmd, "airflow_installed", lambda: False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    monkeypatch.setenv("HEALER_AIRFLOW_USERNAME", "admin")
+    monkeypatch.setenv("HEALER_AIRFLOW_PASSWORD", "admin-password")
+    monkeypatch.setenv("HEALER_SANDBOX_IMAGE", SANDBOX_IMAGE)
+    assert main([*_cfg_args(repo), "doctor"]) == 0
+    out = capsys.readouterr().out
+    status = _doctor_lines(out)
+    assert status["airflow plugin"] == status["ingest"] == "[SKIP]"
+    assert [name for name, label in status.items() if label == "[WARN]"] == ["contracts"]  # drafts only
+    assert calls == [
+        ("GET", "http://localhost:8080/api/v2/monitor/health"),
+        ("POST", "http://localhost:8080/auth/token"),
+    ]
+
+
+def test_doctor_llm_accepts_an_auth_token(isolated: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dag_healer.config import config_from_mapping
+
+    cfg = config_from_mapping({"llm": {"provider": "anthropic", "model": "claude-opus-5-5"}})
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", SECRET)
+    result = doctor_cmd.check_llm(cfg)
+    assert (result.status, result.detail) == (
+        doctor_cmd.OK,
+        "ANTHROPIC_AUTH_TOKEN is set (value hidden); model claude-opus-5-5",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-another-secret")
+    result = doctor_cmd.check_llm(cfg)
+    assert result.detail == (
+        "ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are set (values hidden); model claude-opus-5-5"
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "   ")
+    result = doctor_cmd.check_llm(cfg)
+    assert (result.status, result.detail) == (
+        doctor_cmd.ERROR,
+        "neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set; the worker cannot classify or repair",
+    )
+    monkeypatch.setenv("HEALER_LLM_PROVIDER", "fake")  # the worker's provider decides, as in the worker
+    assert doctor_cmd.check_llm(cfg).status == doctor_cmd.OK
 
 
 # --------------------------------------------------------------------------- doctor: the bedrock provider

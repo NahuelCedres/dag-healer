@@ -16,8 +16,17 @@ that can run the healer branch's code with the repository's secrets) makes docto
 could not be checked is a warning, and checks that fail unexpectedly are one ``github setup``
 warning. Without a token or a repository nothing is called.
 
+``doctor`` sees only the environment that runs it, and calls nothing to check another one. The
+``airflow plugin`` and ``ingest`` lines say so: without Airflow in this environment (the worker's
+host) the plugin line is skipped, since only ``airflow plugins`` in Airflow's environment shows
+that Airflow loaded the plugin; where Airflow is installed, the plugin's entry point must be too,
+and the line notes the FAB auth manager when this environment configures it (its roles see the
+views only with ``Plugins: can_read``). The worker does not use the ingest token: for Airflow, a
+missing one is a warning only where Airflow is installed, and the line is skipped elsewhere.
+
 The ``llm`` check is about the provider the worker will run (``$HEALER_LLM_PROVIDER`` overrides
-``llm.provider``): ``fake`` needs nothing, ``anthropic`` needs ``ANTHROPIC_API_KEY``. For
+``llm.provider``): ``fake`` needs nothing, ``anthropic`` needs ``ANTHROPIC_API_KEY`` or
+``ANTHROPIC_AUTH_TOKEN``. For
 ``bedrock`` (Claude on Amazon Bedrock) the line shows the model, the region and whether AWS
 credentials resolve through the default AWS chain (only how they were found, never a value), and
 it is an error that names each problem, in this order: boto3 missing (``pip install
@@ -42,7 +51,9 @@ repairs' tests without any isolation.
 from __future__ import annotations
 
 import argparse
+import configparser
 import contextlib
+import importlib.util
 import os
 import socket
 from collections.abc import Callable
@@ -67,6 +78,11 @@ SKIP = "skip"
 
 NETWORK_TIMEOUT_SECONDS = 3.0
 API_KEY_ENV = "ANTHROPIC_API_KEY"
+#: The bearer token the anthropic provider takes instead of an API key.
+AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
+INGEST_TOKEN_ENV = "HEALER_INGEST_TOKEN"
+#: Where this environment sets Airflow's auth manager (read without importing Airflow).
+AUTH_MANAGER_ENV = "AIRFLOW__CORE__AUTH_MANAGER"
 #: Seconds the AWS credential probe waits for each request to the instance metadata service
 #: (one attempt each).
 METADATA_TIMEOUT_SECONDS = 1
@@ -184,23 +200,86 @@ def check_bundle() -> CheckResult:
     return CheckResult("ui bundle", OK, f"{path} ({path.stat().st_size:,} bytes)")
 
 
+def airflow_installed() -> bool:
+    """True when Airflow can be imported in this environment (it is not imported).
+
+    A folder named ``airflow`` without an ``__init__.py`` on the path (a namespace package, such
+    as the ``tests/airflow`` folder of a checkout) is not Airflow.
+    """
+    try:
+        spec = importlib.util.find_spec("airflow")
+    except (ImportError, ValueError):  # an imported module without a spec, such as a test double
+        return False
+    return spec is not None and spec.origin is not None
+
+
+def airflow_auth_manager() -> str | None:
+    """Airflow's ``[core] auth_manager`` as this environment sets it, read without importing Airflow.
+
+    ``$AIRFLOW__CORE__AUTH_MANAGER``, else the ``[core]`` section of ``$AIRFLOW_CONFIG`` (default
+    ``$AIRFLOW_HOME/airflow.cfg``, ``~/airflow/airflow.cfg``). ``None`` when neither sets it
+    (Airflow's own default applies) or the file cannot be read.
+    """
+    value = os.environ.get(AUTH_MANAGER_ENV, "").strip()
+    if value:
+        return value
+    home = Path(os.environ.get("AIRFLOW_HOME") or "~/airflow").expanduser()
+    path = Path(os.environ.get("AIRFLOW_CONFIG") or home / "airflow.cfg").expanduser()
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        with path.open(encoding="utf-8") as handle:
+            parser.read_file(handle)
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return None
+    return parser.get("core", "auth_manager", fallback="").strip() or None
+
+
 def check_plugin_entry_point() -> CheckResult:
-    """The ``airflow.plugins`` entry point is registered (Airflow discovers the plugin)."""
+    """What this environment shows of the Airflow plugin; Airflow is never imported or called.
+
+    Whether Airflow loaded the plugin shows only in Airflow's processes (``airflow plugins``). The
+    line is skipped where Airflow is not installed (the worker's host). Where it is, the
+    ``airflow.plugins`` entry point ``dag_healer`` must be installed too (a warning otherwise),
+    and the line adds that the FAB auth manager shows the views only to roles with
+    ``Plugins: can_read`` when this environment configures FAB (:func:`airflow_auth_manager`).
+    """
     from importlib.metadata import entry_points
 
-    for entry in entry_points(group="airflow.plugins"):
-        if entry.name == "dag_healer":
-            return CheckResult("airflow plugin", OK, f"entry point {entry.value}")
-    return CheckResult(
-        "airflow plugin", WARN, "entry point 'dag_healer' not found (is dag-healer pip-installed here?)"
+    from dag_healer.airflow import FAB_PLUGINS_PERMISSION, is_fab_auth_manager
+
+    if not airflow_installed():
+        return CheckResult(
+            "airflow plugin",
+            SKIP,
+            "Airflow is not installed here, so doctor cannot tell whether Airflow loaded the plugin "
+            "(run: airflow plugins, where Airflow runs; it lists dag_healer)",
+        )
+    entry = next((item for item in entry_points(group="airflow.plugins") if item.name == "dag_healer"), None)
+    if entry is None:
+        return CheckResult(
+            "airflow plugin",
+            WARN,
+            "Airflow is installed here but the entry point 'dag_healer' is not, so Airflow cannot load "
+            "the plugin (is dag-healer pip-installed here?)",
+        )
+    detail = (
+        f"entry point {entry.value} is installed next to Airflow "
+        "(run: airflow plugins, to see that Airflow loaded it)"
     )
+    if is_fab_auth_manager(airflow_auth_manager()):
+        detail += (
+            f"; the auth manager is FAB: roles other than Admin and Op need {FAB_PLUGINS_PERMISSION} "
+            "to see the views"
+        )
+    return CheckResult("airflow plugin", OK, detail)
 
 
 def check_llm(cfg: HealerConfig | None) -> CheckResult:
     """The LLM provider the worker will run can be used (no secret value is ever shown).
 
     The provider is the worker's: ``$HEALER_LLM_PROVIDER``, else ``llm.provider``. ``fake``
-    needs nothing and ``anthropic`` an API key; ``bedrock`` is :func:`_check_bedrock`. An
+    needs nothing and ``anthropic`` ``ANTHROPIC_API_KEY`` or ``ANTHROPIC_AUTH_TOKEN`` (a bearer
+    token, which the SDK sends instead of a key); ``bedrock`` is :func:`_check_bedrock`. An
     unknown name is an error. No model is called.
     """
     from dag_healer.agent.llm import PROVIDER_NAMES, provider_name
@@ -219,10 +298,15 @@ def check_llm(cfg: HealerConfig | None) -> CheckResult:
             ERROR,
             f"unknown LLM provider '{provider}': expected {expected} (llm.provider or HEALER_LLM_PROVIDER)",
         )
-    if os.environ.get(API_KEY_ENV, "").strip():
-        model = cfg.llm.model if cfg is not None else "?"
-        return CheckResult("llm", OK, f"{API_KEY_ENV} is set (value hidden); model {model}")
-    return CheckResult("llm", ERROR, f"{API_KEY_ENV} is not set; the worker cannot classify or repair")
+    names = [name for name in (API_KEY_ENV, AUTH_TOKEN_ENV) if os.environ.get(name, "").strip()]
+    model = cfg.llm.model if cfg is not None else "?"
+    if len(names) == 2:
+        detail = f"{API_KEY_ENV} and {AUTH_TOKEN_ENV} are set (values hidden); model {model}"
+        return CheckResult("llm", OK, detail)
+    if names:
+        return CheckResult("llm", OK, f"{names[0]} is set (value hidden); model {model}")
+    detail = f"neither {API_KEY_ENV} nor {AUTH_TOKEN_ENV} is set; the worker cannot classify or repair"
+    return CheckResult("llm", ERROR, detail)
 
 
 def _check_bedrock(llm: LlmConfig) -> CheckResult:
@@ -464,14 +548,42 @@ def check_secret_literals(cfg: HealerConfig) -> CheckResult:
     return CheckResult("secrets", OK, "no literal secrets in the configuration")
 
 
+def _watches_airflow(cfg: HealerConfig) -> bool:
+    """True when ``orchestrator.type`` is Airflow's (its name or its factory)."""
+    from dag_healer.orchestrators import registry
+
+    return registry.orchestrator_settings(cfg).type in ("airflow", registry.BUILTIN_TYPES["airflow"])
+
+
 def check_ingest(cfg: HealerConfig) -> CheckResult:
-    """The listener / callback fast path needs a shared ingest token."""
+    """Whether this environment holds the ingest token of pushed failure events.
+
+    The API that receives the events checks the token (the plugin in Airflow's api-server, or
+    ``dag-healer serve``), and Airflow's listener and failure callback send it from the task
+    processes; the worker does not use it. A missing token is therefore a warning only for
+    Airflow, where Airflow is installed (its api-server or task processes may run here); elsewhere,
+    such as on the worker's host, the line is skipped and names who needs the token.
+    """
     if not cfg.monitor.wants("push"):
-        return CheckResult("ingest", SKIP, "listener/callback modes disabled")
-    if cfg.ingest.token or os.environ.get("HEALER_INGEST_TOKEN", "").strip():
-        return CheckResult("ingest", OK, "ingest token is set (value hidden)")
+        return CheckResult("ingest", SKIP, "no listener, callback or push mode (monitor.modes)")
+    if cfg.ingest.token or os.environ.get(INGEST_TOKEN_ENV, "").strip():
+        return CheckResult("ingest", OK, "an ingest token is set in this environment (value hidden)")
+    airflow = _watches_airflow(cfg)
+    if airflow and airflow_installed():
+        detail = (
+            f"{INGEST_TOKEN_ENV} is not set in this environment, where Airflow is installed: the "
+            "api-server refuses the events of the listener and the failure callback without it"
+        )
+        if cfg.monitor.wants("poll"):
+            detail += " (the REST poll still finds the failures)"
+        return CheckResult("ingest", WARN, detail)
+    needs = (
+        f"the api-server and Airflow's task processes need {INGEST_TOKEN_ENV}"
+        if airflow
+        else f"dag-healer serve, which receives the pushed events, needs {INGEST_TOKEN_ENV}"
+    )
     return CheckResult(
-        "ingest", WARN, "HEALER_INGEST_TOKEN not set; listener events are rejected (REST polling still works)"
+        "ingest", SKIP, f"no ingest token in this environment: the worker does not use one ({needs})"
     )
 
 
@@ -724,6 +836,8 @@ register_command(
 
 __all__ = [
     "CheckResult",
+    "airflow_auth_manager",
+    "airflow_installed",
     "bundle_path",
     "check_airflow_api",
     "check_airflow_auth",
