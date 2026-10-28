@@ -27,8 +27,11 @@ listener), so the UI lives inside Airflow and respects its users and permissions
 
 ## Quickstart
 
-TODO: installation into an existing Airflow deployment, `dag-healer init`, contract
-approval and the end-to-end demo (`python scripts/tasks.py demo`).
+[docs/installation.md](docs/installation.md) is the installation guide for an existing Airflow
+deployment: the plugin in Airflow's environment, `dag-healer init` and the essentials of
+`healer.yaml`, the worker and its test sandbox, how to read `dag-healer doctor`, and the
+approval of the data contracts. To see dag-healer at work first, `python scripts/tasks.py demo`
+starts a local Airflow in Docker and plays three failures end to end, one per category.
 
 ## Example cases
 
