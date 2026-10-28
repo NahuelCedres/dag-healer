@@ -88,8 +88,12 @@ def list_incidents(
     incidents = store_repo.list_incidents(
         session, dag_ids=readable, statuses=statuses, limit=limit, orchestrator=instance
     )
+    pending = views.pending_commands_by_incident(session, (incident.id for incident in incidents))
     return schemas.IncidentList(
-        incidents=[views.incident_summary(cfg, incident, adapter=adapter) for incident in incidents],
+        incidents=[
+            views.incident_summary(cfg, incident, adapter=adapter, pending=pending.get(incident.id))
+            for incident in incidents
+        ],
         total=views.count_incidents(session, dag_ids=readable, statuses=statuses, orchestrator=instance),
     )
 
@@ -119,8 +123,12 @@ def list_dag_incidents(
             can_approve=authorizer.can_edit_dag(user, dag_id, None),
             pending_approval=dag_id in views.pending_approval_dags(session, orchestrator=instance),
         )
+    pending = views.pending_commands_by_incident(session, (incident.id for incident in incidents))
     return schemas.DagIncidents(
-        incidents=[views.incident_summary(cfg, incident, adapter=adapter) for incident in incidents],
+        incidents=[
+            views.incident_summary(cfg, incident, adapter=adapter, pending=pending.get(incident.id))
+            for incident in incidents
+        ],
         contract=contract,
         monitored=cfg.is_monitored(dag_id),
         can_edit=authorizer.can_edit_dag(user, dag_id),

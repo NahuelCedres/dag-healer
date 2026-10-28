@@ -104,12 +104,37 @@ class _IncidentFields(_Out):
     error_name: str | None = None
 
 
-class IncidentSummary(_IncidentFields):
-    """One incident in a list (``links`` only when there are native links to show)."""
+class PendingCommandView(_Out):
+    """Human action waiting for the worker.
 
-    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {**_IncidentFields.ADDITIVE_FIELDS, "links": None}
+    ``action`` is the action as the person chose it (``resolve_data``, ``retry_task``...): the
+    ``kind`` of a ``resolve`` command does not say which resolution it carries.
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {"action": None}
+
+    id: int
+    kind: str
+    created_at: datetime | None = None
+    actor: str
+    action: str | None = None
+
+
+class IncidentSummary(_IncidentFields):
+    """One incident in a list (``links`` only when there are native links to show).
+
+    ``pending_command`` is the action a person queued that the worker has not applied yet (at
+    most one is pending per incident).
+    """
+
+    ADDITIVE_FIELDS: ClassVar[Mapping[str, Any]] = {
+        **_IncidentFields.ADDITIVE_FIELDS,
+        "links": None,
+        "pending_command": None,
+    }
 
     links: IncidentLinks | None = None
+    pending_command: PendingCommandView | None = None
 
 
 class Sample(_Out):
@@ -140,15 +165,6 @@ class AlertView(_Out):
     status: str
     error: str | None = None
     sent_at: datetime | None = None
-
-
-class PendingCommandView(_Out):
-    """Human action waiting for the worker."""
-
-    id: int
-    kind: str
-    created_at: datetime | None = None
-    actor: str
 
 
 class IncidentDetail(_IncidentFields):

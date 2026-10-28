@@ -878,6 +878,40 @@ def test_retry_repair_and_retry_task(api: Api) -> None:
     assert (third.kind, third.incident_id) == ("retry_task", api.ids["ambiguous"])
 
 
+def test_lists_show_the_pending_command(api: Api) -> None:
+    listed = api.get("/incidents").json()["incidents"]
+    assert all("pending_command" not in incident for incident in listed)  # additive: left out when none
+
+    assert (
+        api.post(
+            f"/dags/inventory_report/incidents/{api.ids['ambiguous']}/resolve", json={"resolution": "data"}
+        ).status_code
+        == 202
+    )
+    assert api.post(f"/dags/customers_sync/incidents/{api.ids['code']}/retry-task").status_code == 202
+    resolve, retry = _commands(api)
+
+    listed = {incident["id"]: incident for incident in api.get("/incidents").json()["incidents"]}
+    assert listed[api.ids["ambiguous"]]["pending_command"] == {
+        "id": resolve.id,
+        "kind": "resolve",
+        "created_at": listed[api.ids["ambiguous"]]["pending_command"]["created_at"],
+        "actor": "admin",
+        "action": "resolve_data",
+    }
+    assert listed[api.ids["code"]]["pending_command"]["action"] == "retry_task"
+    assert listed[api.ids["code"]]["pending_command"]["id"] == retry.id
+    assert "pending_command" not in listed[api.ids["data"]]
+    dag = api.get("/dags/inventory_report/incidents").json()["incidents"]
+    assert dag[0]["pending_command"]["action"] == "resolve_data"
+    dags = {d["dag_id"]: d for d in api.get("/dags").json()["dags"]}
+    assert dags["inventory_report"]["last_incident"]["pending_command"]["kind"] == "resolve"
+    assert "pending_command" not in dags["sales_daily_etl"]["last_incident"]
+    detail = api.get(f"/dags/inventory_report/incidents/{api.ids['ambiguous']}").json()
+    assert detail["pending_commands"][0]["action"] == "resolve_data"
+    assert "pending_command" not in detail
+
+
 def test_approve_contract(api: Api) -> None:
     response = api.post("/dags/inventory_report/contract/approve", json={"note": "reviewed"})
     assert response.status_code == 202

@@ -294,6 +294,23 @@ def test_viewer_cannot_act(env: Env) -> None:
     assert env.authorizer.checks[-1] == ("PUT", None, "inventory_report")
 
 
+def test_a_pending_command_in_a_list_says_who_and_what_only(env: Env) -> None:
+    note = "call the vendor on +44 20 7946 0958 about the qty column"
+    queued = _call(
+        env, "POST", f"/api/v1/dags/inventory_report/incidents/{env.incident_id}/resolve",
+        {"resolution": "data", "note": note}, {"X-Test-User": "admin"},
+    )  # fmt: skip
+    assert queued.status_code == 202
+    for path in ("/api/v1/incidents", "/api/v1/dags/inventory_report/incidents", "/api/v1/dags"):
+        response = env.client.get(path, headers={"X-Test-User": "viewer"})
+        assert response.status_code == 200, path
+        assert "vendor" not in response.text and "7946" not in response.text, path
+    (listed,) = env.client.get("/api/v1/incidents", headers={"X-Test-User": "viewer"}).json()["incidents"]
+    assert set(listed["pending_command"]) == {"id", "kind", "created_at", "actor", "action"}
+    outsider = env.client.get("/api/v1/incidents", headers={"X-Test-User": "outsider"}).json()
+    assert outsider == {"incidents": [], "total": 0}
+
+
 # --------------------------------------------------------------------------- CSRF
 
 

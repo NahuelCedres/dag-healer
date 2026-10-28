@@ -42,10 +42,15 @@ def list_dags(
     }
     open_counts = views.open_incident_counts(session, dag_ids & with_incidents, orchestrator=instance)
     latest = views.last_incidents(session, dag_ids & with_incidents, orchestrator=instance)
+    pending = views.pending_commands_by_incident(session, (incident.id for incident in latest.values()))
     dags = []
     for dag_id in sorted(dag_ids):
         last = latest.get(dag_id)
-        summary = views.incident_summary(cfg, last, adapter=adapter) if last is not None else None
+        summary = (
+            views.incident_summary(cfg, last, adapter=adapter, pending=pending.get(last.id))
+            if last is not None
+            else None
+        )
         dags.append(
             schemas.DagSummary(
                 dag_id=dag_id,

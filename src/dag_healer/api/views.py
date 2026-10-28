@@ -353,11 +353,16 @@ def pr_md_file(cfg: HealerConfig, incident: Incident) -> Path | None:
 
 
 def incident_summary(
-    cfg: HealerConfig, incident: Incident, *, adapter: OrchestratorAdapter | None = None
+    cfg: HealerConfig,
+    incident: Incident,
+    *,
+    adapter: OrchestratorAdapter | None = None,
+    pending: Command | None = None,
 ) -> schemas.IncidentSummary:
     """Summary view of an incident (masked error summary and error name).
 
-    ``links`` is set only when the orchestrator has native links to show.
+    ``links`` is set only when the orchestrator has native links to show; ``pending`` is the
+    incident's pending command (:func:`pending_commands_by_incident`), if any.
     """
     native = _native_links(cfg, incident, adapter)
     return schemas.IncidentSummary(
@@ -380,6 +385,7 @@ def incident_summary(
         orchestrator=incident.orchestrator or DEFAULT_ORCHESTRATOR,
         error_name=mask_free_text(incident.error_name),
         links=_links(cfg, incident, native) if native else None,
+        pending_command=pending_command_view(pending) if pending is not None else None,
     )
 
 
@@ -445,6 +451,45 @@ def pending_commands_for(session: Session, incident_id: str) -> list[Command]:
     return list(session.scalars(query))
 
 
+def pending_commands_by_incident(session: Session, incident_ids: Iterable[str]) -> dict[str, Command]:
+    """The oldest pending command of each of ``incident_ids`` that has one (one query)."""
+    ids = sorted(set(incident_ids))
+    if not ids:
+        return {}
+    query = (
+        select(Command)
+        .where(Command.incident_id.in_(ids), Command.status == COMMAND_PENDING)
+        .order_by(Command.id)
+    )
+    found: dict[str, Command] = {}
+    for command in session.scalars(query):
+        if command.incident_id is not None:
+            found.setdefault(command.incident_id, command)
+    return found
+
+
+def command_action(command: Command) -> str | None:
+    """The action a person chose with ``command`` (``resolve_data``, ``retry_task``...).
+
+    A ``resolve`` command carries its resolution in its payload; ``None`` when it is unknown.
+    """
+    if command.kind != "resolve":
+        return command.kind
+    payload = command.payload if isinstance(command.payload, Mapping) else {}
+    return RESOLUTION_ACTIONS.get(str(payload.get("resolution")))
+
+
+def pending_command_view(command: Command) -> schemas.PendingCommandView:
+    """The view of a pending command, with the action it carries."""
+    return schemas.PendingCommandView(
+        id=command.id,
+        kind=command.kind,
+        created_at=command.created_at,
+        actor=command.actor,
+        action=command_action(command),
+    )
+
+
 def incident_detail(
     session: Session,
     cfg: HealerConfig,
@@ -469,7 +514,7 @@ def incident_detail(
         retry_available=retry_available(adapter, incident),
     )
     return schemas.IncidentDetail(
-        **summary.model_dump(exclude={"links"}),
+        **summary.model_dump(exclude={"links", "pending_command"}),
         diagnosis=mask_free_text(incident.diagnosis),
         violated_rule=_violated_rule(incident.violated_rule),
         violations=incident_violations(incident, events),
@@ -507,10 +552,7 @@ def incident_detail(
         ],
         links=incident_links(cfg, incident, adapter=adapter),
         allowed_actions=actions,
-        pending_commands=[
-            schemas.PendingCommandView(id=c.id, kind=c.kind, created_at=c.created_at, actor=c.actor)
-            for c in pending
-        ],
+        pending_commands=[pending_command_view(command) for command in pending],
         can_edit=can_edit,
         action_warnings=action_warnings(adapter, incident, actions),
     )
@@ -812,6 +854,7 @@ __all__ = [
     "actions_for_status",
     "airflow_base_url",
     "allowed_actions",
+    "command_action",
     "contract_file_text",
     "contract_status",
     "contract_view",
@@ -829,6 +872,8 @@ __all__ = [
     "open_incident_counts",
     "orchestrator_view",
     "pending_approval_dags",
+    "pending_command_view",
+    "pending_commands_by_incident",
     "pending_commands_for",
     "pr_md_file",
     "pr_md_url",
