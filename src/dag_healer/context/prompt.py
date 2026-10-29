@@ -3,9 +3,10 @@
 :func:`context_blocks` renders the files a snapshot read (refused and missing files have no block):
 each block names the file, the commit it was read from, its owner and its last review in its
 attributes, and holds the masked text the model reads. The text cannot close its block or open
-another one: a tag of a prompt block inside it (``</organization_context>``, ``<signals>`` ...)
-loses its ``<`` (``&lt;``). The instructions on how to use the blocks are in the prompts
-themselves (``agent/prompts/classify.md`` and the repair prompts).
+another one: a tag of a prompt block inside it (``</organization_context>``, ``<signals>``, a
+full-width ``\uff1c`` or a name split by a zero-width character ...) loses its ``<`` (``&lt;``).
+The instructions on how to use the blocks are in the prompts themselves
+(``agent/prompts/classify.md`` and the repair prompts).
 """
 
 from __future__ import annotations
@@ -19,13 +20,18 @@ ETL_TAG = "etl_information"
 #: The tags of every prompt block a context file must not open or close.
 PROMPT_TAGS: tuple[str, ...] = (ORGANIZATION_TAG, ETL_TAG, "incident", "signals", "evidence")
 
-_TAG_RE = re.compile(r"<(?=\s*/?\s*(?:" + "|".join(PROMPT_TAGS) + r")\b)", re.IGNORECASE)
+#: Characters that show nothing: they are taken out, so they cannot hide a tag (``inci\u200bdent``).
+_INVISIBLE_RE = re.compile("[\u200b-\u200d\u2060\ufeff]")
+_TAG_RE = re.compile(r"[<\uff1c](?=\s*[/\uff0f]?\s*(?:" + "|".join(PROMPT_TAGS) + r")\b)", re.IGNORECASE)
 _ATTRIBUTE_ESCAPES = str.maketrans({'"': "&quot;", "<": "&lt;", ">": "&gt;", "\n": " ", "\r": " "})
 
 
 def neutralise_tags(text: str) -> str:
-    """``text`` with the ``<`` of every prompt block tag written ``&lt;``."""
-    return _TAG_RE.sub("&lt;", text)
+    """``text`` with the ``<`` (or a full-width ``\uff1c``) of every prompt block tag written ``&lt;``.
+
+    Zero-width characters are taken out first, so they cannot split a tag's name.
+    """
+    return _TAG_RE.sub("&lt;", _INVISIBLE_RE.sub("", text))
 
 
 def _attribute(value: str) -> str:

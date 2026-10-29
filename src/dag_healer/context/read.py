@@ -4,17 +4,21 @@
 :func:`dag_healer.agent.context.gather_context`), and :func:`read_all` what ``dag-healer
 doctor`` calls. Both read the repository of ``repo.path`` through git only:
 
-1. the commit is ``refs/heads/<repo.base_branch>``, else ``refs/remotes/origin/<base_branch>``,
-   else ``HEAD`` (a detached checkout, such as git-sync's); the working tree is never read,
-   because the model-written tests and fixes, and whatever runs in the worker's checkout, can
-   write there. A file that is in the working tree but not in that commit gets a note;
+1. the commit is the newer of ``refs/heads/<repo.base_branch>`` and
+   ``refs/remotes/origin/<base_branch>`` (the local branch when they diverged, with a note), else
+   ``HEAD`` (a detached checkout, such as git-sync's); the working tree is never read: what is
+   there was never reviewed, and anything that runs in the checkout can write there. A file that
+   is in the working tree but not in that commit gets a note;
 2. each file is looked up with ``git ls-tree`` (``context.organization`` and
    ``<context.etl_dir>/<pipeline id>.md``); only a regular file is read (``git cat-file blob``),
    and only when it is at most ``context.max_file_bytes`` long;
 3. a file is **refused**, and nothing of it is sent to the model or stored, when it is over the
    size cap, is not UTF-8 text, is a symbolic link or a gitlink, or holds what looks like a
    secret (:func:`dag_healer.masking.find_secret`, with the values of the configured secrets and
-   of the credential variables of the worker's environment). The reason never quotes the value;
+   of the credential variables of the worker's environment). The secret check looks at the file
+   as it is, without its HTML comments (a comment can split a value), and at what the parsing
+   gives (a rule whose lines are joined, the owner, the text, the problems). The reason never
+   quotes the value;
 4. a file that is read is parsed (:mod:`dag_healer.context.parse`), and its text and its rules
    are masked with :func:`dag_healer.masking.mask_text` (e-mail addresses, phone numbers and the
    like) before anything else sees them.
@@ -36,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dag_healer.context.model import ContextFile, ContextSnapshot, Refusal, Rule, short_sha
-from dag_healer.context.parse import parse_context_file, review_due
+from dag_healer.context.parse import ParsedFile, clean_problem, parse_context_file, review_due, strip_comments
 from dag_healer.masking import find_secret, mask_text
 from dag_healer.repo.git import GitError, git_bytes, run_git
 
@@ -61,8 +65,13 @@ CREDENTIAL_ENVS: tuple[str, ...] = (
 )
 #: Seconds for one git command of the context reading.
 GIT_TIMEOUT = 30.0
-#: A pipeline id that names an ETL Information file: no separator, no leading dot.
-_PIPELINE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,249}$")
+#: A note of a snapshot is one line of at most this many characters ...
+MAX_NOTE_CHARS = 2000
+#: ... and the notes of a snapshot hold at most this many characters together (the rest are counted).
+MAX_NOTES_CHARS = 4000
+#: A pipeline id that names an ETL Information file: no separator, no leading dot (whole, see
+#: :func:`etl_path`: ``$`` would also take an id that ends with a line break).
+_PIPELINE_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,249}")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _REGULAR_MODES = ("100644", "100755")
 
@@ -96,15 +105,44 @@ def is_repository(repo: Path) -> bool:
     return out is not None and out.strip() == "true"
 
 
-def base_commit(repo: Path, base_branch: str) -> tuple[str, str] | None:
-    """``(sha, ref)`` of the commit to read: the base branch, its ``origin`` copy, else ``HEAD``."""
-    candidates = [f"refs/heads/{base_branch}", f"refs/remotes/origin/{base_branch}"] if base_branch else []
-    for ref in [*candidates, "HEAD"]:
-        out = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-        sha = (out or "").strip()
-        if _SHA_RE.match(sha):
-            return sha, ref
-    return None
+def _commit_of(repo: Path, ref: str) -> str | None:
+    out = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    sha = (out or "").strip()
+    return sha if _SHA_RE.match(sha) else None
+
+
+def _is_ancestor(repo: Path, older: str, newer: str) -> bool:
+    return _git(repo, "merge-base", "--is-ancestor", older, newer) is not None
+
+
+def base_commit(repo: Path, base_branch: str) -> tuple[str, str, str | None] | None:
+    """``(sha, ref, note)`` of the commit to read: the newer of the base branch and its ``origin``
+    copy, else ``HEAD``.
+
+    A local branch behind ``origin/<base_branch>`` (a checkout that fetches without updating it)
+    gives way to it; when the two have diverged, the local branch is read and ``note`` says so.
+    """
+    found = [
+        (sha, ref)
+        for ref in (
+            [f"refs/heads/{base_branch}", f"refs/remotes/origin/{base_branch}"] if base_branch else []
+        )
+        if (sha := _commit_of(repo, ref)) is not None
+    ]
+    if len(found) == 2 and found[0][0] != found[1][0]:
+        (local, local_ref), (remote, remote_ref) = found
+        if _is_ancestor(repo, local, remote):
+            return remote, remote_ref, None
+        if not _is_ancestor(repo, remote, local):
+            note = (
+                f"{base_branch} ({short_sha(local)}) and origin/{base_branch} ({short_sha(remote)}) have "
+                f"diverged; the context files were read from {base_branch}."
+            )
+            return local, local_ref, note
+    if found:
+        return found[0][0], found[0][1], None
+    head = _commit_of(repo, "HEAD")
+    return (head, "HEAD", None) if head is not None else None
 
 
 def _entries(repo: Path, commit: str, path: str) -> list[_Entry] | None:
@@ -161,6 +199,40 @@ def _refuse(item: ContextFile, refusal: Refusal, reason: str) -> ContextFile:
     return item
 
 
+def _secret_in_lines(text: str, known: list[str]) -> str | None:
+    """What looks like a secret in ``text``, as it is and without its HTML comments (where, never
+    the value): a comment inside a value (``AKIA<!-- -->...``) hides it from the first look only.
+
+    The comments are taken out twice: joining the text around them (the line of a value split by
+    one), then leaving a space, as the model reads them.
+    """
+    for variant in (text, strip_comments(text, filler=""), strip_comments(text)):
+        finding = find_secret(variant, known)
+        if finding is not None:
+            return finding.describe()
+    return None
+
+
+def _secret_once_parsed(parsed: ParsedFile, known: list[str]) -> str | None:
+    """What looks like a secret in what the model, the store and the PR would get of a parsed file
+    (a rule whose lines are joined, a folded owner, the text, the problems), with where it is."""
+    for rule in parsed.rules:
+        finding = find_secret(rule.text, known)
+        if finding is not None:
+            return f"{finding.kind} in {rule.id} (line {rule.line}, with its lines joined)"
+    if parsed.front.owner and (finding := find_secret(parsed.front.owner, known)) is not None:
+        return f"{finding.kind} in its owner"
+    for text in (parsed.text, *parsed.problems):
+        finding = find_secret(text, known)
+        if finding is not None:
+            return f"{finding.kind} in what the model would read of it"
+    return None
+
+
+def _secret_reason(where: str) -> str:
+    return f"it holds what looks like {where}; remove it from the file (and rotate it if it is real)"
+
+
 def _read_entry(
     repo: Path,
     commit: str,
@@ -172,6 +244,7 @@ def _read_entry(
     today: date,
 ) -> ContextFile:
     """Read one committed file into ``item`` (refused, error or read)."""
+    known = list(known)
     item.blob = entry.oid
     item.size = entry.size
     if entry.kind == "tree":
@@ -193,7 +266,7 @@ def _read_entry(
         data = git_bytes(["cat-file", "blob", entry.oid], repo, timeout=GIT_TIMEOUT)
     except GitError as exc:
         item.status = "error"
-        item.reason = f"git could not read it ({mask_text(exc)[:200]})"
+        item.reason = f"git could not read it ({clean_problem(mask_text(exc), limit=200)})"
         return item
     if len(data) > max_bytes:
         return _refuse(item, "size", f"it is over the {max_bytes:,}-byte limit (context.max_file_bytes)")
@@ -202,15 +275,13 @@ def _read_entry(
     except UnicodeDecodeError:
         return _refuse(item, "encoding", "it is not UTF-8 text")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    finding = find_secret(text, known)
-    if finding is not None:
-        return _refuse(
-            item,
-            "secret",
-            f"it holds what looks like {finding.describe()}; remove it from the file (and rotate it if it is "
-            "real)",
-        )
+    found = _secret_in_lines(text, known)
+    if found is not None:
+        return _refuse(item, "secret", _secret_reason(found))
     parsed = parse_context_file(text, kind=item.kind, pipeline=item.pipeline)
+    found = _secret_once_parsed(parsed, known)
+    if found is not None:
+        return _refuse(item, "secret", _secret_reason(found))
     front = parsed.front
     item.status = "read"
     item.owner = mask_text(front.owner) if front.owner else None
@@ -263,8 +334,30 @@ def _read_file(
 # --------------------------------------------------------------------------- notes
 
 
+def clean_notes(notes: Iterable[str]) -> list[str]:
+    """``notes`` as the incident gets them: each one line of :data:`MAX_NOTE_CHARS` characters at
+    most, without control characters or prompt tags (:func:`~dag_healer.context.parse.clean_problem`),
+    and :data:`MAX_NOTES_CHARS` characters at most together (a last note counts the others)."""
+    cleaned = [clean_problem(note, limit=MAX_NOTE_CHARS) for note in notes]
+    kept: list[str] = []
+    total = 0
+    for index, note in enumerate(cleaned):
+        if total + len(note) > MAX_NOTES_CHARS:
+            kept.append(f"... and {len(cleaned) - index} more notes about the context files")
+            break
+        kept.append(note)
+        total += len(note)
+    return kept
+
+
 def file_note(item: ContextFile, where: str) -> str | None:
-    """What the incident says about one file (``None`` when there is nothing to say)."""
+    """What the incident says about one file (``None`` when there is nothing to say), as one line
+    of :data:`MAX_NOTE_CHARS` characters at most (:func:`clean_notes`)."""
+    note = _file_note(item, where)
+    return clean_notes([note])[0] if note else None
+
+
+def _file_note(item: ContextFile, where: str) -> str | None:
     title = item.title
     if item.kind == "etl":
         title = f"ETL Information of {item.pipeline}" if item.pipeline else title
@@ -319,7 +412,7 @@ def _notes(snapshot: ContextSnapshot) -> list[str]:
 
 def etl_path(cfg: HealerConfig, pipeline_id: str) -> str | None:
     """``<context.etl_dir>/<pipeline_id>.md``, or ``None`` for an id that cannot name a file."""
-    if not _PIPELINE_ID_RE.match(pipeline_id or "") or ".." in pipeline_id:
+    if not _PIPELINE_ID_RE.fullmatch(pipeline_id or "") or ".." in pipeline_id:
         return None
     return f"{cfg.context.etl_dir}/{pipeline_id}.md"
 
@@ -356,6 +449,7 @@ def read_context(
                 f"{', '.join(present)} {'is' if len(present) == 1 else 'are'} not read: {repo} is not a git "
                 "repository, and dag-healer reads the context files from the base branch's commit only."
             )
+        snapshot.notes = clean_notes(snapshot.notes)
         return snapshot
     found = base_commit(repo, cfg.repo.base_branch)
     if found is None:
@@ -365,8 +459,9 @@ def read_context(
                 f"{', '.join(present)} {'is' if len(present) == 1 else 'are'} not read: the repository "
                 f"has no commit of {cfg.repo.base_branch}."
             )
+        snapshot.notes = clean_notes(snapshot.notes)
         return snapshot
-    snapshot.commit, snapshot.ref = found
+    snapshot.commit, snapshot.ref, ref_note = found
     day = _today(today)
     max_bytes = cfg.context.max_file_bytes
     snapshot.organization = _read_file(
@@ -389,12 +484,15 @@ def read_context(
             history=history,
         )
     _cross_check(snapshot)
-    if snapshot.ref == "HEAD" and any(item.status != "missing" for item in snapshot.files()):
+    present = any(item.status != "missing" for item in snapshot.files())
+    if ref_note and present:
+        snapshot.notes.append(ref_note)
+    if snapshot.ref == "HEAD" and present:
         snapshot.notes.append(
             f"repo.base_branch {cfg.repo.base_branch} was not found in the repository; the context files "
             "were read from HEAD."
         )
-    snapshot.notes += _notes(snapshot)
+    snapshot.notes = clean_notes([*snapshot.notes, *_notes(snapshot)])
     return snapshot
 
 
@@ -419,6 +517,8 @@ class ContextReport:
     uncommitted: list[str]
     #: Set when there is no commit to read (not a repository, no commit of the base branch).
     problem: str | None = None
+    #: Why the base branch and its ``origin`` copy were not the same commit, when it matters.
+    note: str | None = None
 
 
 def read_all(
@@ -441,7 +541,7 @@ def read_all(
         return ContextReport(
             None, None, None, [], [], f"the repository has no commit of {cfg.repo.base_branch}"
         )
-    commit, ref = found
+    commit, ref, ref_note = found
     day = _today(today)
     max_bytes = cfg.context.max_file_bytes
     organization = _read_file(
@@ -474,13 +574,16 @@ def read_all(
     for item in files:
         _cross_check(ContextSnapshot(commit=commit, ref=ref, organization=organization, etl=item))
     uncommitted = [f"{etl_dir}/{name}" for name in local if name not in committed]
-    return ContextReport(commit, ref, organization, files, uncommitted)
+    return ContextReport(commit, ref, organization, files, uncommitted, note=ref_note)
 
 
 __all__ = [
     "CREDENTIAL_ENVS",
     "ContextReport",
     "base_commit",
+    "MAX_NOTES_CHARS",
+    "MAX_NOTE_CHARS",
+    "clean_notes",
     "edited_in_working_tree",
     "etl_path",
     "file_note",

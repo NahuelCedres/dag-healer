@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import calendar
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -36,6 +37,7 @@ from typing import Any
 import yaml
 
 from dag_healer.context.model import ORG_PREFIX, RULE_ID_PATTERN, Rule
+from dag_healer.context.prompt import neutralise_tags
 
 #: The front matter keys of each kind of file (``rule_prefix`` is required in an ETL Information).
 ORGANIZATION_KEYS: tuple[str, ...] = ("owner", "reviewed", "review_every")
@@ -46,6 +48,8 @@ PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 PERIOD_RE = re.compile(r"^\s*(?P<count>[1-9][0-9]{0,3})\s*(?P<unit>[dwmy])\s*$", re.IGNORECASE)
 #: At most this many problems are reported per file (the rest are counted).
 MAX_PROBLEMS = 30
+#: A problem is one line of at most this many characters (:func:`clean_problem`).
+MAX_PROBLEM_CHARS = 300
 
 _DELIMITER = "---"
 _FENCE_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
@@ -65,9 +69,11 @@ _OVERRIDES_RE = re.compile(
     re.IGNORECASE,
 )
 _ID_IN_TEXT_RE = re.compile(RULE_ID_PATTERN)
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
 _BLANK_RUNS_RE = re.compile(r"\n{3,}")
+#: Characters that end a line in a text (they become spaces in a problem).
+_LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
 #: Front matter keys whose values are text even when YAML reads them as something else
 #: (``rule_prefix: OFF`` is the boolean False, ``pipeline: 2024_01`` the number 202401).
 _TEXT_KEYS: tuple[str, ...] = ("rule_prefix", "pipeline")
@@ -123,27 +129,69 @@ def review_due(reviewed: date, every: str) -> date | None:
         return None
 
 
-def _closed_comments_out(text: str) -> str:
-    return _COMMENT_RE.sub(lambda match: "\n" * match.group(0).count("\n"), text)
+def _blank(comment: str, filler: str) -> str:
+    """What a comment leaves behind: its line breaks, or ``filler`` when it holds none."""
+    breaks = comment.count("\n")
+    return "\n" * breaks if breaks else filler
+
+
+def _comments_out(text: str, filler: str = " ") -> tuple[str, int | None]:
+    """``text`` without its HTML comments (:func:`_blank`), and where a comment never closed opens.
+
+    One pass over the text: a comment that is never closed runs to its end, as in a browser.
+    """
+    parts: list[str] = []
+    position = 0
+    while True:
+        start = text.find(_COMMENT_OPEN, position)
+        if start < 0:
+            parts.append(text[position:])
+            return "".join(parts), None
+        parts.append(text[position:start])
+        end = text.find(_COMMENT_CLOSE, start + len(_COMMENT_OPEN))
+        if end < 0:
+            parts.append(_blank(text[start:], filler))
+            return "".join(parts), start
+        parts.append(_blank(text[start : end + len(_COMMENT_CLOSE)], filler))
+        position = end + len(_COMMENT_CLOSE)
 
 
 def unclosed_comment_line(text: str) -> int | None:
     """The line (1-based) where a comment that is never closed opens, or ``None``."""
-    without = _closed_comments_out(text)
-    index = without.find(_COMMENT_OPEN)
-    return None if index < 0 else without[:index].count("\n") + 1
+    _without, start = _comments_out(text)
+    return None if start is None else text[:start].count("\n") + 1
 
 
-def strip_comments(text: str) -> str:
-    """``text`` with every HTML comment replaced by as many line breaks as it spans.
+def strip_comments(text: str, *, filler: str = " ") -> str:
+    """``text`` with every HTML comment replaced by its line breaks, or by ``filler`` on one line.
 
-    A comment that is never closed runs to the end of the text.
+    The model reads the text with one space for such a comment, so a comment never joins the
+    words around it; ``filler=""`` joins them (the secret check of
+    :mod:`dag_healer.context.read` looks at both). A comment that is never closed runs to the
+    end of the text.
     """
-    without = _closed_comments_out(text)
-    index = without.find(_COMMENT_OPEN)
-    if index >= 0:
-        without = without[:index] + "\n" * without[index:].count("\n")
-    return without
+    return _comments_out(text, filler)[0]
+
+
+def clean_problem(text: str, limit: int = MAX_PROBLEM_CHARS) -> str:
+    """A problem (or a note) as one short line that no reader can mistake for something else.
+
+    Line breaks become spaces, other control and format characters (escapes of a terminal, bidi
+    overrides) their ``\\x``/``\\u`` code, the tags of prompt blocks are neutralised
+    (:func:`~dag_healer.context.prompt.neutralise_tags`), and the line is cut to ``limit``
+    characters (:data:`MAX_PROBLEM_CHARS`).
+    """
+    shown: list[str] = []
+    for char in neutralise_tags(str(text)):
+        if char in _LINE_BREAKS:
+            shown.append(" ")
+        elif unicodedata.category(char) in ("Cc", "Cf"):
+            code = ord(char)
+            shown.append(f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}")
+        else:
+            shown.append(char)
+    line = "".join(shown)
+    return line if len(line) <= limit else line[: limit - 3] + "..."
 
 
 def model_text(body: str) -> str:
@@ -173,12 +221,44 @@ def _as_text(raw: str) -> Any:
         return None
 
 
+class AliasesRefused(ValueError):
+    """The front matter uses YAML anchors or aliases (they could expand it many times over)."""
+
+
+def _refuse_aliases(raw: str) -> None:
+    """Raise :class:`AliasesRefused` when ``raw`` defines an anchor or uses an alias.
+
+    Only the parser's events are read, so nothing is expanded; invalid YAML raises its
+    :class:`yaml.YAMLError` here.
+    """
+    for event in yaml.parse(raw, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise AliasesRefused("the front matter uses YAML anchors or aliases")
+
+
+def _key_lines(raw: str) -> dict[str, int]:
+    """The line (1-based, within ``raw``) of each top-level key of a front matter."""
+    try:
+        node = yaml.compose(raw, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, ValueError, RecursionError):
+        return {}
+    if not isinstance(node, yaml.MappingNode):
+        return {}
+    return {
+        str(key.value): key.start_mark.line + 1
+        for key, _value in node.value
+        if isinstance(key, yaml.ScalarNode)
+    }
+
+
 def _load_front(raw: str) -> Any:
-    """The front matter as YAML reads it; raises :class:`yaml.YAMLError` for invalid YAML.
+    """The front matter as YAML reads it; raises :class:`yaml.YAMLError` for invalid YAML and
+    :class:`AliasesRefused` for anchors and aliases.
 
     A value YAML cannot build (``2026-02-30``, ``!!int abc``) makes every value text, so its key is
     reported, not the whole front matter; the values of :data:`_TEXT_KEYS` are always text.
     """
+    _refuse_aliases(raw)
     try:
         data = yaml.safe_load(raw)
     except yaml.YAMLError:
@@ -200,7 +280,8 @@ def split_front_matter(text: str) -> tuple[Mapping[str, Any] | None, str, int, l
     """``(front matter, body, first line of the body, problems)``.
 
     The front matter is the YAML between a first line ``---`` and the next ``---`` (or ``...``)
-    line. Without one the whole text is the body. Never raises.
+    line. Without one the whole text is the body. A front matter with YAML anchors or aliases is
+    refused whole. Never raises. The line of each key is in :func:`front_matter_lines`.
     """
     lines = text.split("\n")
     if not lines or lines[0].strip() != _DELIMITER:
@@ -211,20 +292,46 @@ def split_front_matter(text: str) -> tuple[Mapping[str, Any] | None, str, int, l
             body = "\n".join(lines[index + 1 :])
             try:
                 data = _load_front(raw) if raw.strip() else {}
+            except AliasesRefused:
+                return None, body, index + 2, [ALIASES_PROBLEM]
             except yaml.YAMLError as exc:
                 mark = getattr(exc, "problem_mark", None)
                 where = f" (line {mark.line + 2})" if mark is not None else ""
                 return None, body, index + 2, [f"the front matter is not valid YAML{where}"]
+            except (ValueError, TypeError, RecursionError):
+                return None, body, index + 2, ["the front matter is not valid YAML"]
             if not isinstance(data, Mapping):
                 return None, body, index + 2, ["the front matter must be a mapping of keys and values"]
             return data, body, index + 2, []
     return None, text, 1, ["the front matter has no closing --- line"]
 
 
+#: The problem of a front matter with YAML anchors or aliases.
+ALIASES_PROBLEM = "the front matter uses YAML anchors or aliases, which dag-healer does not read"
+
+
+def front_matter_lines(text: str) -> dict[str, int]:
+    """The line (1-based, within the file) of each top-level key of the front matter of ``text``."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != _DELIMITER:
+        return {}
+    for index in range(1, len(lines)):
+        if lines[index].strip() in (_DELIMITER, "..."):
+            return {key: line + 1 for key, line in _key_lines("\n".join(lines[1:index])).items()}
+    return {}
+
+
 def read_front_matter(
-    data: Mapping[str, Any] | None, *, kind: str, pipeline: str | None
+    data: Mapping[str, Any] | None,
+    *,
+    kind: str,
+    pipeline: str | None,
+    key_lines: Mapping[str, int] | None = None,
 ) -> tuple[FrontMatter, list[str]]:
-    """The valid values of a front matter and the problems of the others."""
+    """The valid values of a front matter and the problems of the others.
+
+    The problems never quote the file: an unknown key is named by its line (``key_lines``).
+    """
     front = FrontMatter()
     problems: list[str] = []
     if data is None:
@@ -232,7 +339,9 @@ def read_front_matter(
     known = ETL_KEYS if kind == "etl" else ORGANIZATION_KEYS
     for key in data:
         if str(key) not in known:
-            problems.append(f"front matter: unknown key {key!r} (known: {', '.join(known)})")
+            line = (key_lines or {}).get(str(key))
+            where = f" on line {line}" if line else ""
+            problems.append(f"front matter: unknown key{where} (known: {', '.join(known)})")
     owner = data.get("owner")
     if isinstance(owner, str) and owner.strip():
         front.owner = owner.strip()
@@ -262,11 +371,14 @@ def read_front_matter(
         else:
             front.rule_prefix = prefix.strip()
         named = data.get("pipeline")
-        if named is not None:
-            if str(named).strip() != (pipeline or ""):
-                problems.append(f"front matter: pipeline is {named!r}, but this file is for {pipeline!r}")
+        if named is not None and not isinstance(named, str):
+            problems.append("front matter: pipeline must be text, the pipeline id of the file")
+        elif named is not None:
+            if named.strip() != (pipeline or ""):
+                wanted = f"{pipeline!r}, " if pipeline else ""
+                problems.append(f"front matter: pipeline is not {wanted}the pipeline id of this file")
             else:
-                front.pipeline = str(named).strip()
+                front.pipeline = named.strip()
     return front, problems
 
 
@@ -343,7 +455,7 @@ class _Rules:
         match = _OVERRIDES_RE.match(clause.strip())
         if match is None:
             self.problems.append(
-                f"line {line}: ({clause.strip()}) after {rule_id} is not understood; the only note is "
+                f"line {line}: the note in parentheses after {rule_id} is not understood; the only note is "
                 "(overrides ORG-n)"
             )
             return None
@@ -514,7 +626,8 @@ def parse_rules(
 def parse_context_file(text: str, *, kind: str, pipeline: str | None = None) -> ParsedFile:
     """Parse a whole context file (front matter, rules, the model's text); never raises."""
     data, body, first_line, problems = split_front_matter(text)
-    front, front_problems = read_front_matter(data, kind=kind, pipeline=pipeline)
+    key_lines = front_matter_lines(text) if data else {}
+    front, front_problems = read_front_matter(data, kind=kind, pipeline=pipeline, key_lines=key_lines)
     problems += front_problems
     prefix = ORG_PREFIX if kind == "organization" else front.rule_prefix
     rules, rule_problems = parse_rules(body, kind=kind, prefix=prefix, first_line=first_line)
@@ -525,19 +638,24 @@ def parse_context_file(text: str, *, kind: str, pipeline: str | None = None) -> 
             f"line {first_line + unclosed - 1}: an HTML comment opens here and is never closed: the rest of "
             "the file is left out"
         )
+    problems = [clean_problem(problem) for problem in problems]
     if len(problems) > MAX_PROBLEMS:
         problems = [*problems[:MAX_PROBLEMS], f"... and {len(problems) - MAX_PROBLEMS} more problems"]
     return ParsedFile(front=front, rules=rules, problems=problems, text=model_text(body))
 
 
 __all__ = [
+    "ALIASES_PROBLEM",
     "ETL_KEYS",
     "MAX_PROBLEMS",
+    "MAX_PROBLEM_CHARS",
     "ORGANIZATION_KEYS",
     "PERIOD_RE",
     "PREFIX_RE",
     "FrontMatter",
     "ParsedFile",
+    "clean_problem",
+    "front_matter_lines",
     "model_text",
     "parse_context_file",
     "parse_rules",
