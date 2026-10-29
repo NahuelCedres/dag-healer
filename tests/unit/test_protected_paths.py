@@ -41,6 +41,7 @@ from dag_healer.repo.protected_paths import (
     compared_parts,
     contracts_prefix,
     fold_name,
+    is_context_path,
     is_data_file,
     is_lockfile,
     is_manifest,
@@ -164,7 +165,17 @@ def test_the_policy_folds_names_as_case_insensitive_file_systems_do(path: str, r
     assert protected_reason(path) == reason
 
 
+def test_a_context_path_written_in_another_unicode_form_is_still_protected() -> None:
+    nfc = "docs/Contexto/Organizaci\u00f3n.md"
+    nfd = "docs/Contexto/Organizaci\u006f\u0301n.md"  # what macOS file systems treat as the same name
+    paths = (nfc, "docs/etl")
+    assert is_context_path(nfd, paths) and is_context_path(nfc.upper(), paths)
+    assert protected_reason(nfd, context_paths=paths) == protected_reason(nfc, context_paths=paths)
+    assert protected_reason(nfd, context_paths=paths) is not None
+
+
 def test_fold_name_and_compared_parts() -> None:
+    assert fold_name("Organizaci\u006f\u0301n.md") == fold_name("Organizaci\u00f3n.md")  # NFD is NFC
     assert fold_name("Requirementſ.TXT") == "requirements.txt"
     assert fold_name(".GıtHub") == ".github"
     assert fold_name("K") == "k"

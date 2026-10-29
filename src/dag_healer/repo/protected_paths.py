@@ -44,6 +44,7 @@ import fnmatch
 import os
 import posixpath
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -229,10 +230,11 @@ def fold_name(name: str) -> str:
     """``name`` with its case folded, as case-insensitive file systems compare names, or more.
 
     ``upper()`` then ``casefold()``: APFS folds ``ſ`` (U+017F) to ``s`` and the Kelvin sign to
-    ``k``, NTFS upper-cases ``ı`` (U+0131) to ``I``; ``lower()`` does neither. Folding more than
-    a file system does only protects more names.
+    ``k``, NTFS upper-cases ``ı`` (U+0131) to ``I``; ``lower()`` does neither. The result is in
+    NFC form, as APFS and HFS+ compare names (``o`` + U+0301 is ``ó``). Folding more than a file
+    system does only protects more names.
     """
-    return name.upper().casefold()
+    return unicodedata.normalize("NFC", name.upper().casefold())
 
 
 def is_lockfile(name: str) -> bool:
