@@ -726,6 +726,79 @@ def test_a_secret_that_only_appears_once_comments_are_out_or_lines_joined_is_ref
     assert _AWS_HALF not in stored and _GITHUB_HALF not in stored and _PASSWORD not in stored
 
 
+@pytest.mark.parametrize(
+    "char",
+    ["\u200b", "\u2060", "\ufeff", "\u00ad", "\u200d", "\u034f"],
+    ids=["zero-width-space", "word-joiner", "bom", "soft-hyphen", "zero-width-joiner", "grapheme-joiner"],
+)
+@pytest.mark.parametrize(
+    ("rules", "needle", "kind"),
+    [
+        (f"- ORG-4: The bucket key is {_AWS_HALF}{{char}}{'Q7' * 4}.\n", _AWS_HALF, "an AWS access key ID"),
+        (f"- ORG-4: Ping {_GITHUB_HALF}{{char}}{'a1B2' * 5} for access.\n", _GITHUB_HALF, "a GitHub token"),
+        (f"- ORG-4: pass{{char}}word: {_PASSWORD}\n", _PASSWORD, "a credential with its value"),
+    ],
+    ids=["aws-key", "github-token", "password"],
+)
+def test_a_secret_split_by_an_invisible_character_is_refused(
+    tmp_path: Path, char: str, rules: str, needle: str, kind: str
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    text = _org(ORG_RULES + rules.format(char=char))
+    sha = _commit(repo, {ORG_PATH: text})
+
+    reason = _assert_refused(_read(_cfg(repo)), sha, "secret")
+
+    assert reason.startswith(f"it holds what looks like {kind} on line {_line_of(text, needle)};")
+
+
+def test_a_secret_written_in_fullwidth_letters_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    wide = "".join(chr(ord(char) + 0xFEE0) for char in _AWS_HALF + "Q7" * 4)  # what NFKC makes ASCII
+    text = _org(ORG_RULES + f"- ORG-4: The bucket key is {wide}.\n")
+    sha = _commit(repo, {ORG_PATH: text})
+
+    reason = _assert_refused(_read(_cfg(repo)), sha, "secret")
+
+    assert reason.startswith(f"it holds what looks like an AWS access key ID on line {_line_of(text, wide)};")
+
+
+def test_personal_data_split_by_an_invisible_character_is_masked_everywhere(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    _commit(
+        repo,
+        {
+            ORG_PATH: _org(
+                ORG_RULES + "- ORG-4: Escalate to jane.doe\u200b@example.com or +1 415 555\u2060 0134.\n"
+                "- ORG-5: The test patient is MRN 1234\ufeff5678, card 4111\u200b111111111111.\n"
+            )
+        },
+    )
+
+    snapshot = _read(_cfg(repo))
+
+    org = snapshot.organization
+    assert org is not None and org.status == "read"
+    assert org.rules[3].text == "Escalate to [email] or [phone]."
+    assert org.rules[4].text == "The test patient is MRN [number], card [number]."
+    shown = [json.dumps(snapshot.to_dict(), ensure_ascii=False), context_blocks(snapshot)]
+    for text in shown:
+        for raw in ("jane.doe", "555", "5678", "1111", "\u200b", "\u2060", "\ufeff"):
+            assert raw not in text
+
+
+def test_emoji_and_scripts_keep_their_joiners(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    team = "\U0001f468\u200d\U0001f4bb"
+    persian = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
+    _commit(repo, {ORG_PATH: _org(ORG_RULES + f"- ORG-4: The {team} team owns it ({persian}).\n")})
+
+    org = _read(_cfg(repo)).organization
+
+    assert org is not None and org.rules[3].text == f"The {team} team owns it ({persian})."
+    assert team in context_blocks(_read(_cfg(repo))) and persian in org.text
+
+
 def test_a_configured_secret_split_by_a_comment_is_refused(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "repo")
     value = "dh-" + "q7Zr" * 5

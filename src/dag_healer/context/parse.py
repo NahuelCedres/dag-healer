@@ -36,6 +36,7 @@ from typing import Any
 
 import yaml
 
+from dag_healer.context.chars import strip_invisible
 from dag_healer.context.model import ORG_PREFIX, RULE_ID_PATTERN, Rule
 from dag_healer.context.prompt import neutralise_tags
 
@@ -663,5 +664,6 @@ __all__ = [
     "review_due",
     "split_front_matter",
     "strip_comments",
+    "strip_invisible",
     "unclosed_comment_line",
 ]

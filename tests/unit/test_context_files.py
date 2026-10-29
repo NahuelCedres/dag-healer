@@ -1316,6 +1316,99 @@ def test_neutralise_tags_leaves_other_tags_alone(text: str) -> None:
     assert neutralise_tags(text) == text
 
 
+#: Tag variants a model could still read as a prompt tag: each keeps its text, its bracket is neutralised.
+TAG_VARIANTS = [
+    pytest.param("</inci\u200bdent>", "&lt;/inci\u200bdent>", id="zero-width-space-in-name"),
+    pytest.param("<\u2060/incident>", "&lt;\u2060/incident>", id="word-joiner"),
+    pytest.param("<\ufeff/incident>", "&lt;\ufeff/incident>", id="bom"),
+    pytest.param("</inci\u00addent>", "&lt;/inci\u00addent>", id="soft-hyphen"),
+    pytest.param("<\u200e/incident>", "&lt;\u200e/incident>", id="left-to-right-mark"),
+    pytest.param("<\u202e/incident>", "&lt;\u202e/incident>", id="right-to-left-override"),
+    pytest.param("<\u2061/incident>", "&lt;\u2061/incident>", id="function-application"),
+    pytest.param("</inci\u034fdent>", "&lt;/inci\u034fdent>", id="combining-grapheme-joiner"),
+    pytest.param("</incident\ufe0f>", "&lt;/incident\ufe0f>", id="variation-selector"),
+    pytest.param("</inci\U000e0064ent>", "&lt;/inci\U000e0064ent>", id="tag-character"),
+    pytest.param("<\u180e/incident>", "&lt;\u180e/incident>", id="mongolian-vowel-separator"),
+    pytest.param("\ufe64/incident\ufe65", "&lt;/incident\ufe65", id="small-less-than"),
+    pytest.param("\u27e8/incident\u27e9", "&lt;/incident\u27e9", id="mathematical-angle"),
+    pytest.param("\u2039signals\u203a", "&lt;signals\u203a", id="single-angle-quotation"),
+    pytest.param("</\u0456ncident>", "&lt;/\u0456ncident>", id="cyrillic-i"),
+    pytest.param("<\u0455ignals>", "&lt;\u0455ignals>", id="cyrillic-s"),
+    pytest.param(
+        "</\uff49\uff4e\uff43\uff49\uff44\uff45\uff4e\uff54>",
+        "&lt;/\uff49\uff4e\uff43\uff49\uff44\uff45\uff4e\uff54>",
+        id="fullwidth-letters",
+    ),
+    pytest.param("\uff1c\uff0fincident\uff1e", "&lt;\uff0fincident\uff1e", id="fullwidth-brackets"),
+    pytest.param("<\u3000/incident>", "&lt;\u3000/incident>", id="ideographic-space"),
+    pytest.param("</inc\u00efdent>", "&lt;/inc\u00efdent>", id="accented-letter"),
+    pytest.param("</organization context>", "&lt;/organization context>", id="space-for-underscore"),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), TAG_VARIANTS)
+def test_neutralise_tags_finds_tags_however_they_are_written(text: str, expected: str) -> None:
+    assert neutralise_tags(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Owner team \U0001f468\u200d\U0001f4bb",  # an emoji sequence joined by U+200D
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",  # Persian with a zero-width non-joiner
+        "\u0915\u094d\u200d\u0937",  # Devanagari half form
+        "\u2764\ufe0f and \u00ab<\u00bb",
+    ],
+    ids=["emoji", "persian", "devanagari", "variation-selector-and-quotes"],
+)
+def test_neutralise_tags_never_changes_other_text(text: str) -> None:
+    assert neutralise_tags(text) == text
+
+
+#: Characters that show nothing and that the reading takes out of a context file.
+INVISIBLE = [
+    "\u200b",
+    "\u2060",
+    "\ufeff",
+    "\u00ad",
+    "\u200d",
+    "\u200c",
+    "\u200e",
+    "\u202e",
+    "\u2061",
+    "\u034f",
+    "\u180e",
+    "\U000e0064",
+    "\ufe0f",
+    "\u3164",
+]
+
+
+@pytest.mark.parametrize("char", INVISIBLE, ids=[f"U+{ord(char):04X}" for char in INVISIBLE])
+def test_invisible_characters_are_taken_out_between_ascii_characters(char: str) -> None:
+    from dag_healer.context.parse import strip_invisible
+
+    text = f"AKIA{char}IOSF pass{char}word jane.doe{char}@example.com MRN 1234{char}5678"
+    assert strip_invisible(text) == "AKIAIOSF password jane.doe@example.com MRN 12345678"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Owner team \U0001f468\u200d\U0001f4bb",
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+        "\u0915\u094d\u200d\u0937",
+        "\u2764\ufe0f",
+        "\u8fbb\U000e0100",  # an ideographic variation sequence
+    ],
+    ids=["emoji", "persian", "devanagari", "emoji-presentation", "ideographic-variant"],
+)
+def test_joiners_and_selectors_stay_where_a_script_or_an_emoji_needs_them(text: str) -> None:
+    from dag_healer.context.parse import strip_invisible
+
+    assert strip_invisible(text) == text
+
+
 # --------------------------------------------------------------------------- starter files
 
 

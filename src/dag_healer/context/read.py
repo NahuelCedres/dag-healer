@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -40,7 +41,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dag_healer.context.model import ContextFile, ContextSnapshot, Refusal, Rule, short_sha
-from dag_healer.context.parse import ParsedFile, clean_problem, parse_context_file, review_due, strip_comments
+from dag_healer.context.parse import (
+    ParsedFile,
+    clean_problem,
+    parse_context_file,
+    review_due,
+    strip_comments,
+    strip_invisible,
+)
 from dag_healer.masking import find_secret, mask_text
 from dag_healer.repo.git import GitError, git_bytes, run_git
 
@@ -204,9 +212,11 @@ def _secret_in_lines(text: str, known: list[str]) -> str | None:
     the value): a comment inside a value (``AKIA<!-- -->...``) hides it from the first look only.
 
     The comments are taken out twice: joining the text around them (the line of a value split by
-    one), then leaving a space, as the model reads them.
+    one), then leaving a space, as the model reads them. The compatibility form (NFKC) is checked
+    last: a value written in fullwidth letters reads as one in ASCII.
     """
-    for variant in (text, strip_comments(text, filler=""), strip_comments(text)):
+    joined = strip_comments(text, filler="")
+    for variant in (text, joined, strip_comments(text), unicodedata.normalize("NFKC", joined)):
         finding = find_secret(variant, known)
         if finding is not None:
             return finding.describe()
@@ -274,7 +284,8 @@ def _read_entry(
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return _refuse(item, "encoding", "it is not UTF-8 text")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Once, before anything reads it: what is checked, stored and sent is the same text.
+    text = strip_invisible(text.replace("\r\n", "\n").replace("\r", "\n"))
     found = _secret_in_lines(text, known)
     if found is not None:
         return _refuse(item, "secret", _secret_reason(found))

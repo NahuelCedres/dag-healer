@@ -3,16 +3,19 @@
 :func:`context_blocks` renders the files a snapshot read (refused and missing files have no block):
 each block names the file, the commit it was read from, its owner and its last review in its
 attributes, and holds the masked text the model reads. The text cannot close its block or open
-another one: a tag of a prompt block inside it (``</organization_context>``, ``<signals>``, a
-full-width ``\uff1c`` or a name split by a zero-width character ...) loses its ``<`` (``&lt;``).
-The instructions on how to use the blocks are in the prompts themselves
-(``agent/prompts/classify.md`` and the repair prompts).
+another one: the bracket of a tag of a prompt block inside it (``</organization_context>``,
+``<signals>``) is written ``&lt;``, however the tag is written (a full-width ``\uff1c``, a name split
+by an invisible character or spelled with look-alike letters, see
+:func:`dag_healer.context.chars.detection_copy`); the rest of the text is left as it is. The
+instructions on how to use the blocks are in the prompts themselves (``agent/prompts/classify.md``
+and the repair prompts).
 """
 
 from __future__ import annotations
 
 import re
 
+from dag_healer.context.chars import detection_copy
 from dag_healer.context.model import ContextFile, ContextSnapshot
 
 ORGANIZATION_TAG = "organization_context"
@@ -20,18 +23,29 @@ ETL_TAG = "etl_information"
 #: The tags of every prompt block a context file must not open or close.
 PROMPT_TAGS: tuple[str, ...] = (ORGANIZATION_TAG, ETL_TAG, "incident", "signals", "evidence")
 
-#: Characters that show nothing: they are taken out, so they cannot hide a tag (``inci\u200bdent``).
-_INVISIBLE_RE = re.compile("[\u200b-\u200d\u2060\ufeff]")
-_TAG_RE = re.compile(r"[<\uff1c](?=\s*[/\uff0f]?\s*(?:" + "|".join(PROMPT_TAGS) + r")\b)", re.IGNORECASE)
+#: A prompt tag in a detection copy; its words may be split by spaces or hyphens too.
+_TAG_RE = re.compile(r"<\s*/?\s*(?:" + "|".join(tag.replace("_", r"[\s_-]*") for tag in PROMPT_TAGS) + r")\b")
 _ATTRIBUTE_ESCAPES = str.maketrans({'"': "&quot;", "<": "&lt;", ">": "&gt;", "\n": " ", "\r": " "})
 
 
 def neutralise_tags(text: str) -> str:
-    """``text`` with the ``<`` (or a full-width ``\uff1c``) of every prompt block tag written ``&lt;``.
+    """``text`` with the bracket of every prompt block tag written ``&lt;``, and nothing else changed.
 
-    Zero-width characters are taken out first, so they cannot split a tag's name.
+    The tags are looked for in :func:`~dag_healer.context.chars.detection_copy` of ``text`` (a
+    small less-than sign, an invisible character inside the name or a Cyrillic letter in it still
+    make a tag); the character that opens each one in ``text`` becomes ``&lt;``.
     """
-    return _TAG_RE.sub("&lt;", _INVISIBLE_RE.sub("", text))
+    copy, positions = detection_copy(text)
+    starts = sorted({positions[match.start()] for match in _TAG_RE.finditer(copy)})
+    if not starts:
+        return text
+    parts: list[str] = []
+    last = 0
+    for start in starts:
+        parts += [text[last:start], "&lt;"]
+        last = start + 1
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def _attribute(value: str) -> str:
