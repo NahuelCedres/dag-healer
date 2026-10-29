@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 import yaml
 
-from dag_healer.cli.doctor_cmd import ERROR, OK, SKIP, WARN, check_context
+from dag_healer.cli.doctor_cmd import ERROR, OK, SKIP, WARN, check_context, format_results
 from dag_healer.cli.init_cmd import write_context_starters
 from dag_healer.cli.main import main
 from dag_healer.config import HealerConfig, config_from_mapping, load_config_file
@@ -213,6 +213,46 @@ def test_doctor_counts_one_rule_and_a_missing_organization_context(tmp_path: Pat
 
 
 # --------------------------------------------------------------------------- doctor: warnings
+
+
+def test_doctor_warns_when_the_base_branch_and_its_origin_copy_diverged(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    _commit(repo, {"healer/organization.md": _org()})
+    _git(repo, "checkout", "-q", "-b", "other")
+    remote = _commit(repo, {"healer/organization.md": _org("- ORG-1: Only on origin/main.\n")})
+    _git(repo, "checkout", "-q", "main")
+    local = _commit(repo, {"healer/organization.md": _org("- ORG-1: Only on main.\n")})
+    _git(repo, "update-ref", "refs/remotes/origin/main", remote)
+
+    result = check_context(_cfg(repo))
+
+    assert result.status == WARN
+    assert result.detail == (
+        f"main@{local[:7]}: healer/organization.md (1 rule); no ETL Information in healer/etl/; "
+        f"main ({local[:7]}) and origin/main ({remote[:7]}) have diverged, read from main"
+    )
+
+
+def test_doctor_escapes_the_control_characters_of_what_the_repository_holds(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    name = "sales\x1b]8;;evil\x07x\x1b[2K.md"  # a terminal hyperlink and a line erase
+    try:
+        _commit(
+            repo,
+            {
+                "healer/organization.md": _org(
+                    "- ORG-1 (\x1b]8;;https://evil.example/\x07click\x1b]8;;\x07 \x1b[2K): text\n"
+                ),
+                f"healer/etl/{name}": _sales(),
+            },
+        )
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("this file system does not take control characters in file names")
+
+    shown = format_results([check_context(_cfg(repo))])
+
+    assert "\x1b" not in shown and "\x07" not in shown
+    assert "healer/etl/sales\\x1b]8;;evil\\x07x\\x1b[2K.md (its name is not a pipeline id)" in shown
 
 
 def test_doctor_warns_about_an_invalid_file_and_shows_its_first_problem(tmp_path: Path) -> None:

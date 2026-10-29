@@ -70,7 +70,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dag_healer._version import __version__
-from dag_healer.cli._output import MASK, add_config_option, config_arg, error, load_cli_config, mask_url, warn
+from dag_healer.cli._output import (
+    MASK,
+    add_config_option,
+    config_arg,
+    error,
+    load_cli_config,
+    mask_url,
+    printable,
+    warn,
+)
 from dag_healer.cli.main import register_command
 
 if TYPE_CHECKING:
@@ -237,6 +246,8 @@ def check_context(cfg: HealerConfig) -> CheckResult:
     issues: list[str] = []
     if ref == "HEAD" and cfg.repo.base_branch:
         issues.append(f"repo.base_branch {cfg.repo.base_branch} not found: read from HEAD")
+    if report.note:
+        issues.append(report.note.replace("; the context files were read from", ", read from").rstrip("."))
     if secrets:
         issues.append(
             "refused, they hold what looks like a secret (remove it from the history and rotate it): "
@@ -832,10 +843,10 @@ def run_checks(config_path: str | None = None) -> list[CheckResult]:
 
 
 def format_results(results: list[CheckResult]) -> str:
-    """Render doctor results as aligned lines plus a summary."""
+    """Render doctor results as aligned lines plus a summary (control characters as codes)."""
     width = max((len(result.name) for result in results), default=0)
     lines = [f"dag-healer doctor ({__version__})"]
-    lines += [f"{_LABELS[r.status]} {r.name.ljust(width)}  {r.detail}" for r in results]
+    lines += [f"{_LABELS[r.status]} {r.name.ljust(width)}  {printable(r.detail)}" for r in results]
     counts = {status: sum(1 for r in results if r.status == status) for status in _LABELS}
     lines.append(
         f"\n{counts[OK]} ok, {counts[WARN]} warning(s), {counts[ERROR]} error(s), {counts[SKIP]} skipped"

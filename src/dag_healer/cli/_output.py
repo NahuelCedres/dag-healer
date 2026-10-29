@@ -10,6 +10,7 @@ import os
 import shlex
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit, urlunsplit
@@ -59,6 +60,20 @@ def error(message: str, *, stream: TextIO | None = None) -> None:
 def warn(message: str, *, stream: TextIO | None = None) -> None:
     """Print a warning for the user (stderr)."""
     print(f"warning: {message}", file=stream or sys.stderr)
+
+
+def printable(text: str) -> str:
+    """``text`` with its control and format characters written as ``\\xNN``/``\\uNNNN``.
+
+    Names and texts read from a repository (a file name, a problem of a context file) can hold
+    terminal escapes that would rewrite the line or open a link; the terminal shows them as codes.
+    """
+    return "".join(
+        (f"\\x{ord(char):02x}" if ord(char) < 0x100 else f"\\u{ord(char):04x}")
+        if unicodedata.category(char) in ("Cc", "Cf")
+        else char
+        for char in text
+    )
 
 
 def mask_url(url: str | None) -> str | None:
@@ -112,6 +127,7 @@ __all__ = [
     "error",
     "load_cli_config",
     "mask_url",
+    "printable",
     "render_table",
     "shell_command",
     "warn",
