@@ -570,6 +570,10 @@ def _context_path(value: Any, what: str) -> str:
     parts = cleaned.split("/")
     if ".." in parts or any(part in ("", ".") for part in parts):
         raise ValueError(f"the {what} must stay inside the repository (no '..' and no empty parts)")
+    if cleaned.startswith(":"):
+        raise ValueError(f"the path of the {what} cannot start with ':' (git reads that as pathspec magic)")
+    if any(part.casefold() == ".git" for part in parts):
+        raise ValueError(f"the {what} cannot be inside .git: it is read from the base branch's commit")
     return cleaned
 
 
@@ -599,7 +603,14 @@ class ContextConfig(_Model):
 
     @model_validator(mode="after")
     def _organization_outside_the_etl_folder(self) -> ContextConfig:
-        if self.organization.startswith(self.etl_dir + "/"):
+        # Compared as case-insensitive file systems compare names (docs/ETL is docs/etl on macOS).
+        organization, etl_dir = self.organization.casefold(), self.etl_dir.casefold()
+        if organization == etl_dir:
+            raise ValueError(
+                f"context.organization ({self.organization!r}) cannot be context.etl_dir "
+                f"({self.etl_dir!r}): one is a file, the other the folder of the ETL Information"
+            )
+        if organization.startswith(etl_dir + "/"):
             raise ValueError(
                 f"context.organization ({self.organization!r}) cannot be inside context.etl_dir "
                 f"({self.etl_dir!r}): every file there is the ETL Information of a pipeline"
