@@ -463,6 +463,8 @@ class DecisionRecord(Base):
     (the person's name). ``rules`` are the cited rules that exist in the context files read
     (``RuleRef.to_dict``), ``unknown_rules`` the cited IDs that do not. A contract approval (from
     the console or from ``dag-healer contracts approve``, ``data.via == "cli"``) has no incident.
+    The log outlives its incident: ``incident_id`` is no foreign key, and a deleted incident leaves
+    its decisions and their ``incident_id`` in place.
     """
 
     __tablename__ = "healer_decisions"
@@ -473,9 +475,8 @@ class DecisionRecord(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    incident_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("healer_incidents.id", ondelete="CASCADE"), nullable=True
-    )
+    #: Not a foreign key: the log outlives its incident and keeps its id.
+    incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     orchestrator: Mapped[str] = _orchestrator_column()
     dag_id: Mapped[str] = mapped_column(String(250), nullable=False)
     at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)

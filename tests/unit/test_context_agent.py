@@ -1093,7 +1093,7 @@ def test_a_triage_that_reads_the_same_files_again_reuses_its_snapshot(lab_repo: 
         assert len(store_repo.list_context_snapshots(session, incident_id=incident_id)) == 3
 
 
-def test_the_decision_log_filters_and_cascades(lab_repo: Path, tmp_path: Path) -> None:
+def test_the_decision_log_filters_and_outlives_its_incident(lab_repo: Path, tmp_path: Path) -> None:
     cfg = pipeline_cfg(lab_repo, tmp_path)
     incident_id = new_incident(cfg)
     with session_scope(cfg.database_url) as session:
@@ -1146,8 +1146,13 @@ def test_the_decision_log_filters_and_cascades(lab_repo: Path, tmp_path: Path) -
     with session_scope(cfg.database_url) as session:
         assert {d.snapshot_id for d in store_repo.list_decisions(session, dag_id=DAG)} == {None}  # SET NULL
         session.delete(store_repo.get_incident(session, incident_id))
-    with session_scope(cfg.database_url) as session:
-        assert [d.dag_id for d in store_repo.list_decisions(session)] == ["other"]  # CASCADE
+    with session_scope(cfg.database_url) as session:  # the log keeps the decisions and their incident's id
+        kept = store_repo.list_decisions(session, incident_id=incident_id)
+        assert [(d.decision, d.incident_id) for d in kept] == [
+            ("ambiguous", incident_id),
+            ("resolve_code", incident_id),
+        ]
+        assert [d.dag_id for d in store_repo.list_decisions(session)] == [DAG, DAG, "other"]
 
 
 # =========================================================================== the offline provider

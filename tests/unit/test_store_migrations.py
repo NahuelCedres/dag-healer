@@ -452,8 +452,7 @@ def test_the_v3_tables_have_their_keys_and_indexes(tmp_path: Path) -> None:
         "snapshot_id",
         "data",
     ]
-    assert decisions["fks"] == [
-        (("incident_id",), "healer_incidents", ("id",), "CASCADE"),
+    assert decisions["fks"] == [  # incident_id is no foreign key: the log outlives its incident
         (("snapshot_id",), "healer_context_snapshots", ("id",), "SET NULL"),
     ]
     assert {name for name, _cols, _unique in decisions["indexes"]} == {

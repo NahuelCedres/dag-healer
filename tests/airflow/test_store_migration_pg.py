@@ -498,7 +498,7 @@ def test_a_v2_store_migrates_to_v3_with_new_tables_only(new_database: Callable[[
     assert schema_of(engine) == schema_of(fresh)
 
 
-def test_the_v3_foreign_keys_cascade_and_set_null(new_database: Callable[[], str]) -> None:
+def test_the_v3_decisions_outlive_their_snapshot_and_their_incident(new_database: Callable[[], str]) -> None:
     url = _v2_store(new_database())
     migrations.migrate(engine_of(url))
     with db.session_scope(url) as session:
@@ -518,7 +518,7 @@ def test_the_v3_foreign_keys_cascade_and_set_null(new_database: Callable[[], str
         conn.execute(text("DELETE FROM healer_context_snapshots WHERE id = :id"), {"id": snapshot_id})
         assert conn.execute(text("SELECT snapshot_id FROM healer_decisions")).scalars().all() == [None]
         conn.execute(text("DELETE FROM healer_incidents WHERE id = :id"), {"id": SALES_ID})
-        assert conn.execute(text("SELECT count(*) FROM healer_decisions")).scalar() == 0
+        assert conn.execute(text("SELECT incident_id FROM healer_decisions")).scalars().all() == [SALES_ID]
 
 
 # =========================================================================== a copy of a live store
