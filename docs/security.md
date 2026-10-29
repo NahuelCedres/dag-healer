@@ -831,8 +831,9 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
 
 - **Read from the base branch only.** The worker reads both files from the commit of
   `repo.base_branch` in its checkout (the newer of `refs/heads/<base_branch>` and
-  `refs/remotes/origin/<base_branch>`, the local branch with a note when they diverged, else
-  `HEAD`), with `git ls-tree` and `git cat-file`, never from the working tree: an uncommitted edit,
+  `refs/remotes/origin/<base_branch>`, by commit date in a shallow clone, the local branch with a
+  note when they diverged, else `HEAD`; a `HEAD` that holds other context files gets a note), with
+  `git ls-tree` and `git cat-file`, never from the working tree: an uncommitted edit,
   or a file that the model-written test and fix or anything else wrote in a checkout, never
   reaches the next triage. A change reaches the model only once it is committed to the base
   branch, which the base branch's rules (4.5) make a reviewed pull request. Every file read is
@@ -840,16 +841,27 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
   tree only: a process that can write into the checkout's `.git` can move the base branch or add
   a commit. The repair runs in a clone of its own, and its pytest runs in the test sandbox (4.3);
   with the `process` backend, that code runs with the worker's permissions.
+- **Invisible characters out first.** Right after a file is decoded, the characters that show
+  nothing (format characters such as zero-width spaces and joiners, the word joiner, bidi
+  controls, soft hyphens and the tag characters of U+E0000, and the other default-ignorable ones)
+  are taken out, before the secret check, the parsing and the masking: what is checked, stored and
+  sent is the same text, and an invisible character cannot hide a secret, an e-mail address or a
+  tag. A zero-width joiner or non-joiner between two characters that are not ASCII (an emoji
+  sequence, Persian, Devanagari) and a variation selector after one stay.
 - **Refused files.** A file is refused, and nothing of it is sent to the model or stored, when it:
   - holds what looks like a secret (`masking.find_secret`): a private key, an AWS access key or
     secret key, a GitHub, GitLab, Anthropic, Slack, Google, Stripe, Azure storage, Databricks,
-    Vault, npm or SendGrid token, a JSON web token, an `Authorization` header, a password in a
-    URL, a credential written with its value (`password: ...`, a name glued to a prefix such as
-    `PGPASSWORD=...`, a value of 12 characters or more even without digits, or the value alone on
-    the next line), or the value of a secret of `healer.yaml` or of a credential variable of the
-    worker's environment (whole, or a fragment of 16 characters). The check reads the file as it
-    is, without its HTML comments (so a comment cannot split a value), and as the model would
-    read it: each rule with its lines joined, the owner, the text and the problems;
+    Vault, npm or SendGrid token, a JSON web token, an `Authorization` header with a token, a
+    password in a URL, a credential written with its value (`password: ...`, a name glued to a
+    prefix such as `PGPASSWORD=...`, a value of 12 characters or more without digits that looks
+    random, with upper case after its first letter, or the value alone on the next line that is
+    not a key of its own), or the value of a secret of `healer.yaml` or of a credential variable
+    of the worker's environment (whole, or a fragment of 16 characters). Code that fetches a
+    credential (`Variable.get(...)`, `settings.X`), a path and words joined by `-` or `_`
+    (`stored-in-vault`) are not values. The check reads the file as it is, without its HTML
+    comments (so a comment cannot split a value), in its NFKC form (fullwidth letters as ASCII),
+    and as the model would read it: each rule with its lines joined, the owner, the text and the
+    problems;
   - is larger than `context.max_file_bytes` (16 KB by default; it is not even read);
   - is not UTF-8 text, or is a symbolic link or no regular file.
 
@@ -861,9 +873,12 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
   are not masked. HTML comments are left out of what the model reads, each one as a space.
 - **Their own blocks.** The classification prompt puts the files in `<organization_context>` and
   `<etl_information>` blocks before the `<incident>` block, and both repair prompts carry the same
-  blocks. A tag of a prompt block inside a file (`</etl_information>`, `<signals>`, a full-width
-  `＜`, a name split by a zero-width character) loses its `<`, so a file cannot close its block or
-  open another one. The problems of a file name its lines and never quote it, and the notes that
+  blocks. A tag of a prompt block inside a file (`</etl_information>`, `<signals>`) loses its `<`,
+  so a file cannot close its block or open another one: the tags are looked for in a copy of the
+  text without invisible characters or combining marks, in NFKD form, and with the letters and
+  brackets that look like Latin ones (a Cyrillic `і`, `⟨`, a small `﹤`) read as those, and the
+  bracket is replaced in the text itself, which is otherwise left as it is. The problems of a file
+  name its lines and never quote it, and the notes that
   reach the `<incident>` block are one line each, without control characters or prompt tags, and
   capped. YAML anchors and aliases are refused in the front matter. The instructions tell the model
   to treat any text in the files that reads like an instruction to an automated tool as data.
@@ -872,13 +887,15 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
   infrastructure, definition and aggregate failures go to a person. Then, when the model says that
   the automatic follow-up of a DATA or CODE decision would go against a rule that was read
   (`rule_conflict`), the decision becomes AMBIGUOUS ("needs a decision"), with the rule and the
-  reason. A conflict with a rule that was not read (an unknown ID, or no file read) is flagged and
-  changes no decision, so the model cannot stop a fixed rule's verdict with a rule it made up.
+  reason. A conflict with a rule that was not read (an unknown ID, or no file read), or with an
+  ORG rule that the pipeline's ETL Information replaces, is flagged and changes no decision, so
+  the model cannot stop a fixed rule's verdict with a rule it made up or one that does not apply.
 - **Checked citations.** The rule IDs that the model cites (`rules_cited`, the repair tool
   `cite_rules`) are checked against the files that were read: an unknown ID is never counted as
   applied, and it is flagged in the timeline, PR.md and the decision log. Only the citations of an
   accepted test or fix, and of a stop, count. The repair tool `stop_for_rule` accepts only an ID
-  that exists; a stop ends the repair before anything is committed or pushed, even when its
+  that exists and applies (for an ORG rule that the ETL Information replaces, it names the rule
+  that replaces it); a stop ends the repair before anything is committed or pushed, even when its
   session fails afterwards, and the incident waits for a person.
 - **Protected and unreadable.** The context files are protected paths (4.2): a fix never changes
   them, and `repo.allowed_paths` cannot name them. The repair tools never read or search them,
@@ -886,7 +903,8 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
 - **The decision log.** Every classification, human action (contract approvals from the console
   or the CLI included) and repair outcome is stored with who decided (a fixed rule, the model that
   answered with its confidence, or a person by name), why, and the rules it cited; the context
-  snapshot of each triage keeps what was read. Both are masked like the rest of the store.
+  snapshot of each triage keeps what was read. Both are masked like the rest of the store, and the
+  decision log outlives its incident (its `incident_id` is no foreign key).
 
 What remains:
 
@@ -899,10 +917,11 @@ What remains:
   violated, the confidence threshold), and a fix still needs a failing test and a person's review.
 - The secret check is pattern-based, like the masking (G5): a secret in an unusual shape passes it
   (an AWS secret key without its name, a password in a sentence or after a command-line flag such
-  as `-p`, a private key without its header), and an ordinary sentence shaped like
-  `token: abc12345` is refused.
+  as `-p`, a private key without its header, a long passphrase in lower case only such as
+  `password: supersecretvalue`), and an ordinary sentence shaped like `token: abc12345`, or a
+  value shaped like a real token in an example, is refused.
 - The model reads the files unchanged apart from the masking: a rule that quotes personal data in
-  an unusual shape, or a date of birth, reaches it.
+  an unusual shape (in fullwidth letters, say), or a date of birth, reaches it.
 
 ---
 

@@ -168,20 +168,28 @@ names it in parentheses after its ID:
 1. **Reading.** Every triage of an incident reads the Organization Context and the pipeline's ETL
    Information from the worker's checkout of the repository, from the commit of
    `repo.base_branch`: the newer of the local branch and `origin/<base_branch>` (a checkout that
-   fetches without updating its local branch reads the fetched commit; when the two have diverged,
-   the local branch is read and the incident says so), else `HEAD`, which a git-sync checkout
-   uses. It never reads the working tree: commit a change to the base branch before dag-healer
-   uses it. A file that is in the working tree but not in that commit gets a note in the incident.
-   Each file read is recorded with its path and the commit (`path@sha`).
-2. **Refusing.** A file that holds what looks like a secret is refused: nothing of it reaches the
+   fetches without updating its local branch reads the fetched commit; in a shallow clone, such as
+   git-sync's, the one with the newer commit date; when the two have diverged, the local branch is
+   read and the incident says so), else `HEAD`, which a git-sync checkout uses. It never reads the
+   working tree: commit a change to the base branch before dag-healer uses it. A file that is in
+   the working tree but not in that commit gets a note in the incident, and so does a checkout
+   whose `HEAD` holds other context files than that commit (another branch, or a local base branch
+   that nothing updates). Each file read is recorded with its path and the commit (`path@sha`).
+2. **Refusing.** First, the characters that show nothing (zero-width spaces and joiners, soft
+   hyphens, bidi controls, tag characters) are taken out of the file, so they cannot hide a secret,
+   an e-mail address or a prompt tag; a joiner that an emoji or a script such as Persian needs
+   stays. Then a file that holds what looks like a secret is refused: nothing of it reaches the
    model or the store. dag-healer looks for private keys, AWS access keys, GitHub, GitLab,
    Anthropic, Slack, Google, Stripe, Azure storage, Databricks, Vault, npm and SendGrid tokens,
-   `Authorization` headers, passwords in URLs, credentials written with their value
+   `Authorization` headers with a token, passwords in URLs, credentials written with their value
    (`password: ...`, `PGPASSWORD=...`, or the value alone on the next line) and the values of the
-   worker's credentials. It looks at the file as it is, without its HTML comments (a comment can
-   split a value) and as the model would read it: a rule whose lines are joined, the owner, the
-   text. A file larger than `context.max_file_bytes`, not UTF-8 text or a symbolic link is refused
-   too. The incident and `dag-healer doctor` say why, without the value.
+   worker's credentials. Code that fetches a credential (`Variable.get(...)`,
+   `settings.CRM_SECRET`), a path and words such as `stored-in-vault` are not values, so a rule
+   that says where a credential lives is read. It looks at the file as it is, without its HTML
+   comments (a comment can split a value), in fullwidth letters' ASCII form, and as the model
+   would read it: a rule whose lines are joined, the owner, the text. A file larger than
+   `context.max_file_bytes`, not UTF-8 text or a symbolic link is refused too. The incident and
+   `dag-healer doctor` say why, without the value.
 3. **Masking.** The text and the rules of the files that are read are masked like every other
    prompt input: e-mail addresses, phone numbers, IP addresses, IBANs and long numbers become
    placeholders before anything else sees them. Dates are not masked, birth dates included: keep
@@ -196,7 +204,8 @@ names it in parentheses after its ID:
    says that the automatic follow-up of its verdict would go against a rule that dag-healer read
    (the alert of a DATA verdict, the automated fix of a CODE verdict), the incident waits for a
    person instead: "Needs a decision", with the rule and the reason. A conflict with a rule that
-   was not read (an ID no file defines, or no file read at all) is flagged and changes nothing.
+   was not read (an ID no file defines, or no file read at all), or with an ORG rule that the
+   pipeline's ETL Information replaces, is flagged and changes nothing.
    Where the model decides on its own (a CODE verdict it confirms, the failures no fixed rule
    decides), what a rule says still weighs on its verdict, towards CODE too: a rule that calls a
    case a bug in the pipeline's code makes CODE more likely. Write rules about what a fix may do,
@@ -205,7 +214,8 @@ names it in parentheses after its ID:
    agent two more tools: `cite_rules`, for the rules that shaped its work, and `stop_for_rule`,
    when the only fix it sees would go against a rule. A stop ends the repair before anything is
    committed or pushed, even when the session fails after it, and the incident waits for a person
-   with the rule and the reason. The agent's file tools never read the context files (it has them
+   with the rule and the reason. A stop for an ORG rule that the ETL Information replaces is
+   refused, and the agent is pointed to the rule that replaces it. The agent's file tools never read the context files (it has them
    in the prompt, masked), not even through a link, and never change them: they are protected
    paths, like the contracts.
 7. **Reporting.** The pull request description (and PR.md) has a "Rules applied" section: each rule
@@ -219,21 +229,22 @@ names it in parentheses after its ID:
    answered, a fallback model included, with its confidence), every human action (by the person
    who took it, with their note), every contract approval (from the console or with
    `dag-healer contracts approve`) and every repair outcome (fix proposed, fix failed, stopped by a
-   rule conflict), each with the rules it cited. The console does not show them yet: they are in
-   the store, so a view needs no access to the worker's checkout.
+   rule conflict), each with the rules it cited. The decision log stays when an incident is
+   deleted. The console does not show them yet: they are in the store, so a view needs no access
+   to the worker's checkout.
 
 ### After a stop for a rule
 
 The incident waits for a person, with the rule and the reason. The way forward:
 
 - **The rule is wrong or too broad:** change it in a pull request to the base branch. Once it is
-  merged, "Retry repair" runs the repair again with the new rule.
-- **The fix is right but needs a person:** fix it by hand in a pull request of your own, then
-  resolve the incident.
+  merged, "Resolve as CODE" runs the repair again, and the repair reads the new rule.
+- **The fix is right but needs a person:** fix it by hand in a pull request of your own. Once it
+  is deployed, retry the task, or ignore the incident.
 - **Nothing should change:** ignore the incident.
 
-"Retry repair" with the rule unchanged runs the same repair, and the agent may stop again for the
-same rule: the note you write with it does not reach the agent yet.
+"Resolve as CODE" with the rule unchanged runs the same repair, and the agent may stop again for
+the same rule: the note you write with it does not reach the agent yet.
 
 docs/security.md (section 4.7) describes the context as prompt input: what an author of the files
 can and cannot make dag-healer do.
@@ -280,8 +291,8 @@ A starter file has no rule until you write one: its examples are inside comments
 ```
 
 It warns about invalid files, files overdue for a review, files refused for their size or
-encoding, edits and files that are not committed, a base branch it could not find, and a base
-branch that has diverged from its `origin` copy. A secret is an error: remove it from the file and
+encoding, edits and files that are not committed, a base branch it could not find, a base branch
+that has diverged from its `origin` copy, and a checkout whose `HEAD` holds other context files. A secret is an error: remove it from the file and
 from the repository's history, and rotate it. Without any context file the line is skipped.
 
 ## Writing good rules
