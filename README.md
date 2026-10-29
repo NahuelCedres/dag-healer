@@ -19,6 +19,10 @@ Every failure is classified as one of:
 The diagnosis and the repairs use Claude, through the Claude API or Amazon Bedrock in your own
 AWS account ([docs/bedrock.md](docs/bedrock.md)).
 
+Your team's knowledge goes into the Organization Context and the ETL Information: Markdown rules in
+the repository that the agent reads before it classifies or fixes, and cites by their IDs
+([docs/context.md](docs/context.md)).
+
 It integrates with Airflow through a plugin (`fastapi_apps`, `react_apps` and a task
 listener), so the UI lives inside Airflow and respects its users and permissions.
 

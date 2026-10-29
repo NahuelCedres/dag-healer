@@ -108,7 +108,7 @@ ward_length_of_stay  dags/ward_length_of_stay.py  2      1 found, 0 unresolved  
 Contracts:     /srv/acme-health/etl/healer/contracts
 healer.yaml:   /srv/acme-health/etl/healer.yaml (written)
 Tests:         no test suite found; dag-healer will create tests/ when it proposes the first fix
-Store:         postgresql+psycopg2://healer:***@db.acme-health.internal/healer (created at schema v2)
+Store:         postgresql+psycopg2://healer:***@db.acme-health.internal/healer (created at schema v3)
 Code files:    unchanged (7 Python files verified)
 
 Draft contracts are not enforced until a human approves them. Review each draft, then approve it under your own name:
@@ -137,12 +137,14 @@ checks at the end that no Python file has changed. It:
 | `--force` | Replace the existing draft contracts |
 | `--repo PATH`, `-c PATH` | Another repository, another `healer.yaml` |
 | `--orchestrator stepfunctions` | Write the AWS Step Functions template instead of Airflow's when there is no `healer.yaml` yet ([AWS Step Functions](#aws-step-functions)) |
+| `--context` | Also write starter files of the Organization Context and of the ETL Information of each DAG, with guiding questions ([The Organization Context and the ETL Information](#the-organization-context-and-the-etl-information)); an existing file is never overwritten |
 
 A note such as `unresolved dataset ...` names an input that `init` could not resolve from the
 code: add its locator under `datasets.<dag_id>.<task_id>` in `healer.yaml`, then run `init`
 again.
 
-Commit `healer.yaml` and `healer/contracts/` next to your DAGs. Every committer can then change
+Commit `healer.yaml`, `healer/contracts/` and, with `--context`, the context files next to your
+DAGs. Every committer can then change
 dag-healer's settings, so protect the file like deployment configuration, for example with a
 code-owner review ([docs/security.md](security.md), sections 6 and 7).
 
@@ -175,6 +177,29 @@ datasets:
 - The worker checks each approved contract against the files that its locators name: relative to
   `repo.path`, absolute, or `s3://` URIs (install `./dag-healer[aws]` for those). It must see the
   same files as your tasks.
+
+### The Organization Context and the ETL Information
+
+dag-healer reads the team's knowledge from two kinds of Markdown files in the repository: the
+Organization Context (`healer/organization.md`: the business, its systems and owners, a glossary,
+regulations, and the rules for every DAG, `ORG-1`, `ORG-2`, ...) and the ETL Information of each
+DAG (`healer/etl/<dag_id>.md`, with rule IDs of its own prefix, such as `LAB-1`). The model reads
+them before it classifies a failure or proposes a fix, cites the rules it applies, and can only
+become more cautious because of them. [docs/context.md](context.md) explains how to write them.
+
+```yaml
+context:
+  organization: healer/organization.md
+  etl_dir: healer/etl
+  max_file_bytes: 16384          # a larger file is refused and never sent to the model
+```
+
+- `dag-healer init --context` writes starter files with guiding questions. Answer them, then
+  commit the files to `base_branch`: the worker reads the context files from that branch's
+  commit, never from the working tree.
+- A file that holds what looks like a secret, or is larger than `max_file_bytes`, is refused; the
+  `context` line of `dag-healer doctor` says why. The files are protected paths: a fix never
+  changes them.
 
 ### The repair sandbox
 
@@ -322,6 +347,7 @@ dag-healer doctor (0.1.0)
 [ OK ] config              loaded /srv/acme-health/etl/healer.yaml
 [ OK ] repository          /srv/acme-health/etl (DAG folder: dags)
 [ OK ] contracts           /srv/acme-health/etl/healer/contracts: 1 approved, 1 draft
+[ OK ] context             main@9e41c07: healer/organization.md (5 rules); 2 of 2 ETL Information file(s) in healer/etl/ (6 rules)
 [ OK ] store               postgresql+psycopg2://healer:***@db.acme-health.internal/healer
 [ OK ] ui bundle           /opt/dag-healer/lib/python3.12/site-packages/dag_healer/api/static/main.umd.cjs (384,227 bytes)
 [ OK ] llm                 ANTHROPIC_API_KEY is set (value hidden); model claude-opus-5-5
@@ -339,7 +365,7 @@ dag-healer doctor (0.1.0)
 [ OK ] github base branch  main requires a pull request with an approving review and blocks force pushes and deletion, and requires status checks
 [ OK ] github workflows    4 workflow files checked
 
-17 ok, 0 warning(s), 0 error(s), 2 skipped
+18 ok, 0 warning(s), 0 error(s), 2 skipped
 ```
 
 The `airflow plugin` and `ingest` lines are about Airflow's own environment, which doctor does not
@@ -350,6 +376,7 @@ see from the worker's host: there they are skipped, and say what to check in Air
 | `config` | `healer.yaml` was found (`-c`, `HEALER_CONFIG`, `$AIRFLOW_HOME/healer.yaml`, `./healer.yaml`) and is valid | A warning means that none was found and the defaults apply: set `HEALER_CONFIG`, or run `dag-healer init`. An error names the invalid setting |
 | `repository` | `repo.path` and its DAG folder exist | Fix `repo.path` (relative to `healer.yaml`) or `repo.dags_dir` |
 | `contracts` | The approved, draft, stale and invalid contracts of `contracts.dir` | A warning for a missing or empty folder (run `dag-healer init`), while no contract is approved (nothing is enforced), for stale contracts (edited after their approval) and for invalid files (ignored): approve the contracts (step 6), approve the stale ones again, or fix the files |
+| `context` | The Organization Context and the ETL Information of the base branch's commit: the files found, their rule counts and their problems ([docs/context.md](context.md)) | A warning names invalid files (with their first problem), files overdue for a review, files refused for their size or encoding, files or edits that are not committed, and a base branch that was not found. An error means a file holds what looks like a secret: remove it from the file and from the history, and rotate it. Skipped without context files (`dag-healer init --context` writes starter files) |
 | `store` | The store answers a query | Check `HEALER_DATABASE_URL`, the database driver (the `postgres` extra, for `postgresql+psycopg2://` URLs) and the network. The SQLite note means that the store works for one process on one machine only |
 | `ui bundle` | The bundle of the views is in the installed package | Install dag-healer from a checkout that holds `src/dag_healer/api/static/main.umd.cjs`, or build it with `python scripts/tasks.py ui` |
 | `llm` | The provider that the worker runs (`HEALER_LLM_PROVIDER`, else `llm.provider`) can be used: with `anthropic`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set; with `bedrock`, the model and the region are valid and AWS credentials resolve. No request is sent and no value is shown | Set what the line names in the worker's environment; for Amazon Bedrock, see [docs/bedrock.md](bedrock.md) |
