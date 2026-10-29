@@ -26,6 +26,14 @@ cache is keyed by ``(orchestrator, dag_id)`` and ``healer_kv`` is created. Postg
 ``healer_incidents`` and ``healer_contracts`` with SQLite's documented procedure (create the
 new table, copy the rows, drop the old table, rename the new one, recreate the indexes,
 ``PRAGMA foreign_key_check``). Row values are copied unchanged.
+
+Migration v3 adds the decision log and the context snapshots: ``healer_context_snapshots`` (the
+Organization Context and the ETL Information each triage read) and ``healer_decisions`` (every
+decision about an incident: classification, human actions and repair outcomes), with their
+indexes. It only creates (``CREATE TABLE IF NOT EXISTS``, ``CREATE INDEX IF NOT EXISTS``), the
+same SQL on SQLite and PostgreSQL, and changes no existing table or row; a table left without an
+index by an interrupted run gets it. Migration v2 creates only the tables of schema v2, so a
+store stamped v2 never holds a v3 table that v3 did not create.
 """
 
 from __future__ import annotations
@@ -33,7 +41,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,7 +57,9 @@ from dag_healer.store.models import (
     SCHEMA_VERSION,
     Base,
     Command,
+    ContextSnapshotRecord,
     ContractState,
+    DecisionRecord,
     Incident,
     PendingEvent,
     SchemaVersion,
@@ -83,6 +93,8 @@ _V2_ADDED_COLUMNS: dict[str, tuple[str, ...]] = {
 _V2_OBSOLETE_INDEXES: dict[str, tuple[str, ...]] = {
     Incident.__tablename__: ("ix_healer_incidents_dag_created",),
 }
+#: The tables schema v3 creates (in an order that satisfies their foreign keys).
+V3_TABLES: tuple[str, ...] = (ContextSnapshotRecord.__tablename__, DecisionRecord.__tablename__)
 
 
 class MigrationError(RuntimeError):
@@ -468,11 +480,17 @@ def _index_fixes(conn: Connection, insp: Inspector, table: Table) -> list[str]:
     return statements
 
 
-def _create_missing(conn: Connection, present: frozenset[str] | set[str]) -> list[str]:
-    """``CREATE TABLE`` / ``CREATE INDEX`` (``IF NOT EXISTS``) for model tables not in ``present``."""
+def _create_missing(
+    conn: Connection, present: frozenset[str] | set[str], *, only: Iterable[str] | None = None
+) -> list[str]:
+    """``CREATE TABLE`` / ``CREATE INDEX`` (``IF NOT EXISTS``) for model tables not in ``present``.
+
+    ``only`` restricts the tables considered (default: every table of the models).
+    """
+    wanted = None if only is None else set(only)
     statements: list[str] = []
     for table in Base.metadata.sorted_tables:
-        if table.name in present:
+        if table.name in present or (wanted is not None and table.name not in wanted):
             continue
         statements.append(_ddl(conn, CreateTable(table, if_not_exists=True)))
         statements += [_ddl(conn, CreateIndex(index, if_not_exists=True)) for index in _sorted_indexes(table)]
@@ -576,7 +594,7 @@ def _plan_v2_sqlite(conn: Connection) -> list[str]:
     contracts = ContractState.__table__
     if contracts.name in present and _contracts_need_rebuild(insp):
         statements += _sqlite_rebuild(conn, insp, contracts, present)
-    return statements + _create_missing(conn, present)
+    return statements + _create_missing(conn, present, only=_v2_tables())
 
 
 def _plan_v2_postgresql(conn: Connection) -> list[str]:
@@ -612,7 +630,7 @@ def _plan_v2_postgresql(conn: Connection) -> list[str]:
             if primary:
                 statements.append(_drop_constraint(conn, contracts, primary))
             statements.append(_ddl(conn, AddConstraint(_table_copy(contracts).primary_key)))
-    return statements + _create_missing(conn, present)
+    return statements + _create_missing(conn, present, only=_v2_tables())
 
 
 def _plan_v2(conn: Connection, dialect: str) -> list[str]:
@@ -635,13 +653,45 @@ def _upgrade_v2(conn: Connection, dialect: str) -> None:
         conn.exec_driver_sql(statement)
 
 
-MIGRATIONS: tuple[Migration, ...] = (Migration(2, "orchestrator-aware keys", _upgrade_v2, _plan_v2),)
+def _v2_tables() -> frozenset[str]:
+    """The tables of schema v2: every table of the models but the ones v3 adds."""
+    return frozenset(Base.metadata.tables) - frozenset(V3_TABLES)
+
+
+# =========================================================================== migration v3
+
+
+def _plan_v3(conn: Connection, dialect: str) -> list[str]:
+    """The SQL of migration v3 for the database as it is now (empty when already applied)."""
+    if dialect not in SUPPORTED_DIALECTS:
+        raise MigrationError(f"store migrations support SQLite and PostgreSQL, not {dialect}")
+    insp = inspect(conn)
+    present = set(insp.get_table_names())
+    statements = _create_missing(conn, present, only=V3_TABLES)
+    for name in V3_TABLES:
+        if name in present:  # created by an interrupted run: add the indexes it may lack
+            statements += _index_fixes(conn, insp, Base.metadata.tables[name])
+    return statements
+
+
+def _upgrade_v3(conn: Connection, dialect: str) -> None:
+    """Migration v3: the decision log and the context snapshots (new tables only)."""
+    for statement in _plan_v3(conn, dialect):
+        logger.debug("dag-healer store migration v3: %s", statement)
+        conn.exec_driver_sql(statement)
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(2, "orchestrator-aware keys", _upgrade_v2, _plan_v2),
+    Migration(3, "decision log and context snapshots", _upgrade_v3, _plan_v3),
+)
 
 
 __all__ = [
     "BACKUP_SUFFIX",
     "MIGRATIONS",
     "SCHEMA_LOCK",
+    "V3_TABLES",
     "Migration",
     "MigrationError",
     "SchemaState",

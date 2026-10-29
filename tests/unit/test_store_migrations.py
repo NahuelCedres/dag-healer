@@ -1,9 +1,10 @@
-"""Store schema v2: the migration runner, ``init_db(allow_migrate=...)`` and the v2 repository.
+"""Store schemas v2 and v3: the migration runner, ``init_db(allow_migrate=...)`` and the v2 repository.
 
 Section 11.4 of ``docs/architecture/orchestrators.md``. The frozen phase-5 store
 ``tests/unit/fixtures/store/healer_v1.db`` (schema v1, see ``test_store_v1_fixture.py``) is
 copied and migrated; the migrated store must hold exactly the v1 rows, have the same layout
-as a new v2 store, and accept the same attempt key under a second orchestrator instance.
+as a new store, and accept the same attempt key under a second orchestrator instance. A v2 store
+(a new store without the two tables of v3) migrates to v3 the same way.
 PostgreSQL runs the same checks in ``tests/airflow/test_store_migration_pg.py``.
 """
 
@@ -24,6 +25,7 @@ from typing import Any
 import pytest
 from sqlalchemy import Engine, create_engine, inspect, select, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.schema import CreateTable
 
 from dag_healer.cli.main import main
 from dag_healer.config import config_from_mapping
@@ -207,11 +209,11 @@ def raw_insert_incident(path: Path, source_id: str, **changes: Any) -> None:
 # =========================================================================== a new store
 
 
-def test_a_new_store_is_created_at_v2_with_every_version_row(tmp_path: Path) -> None:
+def test_a_new_store_is_created_at_v3_with_every_version_row(tmp_path: Path) -> None:
     path = tmp_path / "new" / "healer.db"
     engine = new_v2_store(path)
-    assert migrations.current_version(engine) == SCHEMA_VERSION == 2
-    assert version_rows(path) == [1, 2]
+    assert migrations.current_version(engine) == SCHEMA_VERSION == 3
+    assert version_rows(path) == [1, 2, 3]
     assert migrations.pending(engine) == []
     assert migrations.migrate(engine) == []
     schema = schema_of(engine)
@@ -254,13 +256,19 @@ def test_the_v1_store_migrates_losslessly(v1_store: Path) -> None:
     version_1 = dump(v1_store, tables=("healer_schema_version",))["healer_schema_version"]
     engine = engine_of(v1_store)
     assert migrations.current_version(engine) == 1
-    assert [migration.version for migration in migrations.pending(engine)] == [2]
+    assert [migration.version for migration in migrations.pending(engine)] == [2, 3]
 
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
 
-    assert migrations.current_version(engine) == 2
-    assert version_rows(v1_store) == [1, 2]
-    assert counts(v1_store) == {**V1_COUNTS, "healer_schema_version": 2, "healer_kv": 0}
+    assert migrations.current_version(engine) == 3
+    assert version_rows(v1_store) == [1, 2, 3]
+    assert counts(v1_store) == {
+        **V1_COUNTS,
+        "healer_schema_version": 3,
+        "healer_kv": 0,
+        "healer_context_snapshots": 0,
+        "healer_decisions": 0,
+    }
     assert dump(v1_store, old_columns, DATA_TABLES) == before  # every v1 value, unchanged
     assert dump(v1_store, tables=("healer_schema_version",))["healer_schema_version"][:1] == version_1
     with closing(sqlite3.connect(v1_store)) as conn:
@@ -292,7 +300,7 @@ def test_the_migrated_store_has_the_layout_of_a_new_v2_store(v1_store: Path, tmp
 
 def test_the_second_run_is_a_no_op_and_the_backup_is_the_v1_store(v1_store: Path) -> None:
     engine = engine_of(v1_store)
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
     after_first = (ddl_statements(v1_store), dump(v1_store))
 
     assert migrations.migrate(engine) == []
@@ -368,6 +376,146 @@ def test_the_store_code_reads_and_writes_the_migrated_store(v1_store: Path) -> N
         assert store_repo.kv_get(session, "cursor:airflow") == {"watermark": T0.isoformat()}
 
 
+# =========================================================================== migrating a v2 store (v3)
+
+
+V3_TABLES = ("healer_context_snapshots", "healer_decisions")
+
+
+def v2_store(path: Path) -> Path:
+    """A v2 store with rows: a new store without the v3 tables and the v3 version row."""
+    engine = new_v2_store(path)
+    with db.session_scope(url_of(path)) as session:
+        store_repo.create_incident(
+            session,
+            id=SALES_ID,
+            dag_id="sales_daily_etl",
+            run_id=RUN,
+            task_id="t",
+            try_number=1,
+            source="rest",
+            now=T0,
+        )
+    db.dispose_engines()
+    engine.dispose()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        for table in reversed(V3_TABLES):
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("DELETE FROM healer_schema_version WHERE version = 3")
+    return path
+
+
+def test_a_v2_store_migrates_to_v3_with_new_tables_only(tmp_path: Path) -> None:
+    path = v2_store(tmp_path / "v2" / "healer.db")
+    engine = engine_of(path)
+    before = dump(path, tables=("healer_incidents", "healer_incident_events"))
+    tables_before = {name for name in counts(path)}
+    assert migrations.current_version(engine) == 2
+    assert [migration.version for migration in migrations.pending(engine)] == [3]
+    script = migrations.migration_script(engine)
+    assert script[0] == "-- dag-healer store schema v2 -> v3"
+    statements = [line for line in script if not line.startswith("--")]
+    created = [line for line in statements if line.startswith("CREATE ")]
+    assert all(
+        line.startswith(("CREATE TABLE IF NOT EXISTS", "CREATE INDEX IF NOT EXISTS")) for line in created
+    )
+    assert not [line for line in statements if line.startswith(("ALTER", "DROP", "INSERT INTO healer_inc"))]
+
+    assert migrations.migrate(engine) == [3]
+
+    assert migrations.current_version(engine) == 3
+    assert version_rows(path) == [1, 2, 3]
+    assert set(counts(path)) == tables_before | set(V3_TABLES)
+    assert dump(path, tables=("healer_incidents", "healer_incident_events")) == before
+    assert schema_of(engine) == schema_of(new_v2_store(tmp_path / "fresh" / "healer.db"))
+    assert migrations.migrate(engine) == []
+    assert migrations.migration_script(engine) == ["-- the store is at schema v3: nothing to migrate"]
+
+
+def test_the_v3_tables_have_their_keys_and_indexes(tmp_path: Path) -> None:
+    schema = schema_of(new_v2_store(tmp_path / "new" / "healer.db"))
+    decisions, snapshots = schema["healer_decisions"], schema["healer_context_snapshots"]
+    assert [column[0] for column in decisions["columns"]] == [
+        "id",
+        "incident_id",
+        "orchestrator",
+        "dag_id",
+        "at",
+        "stage",
+        "decision",
+        "decided_by_kind",
+        "decided_by",
+        "confidence",
+        "reason",
+        "rules",
+        "unknown_rules",
+        "snapshot_id",
+        "data",
+    ]
+    assert decisions["fks"] == [
+        (("incident_id",), "healer_incidents", ("id",), "CASCADE"),
+        (("snapshot_id",), "healer_context_snapshots", ("id",), "SET NULL"),
+    ]
+    assert {name for name, _cols, _unique in decisions["indexes"]} == {
+        "ix_healer_decisions_incident",
+        "ix_healer_decisions_orch_dag_at",
+    }
+    assert [column[0] for column in snapshots["columns"]] == [
+        "id",
+        "incident_id",
+        "orchestrator",
+        "dag_id",
+        "created_at",
+        "commit_sha",
+        "ref",
+        "data",
+    ]
+    assert snapshots["fks"] == [(("incident_id",), "healer_incidents", ("id",), "CASCADE")]
+
+
+def test_the_v2_step_creates_no_v3_table(v1_store: Path) -> None:
+    engine = engine_of(v1_store)
+    assert migrations.migrate(engine, target=2) == [2]
+    assert migrations.current_version(engine) == 2
+    assert not set(V3_TABLES) & set(counts(v1_store))
+    assert migrations.migrate(engine) == [3]
+    assert set(V3_TABLES) <= set(counts(v1_store))
+
+
+def test_a_half_applied_v3_migration_can_be_repeated(tmp_path: Path) -> None:
+    path = v2_store(tmp_path / "v2" / "healer.db")
+    table = Base.metadata.tables["healer_context_snapshots"]
+    ddl = str(CreateTable(table).compile(dialect=engine_of(path).dialect))
+    db.dispose_engines()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(ddl)  # an interrupted run outside a transaction: one table, without its indexes
+    engine = engine_of(path)
+    assert migrations.migrate(engine) == [3]
+    assert schema_of(engine) == schema_of(new_v2_store(tmp_path / "fresh" / "healer.db"))
+
+
+def test_init_db_migrates_a_v2_store_only_when_allowed(tmp_path: Path) -> None:
+    path = v2_store(tmp_path / "v2" / "healer.db")
+    engine = engine_of(path)
+    with pytest.raises(StoreSchemaOutdated) as caught:
+        db.init_db(engine)
+    assert (caught.value.current, caught.value.required) == (2, 3)
+    db.init_db(engine, allow_migrate=True)
+    assert migrations.current_version(engine) == 3
+    with db.session_scope(url_of(path)) as session:
+        incident = store_repo.get_incident(session, SALES_ID)
+        decision = store_repo.record_decision(
+            session,
+            incident=incident,
+            stage="classification",
+            decision="data",
+            decided_by_kind="rule",
+            decided_by="a",
+            reason="The approved contract is violated.",
+        )
+        assert decision.id is not None
+
+
 # =========================================================================== locking and failures
 
 
@@ -434,7 +582,7 @@ def test_a_failed_migration_is_rolled_back(v1_store: Path, monkeypatch: pytest.M
         assert conn.execute(text("PRAGMA foreign_keys")).scalar() == 1
 
     monkeypatch.setattr(migrations, "_plan_v2", real_plan)
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
     assert counts(v1_store)["healer_incident_events"] == 12
 
 
@@ -455,7 +603,7 @@ def test_a_half_applied_migration_can_be_repeated(v1_store: Path, tmp_path: Path
             'PRIMARY KEY ("key"))'
         )
     engine = engine_of(v1_store)
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
     assert dump(v1_store, old_columns, DATA_TABLES) == before
     assert schema_of(engine) == schema_of(new_v2_store(tmp_path / "fresh" / "healer.db"))
 
@@ -484,11 +632,11 @@ def test_a_foreign_key_violation_stops_the_migration(v1_store: Path) -> None:
 def test_the_dry_run_prints_the_sql_and_changes_nothing(v1_store: Path) -> None:
     before = ddl_statements(v1_store)
     engine = engine_of(v1_store)
-    assert migrations.migrate(engine, dry_run=True) == [2]
+    assert migrations.migrate(engine, dry_run=True) == [2, 3]
     assert ddl_statements(v1_store) == before
     assert not v1_store.with_name("healer.db.bak-v1").exists()
     script = migrations.migration_script(engine)
-    assert script[0] == "-- dag-healer store schema v1 -> v2"
+    assert script[0] == "-- dag-healer store schema v1 -> v3"
     for expected in (
         "PRAGMA foreign_keys=OFF;",
         "BEGIN IMMEDIATE;",
@@ -499,11 +647,19 @@ def test_the_dry_run_prints_the_sql_and_changes_nothing(v1_store: Path) -> None:
         "ALTER TABLE healer_contracts__v2 RENAME TO healer_contracts;",
         "PRAGMA foreign_key_check;",
         "COMMIT;",
+        "-- v3: decision log and context snapshots",
     ):
         assert expected in script, expected
     assert any(line.startswith("CREATE TABLE healer_incidents__v2") for line in script)
+    v3 = script[script.index("-- v3: decision log and context snapshots") :]
+    assert [line.split(" (")[0] for line in v3 if line.startswith("CREATE TABLE")] == [
+        "CREATE TABLE IF NOT EXISTS healer_context_snapshots",
+        "CREATE TABLE IF NOT EXISTS healer_decisions",
+    ]
+    v2 = script[: script.index("-- v3: decision log and context snapshots")]
+    assert not any("healer_decisions" in line or "healer_context_snapshots" in line for line in v2)
     migrations.migrate(engine)
-    assert migrations.migration_script(engine) == ["-- the store is at schema v2: nothing to migrate"]
+    assert migrations.migration_script(engine) == ["-- the store is at schema v3: nothing to migrate"]
 
 
 def test_the_models_are_not_changed_by_planning(v1_store: Path, tmp_path: Path) -> None:
@@ -530,7 +686,7 @@ def test_init_db_refuses_to_migrate_unless_allowed(v1_store: Path) -> None:
     with pytest.raises(StoreSchemaOutdated) as caught:
         db.init_db(engine)
     assert str(caught.value) == OUTDATED
-    assert (caught.value.current, caught.value.required) == (1, 2)
+    assert (caught.value.current, caught.value.required) == (1, 3)
     for _attempt in range(2):  # not cached: every call checks again
         with pytest.raises(StoreSchemaOutdated):
             db.ensure_initialized(engine)
@@ -540,7 +696,7 @@ def test_init_db_refuses_to_migrate_unless_allowed(v1_store: Path) -> None:
     assert not v1_store.with_name("healer.db.bak-v1").exists()
 
     db.init_db(engine, allow_migrate=True)  # what the worker does
-    assert migrations.current_version(engine) == 2
+    assert migrations.current_version(engine) == 3
     assert v1_store.with_name("healer.db.bak-v1").is_file()
     with db.session_scope(url_of(v1_store)) as session:  # web processes recover without a restart
         assert len(store_repo.list_incidents(session)) == 4
@@ -556,13 +712,13 @@ def test_a_newer_schema_is_left_alone(tmp_path: Path, caplog: pytest.LogCaptureF
     path = tmp_path / "newer" / "healer.db"
     new_v2_store(path)
     with closing(sqlite3.connect(path)) as conn, conn:
-        conn.execute("INSERT INTO healer_schema_version VALUES (3, '2027-01-01 00:00:00.000000')")
+        conn.execute("INSERT INTO healer_schema_version VALUES (4, '2027-01-01 00:00:00.000000')")
     db.dispose_engines()
     engine = engine_of(path)
     with caplog.at_level(logging.WARNING, logger="dag_healer.store.db"):
         db.init_db(engine)
     assert "newer than this dag-healer" in caplog.text
-    assert migrations.current_version(engine) == 3
+    assert migrations.current_version(engine) == 4
     assert migrations.pending(engine) == []
     assert migrations.migrate(engine) == []
 
@@ -852,8 +1008,9 @@ def test_cli_status_and_migrate_a_v1_store(
     config = str(config_for(v1_store))
     assert main(["-c", config, "store", "status"]) == 0
     out = capsys.readouterr().out
-    assert "Schema: v1 (this dag-healer uses v2)" in out
+    assert "Schema: v1 (this dag-healer uses v3)" in out
     assert "  v2  orchestrator-aware keys" in out
+    assert "  v3  decision log and context snapshots" in out
     assert "healer.db.bak-v1" in out
 
     assert main(["-c", config, "store", "stats"]) == 1  # the store code needs v2 first
@@ -867,13 +1024,13 @@ def test_cli_status_and_migrate_a_v1_store(
 
     assert main(["-c", config, "store", "migrate"]) == 0
     out = capsys.readouterr().out
-    assert "migrated from schema v1 to v2 (applied v2)" in out
+    assert "migrated from schema v1 to v3 (applied v2, v3)" in out
     assert "healer.db.bak-v1" in out
     assert main(["-c", config, "store", "migrate"]) == 0
-    assert "already at schema v2: nothing to migrate" in capsys.readouterr().out
+    assert "already at schema v3: nothing to migrate" in capsys.readouterr().out
     assert main(["-c", config, "store", "status"]) == 0
     out = capsys.readouterr().out
-    assert "Schema: v2 (up to date)" in out and "Pending" not in out
+    assert "Schema: v3 (up to date)" in out and "Pending" not in out
     assert main(["-c", config, "store", "stats"]) == 0
     assert "healer_kv" in capsys.readouterr().out
 
@@ -888,8 +1045,8 @@ def test_cli_migrate_creates_an_empty_store(
     assert main(["-c", config, "store", "migrate", "--dry-run"]) == 0
     assert "CREATE TABLE IF NOT EXISTS healer_kv" in capsys.readouterr().out
     assert main(["-c", config, "store", "migrate"]) == 0
-    assert "created at schema v2" in capsys.readouterr().out
-    assert version_rows(store) == [1, 2]
+    assert "created at schema v3" in capsys.readouterr().out
+    assert version_rows(store) == [1, 2, 3]
 
 
 def test_cli_migrate_reports_a_failure(
@@ -918,7 +1075,7 @@ def test_cli_reset_clears_the_poll_cursors_unless_kept(
 
     assert main(["-c", config, "store", "reset", "--yes"]) == 0
     assert "healer_kv: 1" in capsys.readouterr().out
-    assert set(counts(store).items()) >= {("healer_incidents", 0), ("healer_schema_version", 2)}
+    assert set(counts(store).items()) >= {("healer_incidents", 0), ("healer_schema_version", 3)}
     # the old cursor is gone; the poll restarts at the moment of the reset
     with db.session_scope(url_of(store)) as session:
         items = store_repo.kv_items(session)

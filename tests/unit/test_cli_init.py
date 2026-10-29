@@ -430,9 +430,9 @@ def test_init_creates_the_store_and_then_finds_it_up_to_date(
     out = _init(demo_repo, capsys)
     url = load_config(demo_repo / "healer.yaml").database_url
     assert url.endswith(f"{isolated.name}/healer.db")  # under HEALER_HOME, outside the repository
-    assert _store_line(out) == f"Store:         {url} (created at schema v2)"
-    assert current_version(get_engine(url)) == 2
-    assert _store_line(_init(demo_repo, capsys)) == f"Store:         {url} (schema v2, up to date)"
+    assert _store_line(out) == f"Store:         {url} (created at schema v3)"
+    assert current_version(get_engine(url)) == 3
+    assert _store_line(_init(demo_repo, capsys)) == f"Store:         {url} (schema v3, up to date)"
 
 
 def test_init_migrates_a_store_of_schema_v1(
@@ -451,8 +451,8 @@ def test_init_migrates_a_store_of_schema_v1(
     url = f"sqlite:///{store.as_posix()}"
     monkeypatch.setenv("HEALER_DATABASE_URL", url)
     out = _init(demo_repo, capsys)
-    assert _store_line(out) == f"Store:         {url} (migrated from schema v1 to v2)"
-    assert current_version(get_engine(url)) == 2
+    assert _store_line(out) == f"Store:         {url} (migrated from schema v1 to v3)"
+    assert current_version(get_engine(url)) == 3
     assert (store.parent / "healer.db.bak-v1").is_file()
     assert not (isolated / "healer.db").exists()
 

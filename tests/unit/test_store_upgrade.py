@@ -29,7 +29,7 @@ from dag_healer.config import HealerConfig, config_from_mapping
 from dag_healer.store import db
 from dag_healer.store.db import StoreSchemaOutdated
 from dag_healer.store.migrations import backup_path, current_version
-from dag_healer.store.models import Incident
+from dag_healer.store.models import SCHEMA_VERSION, Incident
 from dag_healer.worker.loop import run_worker
 from dag_healer.worker.pipeline import default_session_factory
 
@@ -88,7 +88,7 @@ def test_a_plain_session_never_migrates_an_older_store(v1_url: str) -> None:
 def test_a_migrating_session_upgrades_the_store_first(v1_url: str) -> None:
     with db.session_scope(v1_url, allow_migrate=True) as session:
         assert session.query(Incident).count() == V1_INCIDENTS
-    assert version_of(v1_url) == 2
+    assert version_of(v1_url) == SCHEMA_VERSION == 3
     backup = backup_path(db.get_engine(v1_url), 1)
     assert backup is not None and backup.is_file()
     with db.session_scope(v1_url) as session:  # the API's sessions work from now on
@@ -99,7 +99,7 @@ def test_the_worker_sessions_migrate(tmp_path: Path, healer_env: Path, v1_url: s
     factory = default_session_factory(make_cfg(tmp_path, v1_url))
     with factory() as session:
         assert session.query(Incident).count() == V1_INCIDENTS
-    assert version_of(v1_url) == 2
+    assert version_of(v1_url) == SCHEMA_VERSION == 3
 
 
 class QuietClient:
@@ -131,7 +131,7 @@ def test_run_worker_migrates_a_v1_store_at_start(tmp_path: Path, healer_env: Pat
         cfg, once=True, provider=FakeProvider(cfg), client=client, install_signal_handlers=False
     )
     assert stats.errors == []
-    assert version_of(v1_url) == 2
+    assert version_of(v1_url) == SCHEMA_VERSION == 3
     assert incident_count(v1_url) == V1_INCIDENTS
     # the pending retry_task command of the v1 store was applied after the migration
     assert stats.commands == 1 and stats.commands_failed == 0

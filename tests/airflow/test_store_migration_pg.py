@@ -1,4 +1,4 @@
-"""Store schema v2 migration on PostgreSQL (section 11.4 of docs/architecture/orchestrators.md).
+"""Store schema migrations (v2 and v3) on PostgreSQL (section 11.4 of docs/architecture/orchestrators.md).
 
 Runs in the compose ``tests`` profile (``python scripts/tasks.py test-airflow``). The tests
 container reaches the stack's PostgreSQL server as ``postgres``; ``HEALER_TEST_POSTGRES_URL``
@@ -9,7 +9,8 @@ Every test works in its own throw-away database (``healer_migtest_<random>``): i
 frozen phase-5 schema (``tests/unit/fixtures/store/schema_v1.postgresql.sql``, run on a
 dedicated connection because it empties ``search_path``) and the rows of the frozen v1
 SQLite store (``tests/unit/fixtures/store/healer_v1.db``), migrates, checks, and drops the
-database. The stack's own databases are never written.
+database. A v2 store (a new store without the two tables of v3) migrates to v3 the same way. The
+stack's own databases are never written.
 
 ``HEALER_TEST_POSTGRES_COPY_OF=<database>`` (for example ``healer``) also copies that
 database into a throw-away one (read only on the source: a ``READ ONLY`` transaction,
@@ -277,14 +278,20 @@ def test_the_v1_store_migrates_losslessly_and_idempotently(v1_store: str) -> Non
     assert counts(v1_store) == V1_COUNTS
     engine = engine_of(v1_store)
     assert migrations.current_version(engine) == 1
-    assert [migration.version for migration in migrations.pending(engine)] == [2]
+    assert [migration.version for migration in migrations.pending(engine)] == [2, 3]
 
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
     assert migrations.migrate(engine) == []
     db.init_db(engine, allow_migrate=True)
 
-    assert migrations.current_version(engine) == 2
-    assert counts(v1_store) == {**V1_COUNTS, "healer_schema_version": 2, "healer_kv": 0}
+    assert migrations.current_version(engine) == 3
+    assert counts(v1_store) == {
+        **V1_COUNTS,
+        "healer_schema_version": 3,
+        "healer_kv": 0,
+        "healer_context_snapshots": 0,
+        "healer_decisions": 0,
+    }
     assert snapshot(v1_store, old_columns) == before
     after = v1_columns(v1_store)
     for table, added in V2_COLUMNS.items():
@@ -300,6 +307,7 @@ def test_the_v1_store_migrates_losslessly_and_idempotently(v1_store: str) -> Non
         assert conn.execute(text("SELECT version FROM healer_schema_version ORDER BY 1")).scalars().all() == [
             1,
             2,
+            3,
         ]
         defaults = dict(
             conn.execute(
@@ -326,7 +334,7 @@ def test_the_migrated_store_has_the_layout_of_a_new_v2_store(
     migrations.migrate(migrated)
     fresh = engine_of(new_database())
     db.init_db(fresh)
-    assert migrations.current_version(fresh) == 2
+    assert migrations.current_version(fresh) == 3
     assert schema_of(migrated) == schema_of(fresh)
 
 
@@ -411,7 +419,7 @@ def test_a_failed_migration_is_rolled_back(v1_store: str, monkeypatch: pytest.Mo
         migrations.migrate(engine)
     assert (schema_of(engine), snapshot(v1_store)) == before  # transactional DDL: nothing left behind
     monkeypatch.setattr(migrations, "_plan_v2", real_plan)
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
 
 
 def test_web_processes_never_migrate(v1_store: str) -> None:
@@ -425,7 +433,7 @@ def test_web_processes_never_migrate(v1_store: str) -> None:
 def test_the_dry_run_prints_the_postgresql_sql(v1_store: str) -> None:
     engine = engine_of(v1_store)
     before = schema_of(engine)
-    assert migrations.migrate(engine, dry_run=True) == [2]
+    assert migrations.migrate(engine, dry_run=True) == [2, 3]
     assert schema_of(engine) == before
     script = migrations.migration_script(engine)
     for expected in (
@@ -440,10 +448,77 @@ def test_the_dry_run_prints_the_postgresql_sql(v1_store: str) -> None:
         "DROP INDEX IF EXISTS ix_healer_incidents_signature;",
         "ALTER TABLE healer_contracts DROP CONSTRAINT IF EXISTS healer_contracts_pkey;",
         "ALTER TABLE healer_contracts ADD PRIMARY KEY (orchestrator, dag_id);",
+        "-- v3: decision log and context snapshots",
         "COMMIT;",
     ):
         assert expected in script, expected
     assert any(line.startswith("CREATE TABLE IF NOT EXISTS healer_kv") for line in script)
+    v3 = script[script.index("-- v3: decision log and context snapshots") :]
+    assert [line.split(" (")[0] for line in v3 if line.startswith("CREATE TABLE")] == [
+        "CREATE TABLE IF NOT EXISTS healer_context_snapshots",
+        "CREATE TABLE IF NOT EXISTS healer_decisions",
+    ]
+
+
+# =========================================================================== a v2 store (v3)
+
+
+def _v2_store(url: str) -> str:
+    """A new store turned into a v2 one with rows: the v3 tables and the v3 version row removed."""
+    engine = engine_of(url)
+    db.init_db(engine)
+    with db.session_scope(url) as session:
+        store_repo.create_incident(session, id=SALES_ID, **SALES_KEY, source="rest")
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE healer_decisions"))
+        conn.execute(text("DROP TABLE healer_context_snapshots"))
+        conn.execute(text("DELETE FROM healer_schema_version WHERE version = 3"))
+    db.dispose_engines()
+    return url
+
+
+def test_a_v2_store_migrates_to_v3_with_new_tables_only(new_database: Callable[[], str]) -> None:
+    url = _v2_store(new_database())
+    engine = engine_of(url)
+    assert migrations.current_version(engine) == 2
+    statements = [line for line in migrations.migration_script(engine) if not line.startswith("--")]
+    created = [line for line in statements if line.startswith("CREATE ")]
+    assert created and all(
+        line.startswith(("CREATE TABLE IF NOT EXISTS", "CREATE INDEX IF NOT EXISTS")) for line in created
+    )
+    assert not [line for line in statements if line.startswith(("ALTER", "DROP"))]
+    with pytest.raises(StoreSchemaOutdated, match="store schema v2"):
+        db.init_db(engine)
+
+    assert migrations.migrate(engine) == [3]
+    assert migrations.migrate(engine) == []
+    assert migrations.current_version(engine) == 3
+    fresh = engine_of(new_database())
+    db.init_db(fresh)
+    assert schema_of(engine) == schema_of(fresh)
+
+
+def test_the_v3_foreign_keys_cascade_and_set_null(new_database: Callable[[], str]) -> None:
+    url = _v2_store(new_database())
+    migrations.migrate(engine_of(url))
+    with db.session_scope(url) as session:
+        incident = store_repo.get_incident(session, SALES_ID)
+        snapshot = store_repo.add_context_snapshot(session, incident, {"commit": "a" * 40, "files": []})
+        store_repo.record_decision(
+            session,
+            incident=incident,
+            stage="classification",
+            decision="data",
+            decided_by_kind="rule",
+            decided_by="a",
+            snapshot_id=snapshot.id,
+        )
+        snapshot_id = snapshot.id
+    with engine_of(url).begin() as conn:
+        conn.execute(text("DELETE FROM healer_context_snapshots WHERE id = :id"), {"id": snapshot_id})
+        assert conn.execute(text("SELECT snapshot_id FROM healer_decisions")).scalars().all() == [None]
+        conn.execute(text("DELETE FROM healer_incidents WHERE id = :id"), {"id": SALES_ID})
+        assert conn.execute(text("SELECT count(*) FROM healer_decisions")).scalar() == 0
 
 
 # =========================================================================== a copy of a live store
@@ -475,13 +550,15 @@ def test_a_copy_of_a_live_store_migrates_losslessly(admin: Engine, new_database:
         ).all()
 
     engine = engine_of(url)
-    assert migrations.migrate(engine) == [2]
+    assert migrations.migrate(engine) == [2, 3]
     assert migrations.migrate(engine) == []
 
     assert counts(url) == {
         **expected_counts,
-        "healer_schema_version": expected_counts["healer_schema_version"] + 1,
+        "healer_schema_version": expected_counts["healer_schema_version"] + 2,
         "healer_kv": 0,
+        "healer_context_snapshots": 0,
+        "healer_decisions": 0,
     }
     assert snapshot(url, old_columns) == before
     with engine.connect() as conn:

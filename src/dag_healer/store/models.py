@@ -15,6 +15,9 @@ columns. The columns added by v2 come last in each table, in the order in which
 :mod:`dag_healer.store.migrations` adds them, so a migrated v1 store and a new v2
 store have the same layout. A v1 store is upgraded by
 :func:`dag_healer.store.migrations.migrate`.
+
+Schema v3 adds two tables and changes none: the decision log (``healer_decisions``) and the
+context files each triage read (``healer_context_snapshots``).
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ from sqlalchemy.types import TypeDecorator
 
 from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Length of the ``orchestrator`` (instance id) columns (``OrchestratorConfig.instance``).
 ORCHESTRATOR_LENGTH = 64
@@ -406,6 +409,93 @@ class PendingEvent(Base):
         return self._columns_dict()
 
 
+class ContextSnapshotRecord(Base):
+    """The context files one triage of an incident read (schema v3).
+
+    ``commit_sha`` and ``ref`` are the commit the files were read from (``refs/heads/main``).
+    ``data`` is :meth:`dag_healer.context.ContextSnapshot.to_dict`: the commit and the ref, and for
+    the Organization Context and the ETL Information their path, status (``read``, ``refused``,
+    ``missing``, ``error``) and why, blob id, front matter, parsed rules, problems and the masked
+    text the model read (never the text of a refused file). The console shows it from the store,
+    without the worker's checkout.
+    """
+
+    __tablename__ = "healer_context_snapshots"
+    __table_args__ = (
+        Index("ix_healer_context_snapshots_incident", "incident_id", "id"),
+        Index("ix_healer_context_snapshots_orch_dag", "orchestrator", "dag_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incident_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("healer_incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    orchestrator: Mapped[str] = _orchestrator_column()
+    dag_id: Mapped[str] = mapped_column(String(250), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ref: Mapped[str | None] = mapped_column(String(250), nullable=True)
+    data: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+
+    pipeline_id: Mapped[str] = synonym("dag_id")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe dict."""
+        return self._columns_dict()
+
+
+#: Stages of a decision of the decision log.
+DECISION_STAGES: tuple[str, ...] = ("classification", "human", "repair")
+#: Who takes a decision: a fixed rule of the policy or the repair's checks, the model, a person.
+DECIDED_BY_KINDS: tuple[str, ...] = ("rule", "model", "person")
+
+
+class DecisionRecord(Base):
+    """One entry of the decision log (schema v3): what was decided about an incident, by whom and why.
+
+    ``stage`` is ``classification`` (``decision``: ``data``, ``code`` or ``ambiguous``), ``human``
+    (the action a person took: ``resolve_data``, ``resolve_code``, ``ignore``, ``retry_repair``,
+    ``retry_task``, ``approve_contract``) or ``repair`` (``fix_proposed``, ``fix_failed``,
+    ``rule_conflict``). ``decided_by_kind`` is ``rule`` (``decided_by``: the fixed rule, such as
+    ``a``, ``b``, ``c``, ``d``, ``infra`` or ``repair``), ``model`` (the model's name, with its
+    ``confidence`` when it gave one) or ``person`` (the person's name). ``rules`` are the cited
+    rules that exist in the context files read (``RuleRef.to_dict``), ``unknown_rules`` the cited
+    IDs that do not. A contract approval has no incident.
+    """
+
+    __tablename__ = "healer_decisions"
+    __table_args__ = (
+        Index("ix_healer_decisions_incident", "incident_id", "id"),
+        Index("ix_healer_decisions_orch_dag_at", "orchestrator", "dag_id", "at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incident_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("healer_incidents.id", ondelete="CASCADE"), nullable=True
+    )
+    orchestrator: Mapped[str] = _orchestrator_column()
+    dag_id: Mapped[str] = mapped_column(String(250), nullable=False)
+    at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    decided_by_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    decided_by: Mapped[str] = mapped_column(String(250), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rules: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    unknown_rules: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    snapshot_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("healer_context_snapshots.id", ondelete="SET NULL"), nullable=True
+    )
+    data: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+
+    pipeline_id: Mapped[str] = synonym("dag_id")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe dict."""
+        return self._columns_dict()
+
+
 class KeyValue(Base):
     """Small durable worker state (schema v2), e.g. ``cursor:<instance>`` = the poll cursor."""
 
@@ -423,7 +513,7 @@ class KeyValue(Base):
 
 
 class SchemaVersion(Base):
-    """One row per applied store schema version (a new v2 store records 1 and 2)."""
+    """One row per applied store schema version (a new v3 store records 1, 2 and 3)."""
 
     __tablename__ = "healer_schema_version"
 

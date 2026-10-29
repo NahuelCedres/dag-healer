@@ -32,6 +32,8 @@ from dag_healer.store.models import (
     COMMAND_KINDS,
     COMMAND_PENDING,
     COMMAND_STATUSES,
+    DECIDED_BY_KINDS,
+    DECISION_STAGES,
     DEFAULT_CHANNEL,
     NEW,
     OPEN_STATUSES,
@@ -44,7 +46,9 @@ from dag_healer.store.models import (
     TRIAGING,
     Alert,
     Command,
+    ContextSnapshotRecord,
     ContractState,
+    DecisionRecord,
     Incident,
     IncidentEvent,
     KeyValue,
@@ -72,6 +76,10 @@ STATE_WATERMARK_KEY = "rest_watermark"
 STATE_NOT_BEFORE_KEY = "rest_not_before"
 #: Length of ``Incident.error_name``.
 MAX_ERROR_NAME_CHARS = 256
+#: A decision's reason is masked and cut to this many characters.
+MAX_DECISION_REASON_CHARS = 4000
+#: Lengths of the short text columns of the decision log.
+_DECISION_LENGTHS = {"decision": 64, "decided_by": 250}
 
 #: The incident key (``uq_healer_incidents_key``).
 _TI_KEY_COLUMNS: tuple[str, ...] = ("orchestrator", "dag_id", "run_id", "task_id", "map_index", "try_number")
@@ -662,6 +670,156 @@ def list_alerts(session: Session, incident_id: str) -> list[Alert]:
     """Return the alerts recorded for an incident, oldest first."""
     query = select(Alert).where(Alert.incident_id == incident_id).order_by(Alert.id)
     return list(session.scalars(query))
+
+
+# --------------------------------------------------------------------------- #
+# Context snapshots and the decision log (schema v3)
+# --------------------------------------------------------------------------- #
+def add_context_snapshot(
+    session: Session, incident: Incident, snapshot: Mapping[str, Any], *, now: datetime | None = None
+) -> ContextSnapshotRecord:
+    """Store what one triage of ``incident`` read of the context files.
+
+    ``snapshot`` is :meth:`dag_healer.context.ContextSnapshot.to_dict` (already masked): its
+    ``commit`` and ``ref`` also fill their columns. Returns the row, flushed (its ``id`` is set).
+    """
+    data = json_safe(dict(snapshot))
+    record = ContextSnapshotRecord(
+        incident_id=incident.id,
+        orchestrator=_instance(incident.orchestrator),
+        dag_id=incident.dag_id,
+        created_at=_now(now),
+        commit_sha=str(data.get("commit"))[:64] if data.get("commit") else None,
+        ref=str(data.get("ref"))[:250] if data.get("ref") else None,
+        data=data,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def latest_context_snapshot(session: Session, incident_id: str) -> ContextSnapshotRecord | None:
+    """The context snapshot of the last triage of an incident (``None`` before the first one)."""
+    query = (
+        select(ContextSnapshotRecord)
+        .where(ContextSnapshotRecord.incident_id == incident_id)
+        .order_by(ContextSnapshotRecord.id.desc())
+        .limit(1)
+    )
+    return session.scalars(query).first()
+
+
+def list_context_snapshots(
+    session: Session,
+    *,
+    incident_id: str | None = None,
+    orchestrator: str | None = None,
+    dag_id: str | None = None,
+    limit: int = 100,
+) -> list[ContextSnapshotRecord]:
+    """Context snapshots, newest first, of an incident or of a pipeline (``None``: every one)."""
+    query = select(ContextSnapshotRecord)
+    if incident_id is not None:
+        query = query.where(ContextSnapshotRecord.incident_id == incident_id)
+    if orchestrator is not None:
+        query = query.where(ContextSnapshotRecord.orchestrator == orchestrator)
+    if dag_id is not None:
+        query = query.where(ContextSnapshotRecord.dag_id == dag_id)
+    return list(session.scalars(query.order_by(ContextSnapshotRecord.id.desc()).limit(limit)))
+
+
+def _cut(value: Any, name: str) -> str:
+    text = str(value or "").strip()
+    return text[: _DECISION_LENGTHS[name]]
+
+
+def record_decision(
+    session: Session,
+    *,
+    stage: str,
+    decision: str,
+    decided_by_kind: str,
+    decided_by: str,
+    reason: str = "",
+    incident: Incident | None = None,
+    orchestrator: str | None = None,
+    dag_id: str | None = None,
+    confidence: float | None = None,
+    rules: Iterable[Mapping[str, Any]] = (),
+    unknown_rules: Iterable[str] = (),
+    snapshot_id: int | None = None,
+    data: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+) -> DecisionRecord:
+    """Add an entry to the decision log (see :class:`~dag_healer.store.models.DecisionRecord`).
+
+    The pipeline and the instance come from ``incident`` when one is given (a contract approval
+    has none: pass ``dag_id`` and ``orchestrator``). ``reason`` and the unknown rule IDs are
+    masked; the reason is cut to :data:`MAX_DECISION_REASON_CHARS` characters.
+    """
+    if stage not in DECISION_STAGES:
+        raise ValueError(f"Unknown decision stage {stage!r}; expected one of {', '.join(DECISION_STAGES)}")
+    if decided_by_kind not in DECIDED_BY_KINDS:
+        raise ValueError(
+            f"Unknown decider kind {decided_by_kind!r}; expected one of {', '.join(DECIDED_BY_KINDS)}"
+        )
+    pipeline = incident.dag_id if incident is not None else dag_id
+    if not pipeline:
+        raise ValueError("A decision needs an incident or a dag_id")
+    instance = incident.orchestrator if incident is not None else orchestrator
+    record = DecisionRecord(
+        incident_id=incident.id if incident is not None else None,
+        orchestrator=_instance(instance),
+        dag_id=str(pipeline),
+        at=_now(now),
+        stage=stage,
+        decision=_cut(decision, "decision"),
+        decided_by_kind=decided_by_kind,
+        decided_by=_cut(decided_by, "decided_by") or "?",
+        confidence=None if confidence is None else round(float(confidence), 4),
+        reason=mask_text(reason).strip()[:MAX_DECISION_REASON_CHARS],
+        rules=[json_safe(dict(rule)) for rule in rules] or None,
+        unknown_rules=[mask_text(rule)[:64] for rule in unknown_rules] or None,
+        snapshot_id=snapshot_id,
+        data=json_safe(dict(data)) if data else None,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def list_decisions(
+    session: Session,
+    *,
+    incident_id: str | None = None,
+    orchestrator: str | None = None,
+    dag_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = 500,
+    newest_first: bool = False,
+) -> list[DecisionRecord]:
+    """Entries of the decision log, oldest first (``newest_first`` reverses), filtered as given.
+
+    ``since`` is inclusive and ``until`` exclusive.
+    """
+    query = select(DecisionRecord)
+    if incident_id is not None:
+        query = query.where(DecisionRecord.incident_id == incident_id)
+    if orchestrator is not None:
+        query = query.where(DecisionRecord.orchestrator == orchestrator)
+    if dag_id is not None:
+        query = query.where(DecisionRecord.dag_id == dag_id)
+    if since is not None:
+        query = query.where(DecisionRecord.at >= ensure_utc(since))
+    if until is not None:
+        query = query.where(DecisionRecord.at < ensure_utc(until))
+    order = (
+        (DecisionRecord.at.desc(), DecisionRecord.id.desc())
+        if newest_first
+        else (DecisionRecord.at, DecisionRecord.id)
+    )
+    return list(session.scalars(query.order_by(*order).limit(limit)))
 
 
 # --------------------------------------------------------------------------- #
