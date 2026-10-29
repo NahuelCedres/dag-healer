@@ -302,7 +302,6 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "a GitHub token",
         re.compile(r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})"),
     ),
-    ("a GitLab token", re.compile(r"(?<![A-Za-z0-9_-])glpat-[A-Za-z0-9_-]{20,}")),
     ("an Anthropic API key", re.compile(r"(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}")),
     ("an API key", re.compile(r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{32,}")),
     ("a Stripe key", re.compile(r"(?<![A-Za-z0-9_])[rs]k_live_[A-Za-z0-9]{20,}")),
@@ -314,7 +313,6 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("an Azure storage account key", re.compile(r"(?i)\bAccountKey\s*=\s*[A-Za-z0-9+/]{20,}")),
     ("a Databricks token", re.compile(r"(?<![A-Za-z0-9_])dapi[0-9a-f]{32}(?![0-9a-f])")),
-    ("a HashiCorp Vault token", re.compile(r"(?<![A-Za-z0-9_])hv[sbr]\.[A-Za-z0-9_-]{24,}")),
     ("an npm token", re.compile(r"(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])")),
     ("a SendGrid API key", re.compile(r"(?<![A-Za-z0-9_])SG\.[A-Za-z0-9_-]{16,32}\.[A-Za-z0-9_-]{16,64}")),
     (
@@ -325,6 +323,22 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: An ``Authorization`` header with its credential (``Authorization: Bearer ...``, ``Basic ...``).
 _AUTHORIZATION_RE = re.compile(
     r"(?i)\bauthorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token|digest)\s+(?P<value>[A-Za-z0-9._~+/=-]{8,})"
+)
+#: Credentials whose value must also look like one, because a sentence can name their prefix
+#: (``hvs.policy-for-etl``, ``Authorization: Basic followed by ...``): ``(kind, pattern with a
+#: value group, check of the value)``.
+_CHECKED_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[str], bool]], ...] = (
+    (
+        "a GitLab token",
+        re.compile(r"(?<![A-Za-z0-9_-])glpat-(?P<value>[A-Za-z0-9_-]{20,})"),
+        lambda value: not _words(value),
+    ),
+    (
+        "a HashiCorp Vault token",
+        re.compile(r"(?<![A-Za-z0-9_])hv[sbr]\.(?P<value>[A-Za-z0-9_-]{24,})"),
+        lambda value: not _words(value) and any(char.isdigit() for char in value),
+    ),
+    ("an Authorization header", _AUTHORIZATION_RE, lambda value: _token_shaped(value)),
 )
 #: A password in a URL (``postgresql://user:secret@host``); placeholders are not credentials.
 _URL_PASSWORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:(?P<value>[^\s@/]+)@[^\s/]+")
@@ -340,6 +354,16 @@ _ASSIGNMENT_RE = re.compile(rf"(?i){_CREDENTIAL_NAME}\s*[:=]\s*[\"']?(?P<value>[
 #: ``password: |`` in YAML, then the value alone on its line).
 _NAME_ALONE_RE = re.compile(rf"(?i){_CREDENTIAL_NAME}[ \t]*[:=][ \t]*(?:[|>][-+]?[ \t]*)?$")
 _LEADING_VALUE_RE = re.compile(r"^\s*[\"']?(?P<value>[^\s\"'`,;)]{8,})")
+#: A line that is a key of its own (``description: ...``): no value of the name before it.
+_KEY_LINE_RE = re.compile(r"^\s*[\"']?[A-Za-z_][\w.-]*[\"']?\s*:(?:\s|$)")
+#: A value that is code, not a credential: a call or an index (``Variable.get(``, ``os.environ[``)
+#: or a dotted name (``settings.CRM_CLIENT_SECRET``, ``conn.password``).
+_CODE_VALUE_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*[(\[]|^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\.?$")
+#: A value that is a path: absolute, home or relative (``/opt/airflow/dags``), or three parts or more
+#: (``etl/prod/warehouse-credentials``).
+_PATH_VALUE_RE = re.compile(r"^(?:~?/|\.{1,2}/)[\w.#~-]*(?:/[\w.#~-]*)*$|^[\w.#~-]+(?:/[\w.#~-]+){2,}/?$")
+#: Words joined by ``-`` or ``_`` (``stored-in-vault``, ``etl_service_account``): a name, not a value.
+_WORDS_RE = re.compile(r"[A-Za-z]+(?:[-_][A-Za-z#]+)+")
 #: Values that stand for a credential without being one: ``${TOKEN}``, ``$TOKEN``, ``<password>``,
 #: ``{{ secret }}``, ``***``, ``xxxxxxxx``, ``[hidden]``, ``your-api-key``.
 _PLACEHOLDER_RE = re.compile(
@@ -350,7 +374,8 @@ _PLACEHOLDER_RE = re.compile(
 _PLACEHOLDER_WORDS = frozenset(
     {"password", "passwd", "secret", "changeme", "example", "redacted", "placeholder", "token", "hidden"}
 )
-#: A value of this many characters is a credential even without digits (``CorrectHorseBattery``).
+#: A value of this many characters is a credential even without digits when it looks random
+#: (``CorrectHorseBattery``, see :func:`_credential_value`).
 LONG_CREDENTIAL_VALUE = 12
 #: Shown for a value of a configured secret (``known`` of :func:`find_secret`).
 KNOWN_SECRET_KIND = "the value of a configured secret"
@@ -373,22 +398,45 @@ def _placeholder(value: str) -> bool:
     return bool(_PLACEHOLDER_RE.match(value)) or value.lower().strip("_-") in _PLACEHOLDER_WORDS
 
 
+def _words(value: str) -> bool:
+    return bool(_WORDS_RE.fullmatch(value))
+
+
+def _random_case(value: str) -> bool:
+    """Upper case after the first letter, and lower case: ``kQzXbWp`` and ``CorrectHorse``, not
+    ``Authorization``."""
+    letters = [char for char in value if char.isalpha()]
+    return any(char.islower() for char in letters) and any(char.isupper() for char in letters[1:])
+
+
 def _credential_value(value: str) -> bool:
-    """True when an assigned value can be a credential: not a placeholder, and letters and digits
-    or :data:`LONG_CREDENTIAL_VALUE` characters or more."""
-    if _placeholder(value):
+    """True when an assigned value can be a credential: not a placeholder, code or a path, and
+    letters and digits, or :data:`LONG_CREDENTIAL_VALUE` characters or more that look random (upper
+    case after the first letter, and none of ``- _ . / ( [``: words, names and paths are not)."""
+    if _placeholder(value) or _CODE_VALUE_RE.match(value) or _PATH_VALUE_RE.match(value):
         return False
-    if len(value) >= LONG_CREDENTIAL_VALUE:
+    if any(char.isdigit() for char in value) and any(char.isalpha() for char in value):
         return True
-    return any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
+    return len(value) >= LONG_CREDENTIAL_VALUE and _random_case(value) and not re.search(r"[-_./(\[]", value)
+
+
+def _token_shaped(value: str) -> bool:
+    """True when the credential of an ``Authorization`` header looks like a token: 12 characters or
+    more with letters and digits, or 20 or more that look random, and no words."""
+    if _placeholder(value) or _words(value) or len(value) < LONG_CREDENTIAL_VALUE:
+        return False
+    if any(char.isdigit() for char in value) and any(char.isalpha() for char in value):
+        return True
+    return len(value) >= 20 and _random_case(value)
 
 
 def _line_secret(line: str) -> str | None:
     for kind, pattern in _SECRET_PATTERNS:
         if pattern.search(line):
             return kind
-    if any(not _placeholder(match.group("value")) for match in _AUTHORIZATION_RE.finditer(line)):
-        return "an Authorization header"
+    for kind, pattern, check in _CHECKED_PATTERNS:
+        if any(check(match.group("value")) for match in pattern.finditer(line)):
+            return kind
     if any(not _placeholder(match.group("value")) for match in _URL_PASSWORD_RE.finditer(line)):
         return "a password in a URL"
     if any(_credential_value(match.group("value")) for match in _ASSIGNMENT_RE.finditer(line)):
@@ -408,15 +456,16 @@ def find_secret(text: str, known: Iterable[str] = ()) -> SecretFinding | None:
     Looks for private keys, AWS access keys, GitHub, GitLab, Anthropic, Slack, Google, Stripe,
     Azure storage, Databricks, Vault, npm and SendGrid tokens, JSON web tokens, ``Authorization``
     headers, passwords in URLs and credentials written with their value (``password: ...``,
-    ``PGPASSWORD=...``, ``api_key = ...``, or the value alone on the next line that is not blank;
-    a placeholder such as ``${TOKEN}`` or ``<password>`` is not one), then for the values in
-    ``known`` (:func:`known_secrets`: whole, or a fragment of 16 characters). The finding names
-    the kind and the line, never the value.
+    ``PGPASSWORD=...``, ``api_key = ...``, or the value alone on the next line that is not blank
+    and not a key of its own; a placeholder such as ``${TOKEN}`` or ``<password>``, code such as
+    ``Variable.get(...)`` or ``settings.X``, a path and words such as ``stored-in-vault`` are not
+    values), then for the values in ``known`` (:func:`known_secrets`: whole, or a fragment of 16
+    characters). The finding names the kind and the line, never the value.
     """
     lines = text.splitlines() or [text]
     named = False  # the last line that is not blank ends with a credential name and no value
     for number, line in enumerate(lines, start=1):
-        if named and line.strip() and _value_on_this_line(line):
+        if named and line.strip() and not _KEY_LINE_RE.match(line) and _value_on_this_line(line):
             return SecretFinding(_CREDENTIAL_KIND, number)
         kind = _line_secret(line)
         if kind is not None:

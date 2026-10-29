@@ -84,9 +84,6 @@ PATTERNS = [
         "password: " + "Correct" + "HorseBatteryStaple", "a credential with its value", id="long-passphrase"
     ),
     pytest.param(
-        "db password=" + "supersecret" + "value", "a credential with its value", id="long-lowercase"
-    ),
-    pytest.param(
         'curl -H "Authorization: Bearer ' + "8f14e45f" * 4 + '"', "an Authorization header", id="bearer"
     ),
     pytest.param("Authorization: Basic " + "ZXRsOlMz" + "Y3JldFB3", "an Authorization header", id="basic"),
@@ -130,6 +127,8 @@ def test_find_secret_names_the_kind_and_the_line_never_the_value(fragment: str, 
         pytest.param("eyJ" + "a" * 8 + ".eyJ" + "b" * 8, id="jwt-without-signature"),
         pytest.param("password: " + "hunter2", id="value-of-7-characters"),
         pytest.param("password: " + "correcthors", id="value-of-11-characters-without-digits"),
+        pytest.param("db password=" + "supersecret" + "value", id="long-value-in-lower-case"),
+        pytest.param("password: " + "Authorization", id="long-word-with-a-capital"),
         pytest.param("Authorization: Bearer " + "${TOKEN}", id="bearer-placeholder"),
         pytest.param("Authorization: Bearer " + "<token>", id="bearer-angle-placeholder"),
         pytest.param("glpat-" + "short", id="gitlab-too-short"),
@@ -323,3 +322,60 @@ def test_a_credential_whose_value_is_on_the_next_line_is_found(lines: tuple[str,
 )
 def test_a_line_after_a_credential_name_that_is_no_value_is_not_a_secret(lines: tuple[str, ...]) -> None:
     assert find_secret(_lines("# Systems", *lines)) is None
+
+
+# --------------------------------------------------------------------------- ordinary lines about credentials
+
+#: Lines a context file holds about credentials without holding one: how a fix fetches one, where
+#: one lives, quoted errors. None of them may refuse a file.
+ABOUT_CREDENTIALS = [
+    'password = Variable.get("warehouse_password")',
+    'conn_password = BaseHook.get_connection("warehouse").password',
+    'api_key = os.environ.get("CRM_API_KEY")',
+    "client_secret=settings.CRM_CLIENT_SECRET",
+    'db_password = vault_client.read("secret/etl")',
+    'secret = Variable.get("crm_secret", deserialize_json=True)',
+    'token = os.getenv("API_TOKEN")',
+    'password: "{{ conn.warehouse.password }}"',
+    "password: '{{conn.wh.password}}'",
+    'export PGPASSWORD="$WAREHOUSE_PW"',
+    'secret="etl/prod/warehouse-credentials"',
+    "pwd = /opt/airflow/dags/repo",
+    "etl ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart airflow-worker",
+    "- ORG-6: The warehouse password: stored-in-vault, rotated every 90 days.",
+    "- ORG-7: The reporting database password: not-needed-with-IAM (the role signs in).",
+    "- CUS-2: The CRM client_secret: provided-by-the-vendor, kept by crm-team.",
+    "- ORG-8: Every API call sends its token: Authorization header from Vault.",
+    "- INV-3: Login: password=ask-in-#data-oncall",
+    "- ORG-9: secret: the account manager knows who to call.",
+    "- ORG-10: Passphrase = correct horse battery staple is an example of a weak one.",
+    "- ORG-11: Never hardcode a password: use Variable.get or BaseHook.get_connection.",
+    "Authorization: Bearer <token from the vault>",
+    "Authorization: Bearer ${CRM_TOKEN}",
+    "The header is `Authorization: Bearer <token>`.",
+    "Authorization: Basic followed by the base64 of user:password",
+    "authorization: bearer tokens expire after one hour",
+    'If the load fails with "password authentication failed for user etl", page #data-oncall.',
+    'FATAL: password authentication failed for user "etl"',
+    "botocore.exceptions.ClientError: An error occurred (ExpiredToken) when calling the GetObject operation",
+    "The service account and its password:\netl_service_account_readonly",
+    "- ORG-3: Never commit a password:\n  use the vault instead.",
+    "secret:\n  Confidentiality-wise, everything in this file is internal.",
+    "password:\n  description: The warehouse password, kept in the vault.",
+    "AccountKey=<from the portal>",
+    "The SendGrid template SG.welcome-email.v2 is used for onboarding mails.",
+    "Our Vault paths look like hvs.policy-for-etl-readonly-users.",
+    "npm_package_version_checker_tool_v2_installer_x is a CI step.",
+    "GitLab tokens look like glpat-followed-by-twenty-characters.",
+]
+
+
+@pytest.mark.parametrize("line", ABOUT_CREDENTIALS)
+def test_ordinary_lines_about_credentials_are_not_secrets(line: str) -> None:
+    assert find_secret(_lines("# Systems", "", line)) is None
+
+
+def test_a_token_shaped_example_is_still_refused() -> None:
+    """A value shaped like a real token cannot be told from one: write it as dapi... instead."""
+    finding = find_secret("dapi" + "0123456789abcdef" * 2 + " is how a Databricks token starts.")
+    assert finding == SecretFinding("a Databricks token", 1)
