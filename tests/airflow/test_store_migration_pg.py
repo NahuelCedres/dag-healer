@@ -324,6 +324,9 @@ def test_the_v1_store_migrates_losslessly_and_idempotently(v1_store: str) -> Non
         "healer_pending_events.channel": "'task-failed'::character varying",
         "healer_commands.orchestrator": "'airflow'::character varying",
         "healer_contracts.orchestrator": "'airflow'::character varying",
+        # the v3 tables share the instance column of the others (their writers always fill it)
+        "healer_context_snapshots.orchestrator": "'airflow'::character varying",
+        "healer_decisions.orchestrator": "'airflow'::character varying",
     }
 
 
