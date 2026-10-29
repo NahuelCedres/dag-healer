@@ -26,6 +26,11 @@ Command (payload)         Effect
 A command that is no longer allowed for the incident's current status (see
 :data:`dag_healer.api.views.ALLOWED_ACTIONS_BY_STATUS`) fails with a clear error. The worker
 applies only the commands of its own orchestrator instance.
+
+Every applied command is also an entry of the decision log (``healer_decisions``, stage
+``human``): the action (``resolve_data``, ``resolve_code``, ``ignore``, ``retry_repair``,
+``retry_task``, ``approve_contract``), the person who took it and why (the note, else what was
+done). A failed command decided nothing and is not logged.
 """
 
 from __future__ import annotations
@@ -132,6 +137,30 @@ def _incident_for(session: Session, command: Mapping[str, Any], action: str) -> 
     return incident
 
 
+def _log_decision(
+    session: Session,
+    command: Mapping[str, Any],
+    message: str,
+    *,
+    incident: Incident | None = None,
+    data: dict[str, Any] | None = None,
+) -> None:
+    """The decision log entry of an applied command: the person, the action and why."""
+    payload = command.get("payload") or {}
+    store_repo.record_decision(
+        session,
+        incident=incident,
+        orchestrator=str(command.get("orchestrator") or DEFAULT_ORCHESTRATOR),
+        dag_id=str(command["dag_id"]),
+        stage="human",
+        decision=_action_name(command),
+        decided_by_kind="person",
+        decided_by=str(command["actor"]),
+        reason=_note(payload) or message,
+        data={"command_id": command["id"], **(data or {})},
+    )
+
+
 def _finish(
     session: Session,
     command_id: int,
@@ -212,7 +241,7 @@ def _apply_incident_command(
     handler = _resolve if command["kind"] == "resolve" else _retry_repair
     with sf() as session:
         message, incident, data = handler(session, command)
-        _finish(
+        if _finish(
             session,
             command["id"],
             COMMAND_APPLIED,
@@ -220,7 +249,8 @@ def _apply_incident_command(
             incident=incident,
             actor=command["actor"],
             data=data,
-        )
+        ):
+            _log_decision(session, command, message, incident=incident)
     return _outcome(command, COMMAND_APPLIED, message, data)
 
 
@@ -293,7 +323,12 @@ def _retry_task(
         data["warnings"] = [_clip(warning, 500) for warning in result.warnings]
     with sf() as session:
         incident = store_repo.get_incident(session, str(command["incident_id"]))
-        _finish(session, command["id"], COMMAND_APPLIED, message, incident=incident, actor=actor, data=data)
+        if _finish(
+            session, command["id"], COMMAND_APPLIED, message, incident=incident, actor=actor, data=data
+        ):
+            _log_decision(
+                session, command, message, incident=incident, data={"run_id": run_id, "task_id": task_id}
+            )
     logger.info("dag-healer worker: %s", _clip(message, 500))
     return _outcome(command, COMMAND_APPLIED, message, data)
 
@@ -374,7 +409,8 @@ def _approve_contract(cfg: HealerConfig, sf: SessionFactory, command: Mapping[st
             source_hash=approved.source_hash,
             orchestrator=str(command.get("orchestrator") or DEFAULT_ORCHESTRATOR),
         )
-        _finish(session, command["id"], COMMAND_APPLIED, message, actor=actor, data=data)
+        if _finish(session, command["id"], COMMAND_APPLIED, message, actor=actor, data=data):
+            _log_decision(session, command, message, data=data)
     logger.info("dag-healer worker: %s", _clip(message, 500))
     return _outcome(command, COMMAND_APPLIED, message, data)
 

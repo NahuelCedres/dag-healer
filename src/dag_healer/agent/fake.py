@@ -3,11 +3,14 @@
 * :meth:`FakeProvider.classify` reads the JSON block between ``<signals>`` and
   ``</signals>`` that :mod:`dag_healer.agent.classify` appends to every prompt and returns the
   category of the deterministic policy hint it contains (confidence 0.9 for ``data`` / ``code``,
-  0.5 for ``ambiguous``) with a diagnosis templated from the signals.
+  0.5 for ``ambiguous``) with a diagnosis templated from the signals. A script whose ``match``
+  has ``phase: classify`` adds the rules the answer cites (``rules_cited``: a list of IDs) and a
+  ``rule_conflict`` (``{rule, reason}``) to the classification of the incidents it matches.
 * :meth:`FakeProvider.repair_session` replays YAML scripts. Each script has a ``match``
   mapping (``dag_id``, ``task_id``, ``exception_type``, ``phase``; a missing key matches anything,
   a list matches any of its values) and ``steps`` (``[{tool: name, input: {...}}]``) that are
-  executed by calling the tool functions by name. Scripts are read from ``$HEALER_FAKE_LLM_DIR``
+  executed by calling the tool functions by name (``cite_rules`` and ``stop_for_rule`` among
+  them when context files were read). Scripts are read from ``$HEALER_FAKE_LLM_DIR``
   or ``<repo.path>/fixtures/fake_llm``. Without a matching script the session returns
   :data:`NO_SCRIPT_TEXT` and makes no tool calls.
 """
@@ -27,6 +30,7 @@ from dag_healer.agent.llm import (
     Classification,
     LLMUnavailable,
     RepairSessionResult,
+    RuleConflict,
     ToolCallRecord,
     tool_call_record,
 )
@@ -40,6 +44,8 @@ FAKE_DIR_ENV = "HEALER_FAKE_LLM_DIR"
 DEFAULT_SCRIPT_DIR = "fixtures/fake_llm"
 NO_SCRIPT_TEXT = "The fake LLM provider has no script for this scenario."
 MATCH_KEYS: tuple[str, ...] = ("dag_id", "task_id", "exception_type", "phase")
+#: The ``phase`` of a classification script (repair scripts have ``test`` or ``fix``).
+CLASSIFY_PHASE = "classify"
 CONFIDENT = 0.9
 UNSURE = 0.5
 
@@ -249,8 +255,39 @@ class FakeProvider:
         return None
 
     def classify(self, *, system: str, prompt: str) -> tuple[Classification, int]:
-        """Classify from the ``<signals>`` block of the prompt (no tokens are spent)."""
-        return fake_classification(extract_signals(prompt)), 0
+        """Classify from the ``<signals>`` block of the prompt (no tokens are spent).
+
+        A ``phase: classify`` script that matches the incident adds its ``rules_cited`` and its
+        ``rule_conflict``.
+        """
+        signals = extract_signals(prompt)
+        classification = fake_classification(signals)
+        script = self._classify_script(signals)
+        if script is None:
+            return classification, 0
+        update: dict[str, Any] = {}
+        cited = script.get("rules_cited")
+        if isinstance(cited, list):
+            update["rules_cited"] = [str(item) for item in cited]
+        conflict = script.get("rule_conflict")
+        if isinstance(conflict, Mapping) and conflict.get("rule"):
+            update["rule_conflict"] = RuleConflict(
+                rule=str(conflict["rule"]), reason=str(conflict.get("reason") or "")
+            )
+        logger.info("Fake LLM: classification script %s", script["name"])
+        return classification.model_copy(update=update), 0
+
+    def _classify_script(self, signals: Mapping[str, Any]) -> dict[str, Any] | None:
+        directory = self.script_dir()
+        scripts = load_scripts(directory) if directory is not None else []
+        classify = [script for script in scripts if script["match"].get("phase") == CLASSIFY_PHASE]
+        scenario = {
+            "dag_id": signals.get("dag_id"),
+            "task_id": signals.get("task_id"),
+            "exception_type": signals.get("exception_type"),
+            "phase": CLASSIFY_PHASE,
+        }
+        return match_script(classify, scenario)
 
     def repair_session(
         self,
@@ -308,6 +345,7 @@ class FakeProvider:
 
 
 __all__ = [
+    "CLASSIFY_PHASE",
     "FAKE_DIR_ENV",
     "NO_SCRIPT_TEXT",
     "SIGNALS_END",

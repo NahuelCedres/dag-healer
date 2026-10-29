@@ -45,6 +45,15 @@ words by default).
 
 Masking: pytest output and error text pass through :func:`dag_healer.masking.mask_text`
 before they reach the LLM, the result or the logs, and the tools refuse to read data files.
+
+Context: when the context gathering read the Organization Context or the ETL Information
+(``ctx.context_snapshot``), both phase prompts carry their blocks and the agent gets two more
+tools. ``cite_rules`` records the rules that shaped the test or the fix (checked against what was
+read: an unknown ID is flagged, never applied); ``stop_for_rule`` ends the repair when the fix
+would go against a rule: nothing is committed or pushed, and the result is ``rule_conflict``
+with the rule and the reason, so a person decides. The context files are protected paths, and
+the tools never read them (the prompt has them, masked). PR.md lists the rules applied by the
+classification and the repair, and flags the unknown citations.
 """
 
 from __future__ import annotations
@@ -68,9 +77,11 @@ from dag_healer.agent.tests_gen import (
     build_fix_prompt,
     build_test_prompt,
     choose_test_location,
+    context_snapshot_of,
     repro_target,
     system_prompt,
 )
+from dag_healer.context.model import MAX_UNKNOWN_ID_CHARS, Citations, ContextSnapshot, normalise_id
 from dag_healer.core.ids import DEFAULT_ORCHESTRATOR
 from dag_healer.masking import mask_text
 from dag_healer.pr.github import GitHubError, create_pull_request
@@ -93,6 +104,7 @@ from dag_healer.repo.protected_paths import (
     DATA_FILES,
     compared_parts,
     contracts_prefix,
+    is_context_path,
     is_data_file,
     linked_paths,
     protected_changes,
@@ -113,6 +125,10 @@ logger = logging.getLogger(__name__)
 
 REPAIRED = "repaired"
 REPAIR_FAILED = "repair_failed"
+#: The repair stopped because the fix would go against a rule of the context files.
+RULE_CONFLICT = "rule_conflict"
+#: A rule conflict's reason is masked and cut to this many characters.
+MAX_CONFLICT_REASON_CHARS = 500
 
 #: Identity of the healer's commits.
 AUTHOR_NAME = "dag-healer"
@@ -186,6 +202,9 @@ class RepairResult:
 
     ``attempts`` counts the agent sessions that were run (test and fix phases).
     ``pytest_before`` / ``pytest_after`` are masked pytest summaries plus output tails.
+    ``status`` is ``repaired``, ``repair_failed`` or ``rule_conflict`` (``rule_conflict`` holds
+    ``{"rule", "reason", "where", "phase"}``). ``citations`` are the rules the repair sessions
+    cited, checked against the context files read.
     """
 
     status: str
@@ -203,6 +222,8 @@ class RepairResult:
     created_tests_dir: bool = False
     notes: list[str] = field(default_factory=list)
     error: str | None = None
+    rule_conflict: dict[str, Any] | None = None
+    citations: Citations = field(default_factory=Citations)
 
     @property
     def ok(self) -> bool:
@@ -218,7 +239,21 @@ class RepairAborted(RuntimeError):
     """Internal: stops the repair with a ``repair_failed`` result and this message."""
 
 
+class RuleConflictStop(RuntimeError):
+    """Internal: the agent stopped because the fix would go against a rule (``conflict``)."""
+
+    def __init__(self, conflict: Mapping[str, Any]) -> None:
+        super().__init__(f"the fix would go against {conflict.get('rule')}")
+        self.conflict = dict(conflict)
+
+
 # --------------------------------------------------------------------------- path rules
+
+
+def context_paths(cfg: Any) -> tuple[str, ...]:
+    """The context files of ``cfg`` (``context.organization``, ``context.etl_dir``), or none."""
+    context = getattr(cfg, "context", None)
+    return tuple(getattr(context, "paths", ()) or ())
 
 
 def _under(rel: str, prefix: str) -> bool:
@@ -349,8 +384,12 @@ class RepairTools:
     and what a protected path that is a committed link leads to (``linked``: by default read
     from the clone's ``HEAD``; ``.pre-commit-config.yaml -> src/ci/hooks.yaml`` protects
     ``src/ci/hooks.yaml``). The tool descriptions name the main ones; a refused write says
-    why. Data files, ``.env*`` and ``healer.yaml`` cannot be read either. Every write is
-    recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
+    why. Data files, ``.env*``, ``healer.yaml`` and the context files (``context:``: the
+    Organization Context and the ETL Information, which are protected paths too) cannot be read
+    either. Every write is recorded (:attr:`writes`) and can be rolled back (:meth:`revert`).
+    With a ``context`` snapshot that read a file, :meth:`as_functions` adds ``cite_rules`` (the
+    cited IDs are kept in :attr:`cited`) and ``stop_for_rule`` (:attr:`rule_conflict`; after it,
+    the write tools and ``run_tests`` refuse to work).
     Every pytest run happens in ``sandbox`` (default: the one ``cfg.repo.sandbox`` configures)
     with ``extra_env`` (the orchestrator's sandbox overrides). When the sandbox cannot start
     pytest, :attr:`sandbox_error` keeps the (masked) reason and no later run is attempted.
@@ -370,6 +409,7 @@ class RepairTools:
         extra_env: Mapping[str, str | None] | None = None,
         sandbox: Sandbox | None = None,
         linked: Iterable[str] | None = None,
+        context: ContextSnapshot | None = None,
     ) -> None:
         if phase not in ("test", "fix"):
             raise ValueError(f"unknown repair phase: {phase!r}")
@@ -386,7 +426,11 @@ class RepairTools:
         self.max_test_runs = max_test_runs
         self.allowed_paths = [_norm_prefix(p) for p in cfg.repo.allowed_paths if str(p).strip()]
         self._contracts_prefix = contracts_prefix(cfg.contracts.dir, cfg.repo_root)
+        self._context_paths = context_paths(cfg)
         self._linked: frozenset[str] | None = frozenset(linked) if linked is not None else None
+        self.context = context if context is not None and context.has_files else None
+        self.cited: list[str] = []
+        self.rule_conflict: dict[str, Any] | None = None
         self.writes: list[WriteRecord] = []
         self.test_runs: list[PytestResult] = []
         self._originals: dict[str, bytes | None] = {}
@@ -476,6 +520,11 @@ class RepairTools:
                 f"Error: reading {rel} is denied: data files must not be read. Use the masked sample "
                 "provided in the prompt instead."
             )
+        if is_context_path(rel, self._context_paths):
+            return (
+                f"Error: reading {rel} is denied: the Organization Context and the ETL Information are in "
+                "the prompt (masked) when they could be read."
+            )
         return None
 
     def _write_denial(self, rel: str) -> str | None:
@@ -519,12 +568,19 @@ class RepairTools:
         """What the protected links committed in the clone lead to (read once, from ``HEAD``)."""
         if self._linked is None:
             links = committed_links(self.root)
-            self._linked = linked_paths(links, contracts_dir=self._contracts_prefix)
+            self._linked = linked_paths(
+                links, contracts_dir=self._contracts_prefix, context_paths=self._context_paths
+            )
         return self._linked
 
     def _protected(self, rel: str) -> str | None:
         """Why the policy protects ``rel`` (:func:`protected_reason`), or None."""
-        return protected_reason(rel, contracts_dir=self._contracts_prefix, linked=self._linked_paths())
+        return protected_reason(
+            rel,
+            contracts_dir=self._contracts_prefix,
+            linked=self._linked_paths(),
+            context_paths=self._context_paths,
+        )
 
     def _protected_target(self, rel: str) -> str | None:
         """Why the path that a write to ``rel`` really reaches is protected, when it is another path.
@@ -545,9 +601,17 @@ class RepairTools:
             self._originals[rel] = target.read_bytes() if target.is_file() else None
 
     def _write_budget_error(self) -> str | None:
+        if self.rule_conflict is not None:
+            return self._stopped_message()
         if len(self.writes) >= self.max_writes:
             return f"Error: write limit reached ({self.max_writes} writes in this session)."
         return None
+
+    def _stopped_message(self) -> str:
+        rule = (self.rule_conflict or {}).get("rule", "a rule")
+        return (
+            f"Error: the repair was stopped for {rule}; change nothing more and finish with a short summary."
+        )
 
     def _walk(self, start: Path) -> Iterable[Path]:
         if start.is_file():
@@ -755,6 +819,8 @@ class RepairTools:
         """Run pytest on ``paths`` (default: the tests folder) and return a masked summary."""
         if self.sandbox_error is not None:
             return self._sandbox_error_message()
+        if self.rule_conflict is not None:
+            return self._stopped_message()
         if len(self.test_runs) >= self.max_test_runs:
             return f"Error: test-run limit reached ({self.max_test_runs} runs in this session)."
         targets: list[str] | None
@@ -794,6 +860,58 @@ class RepairTools:
         return (
             f"Error: the test sandbox could not run pytest ({self.sandbox_error}); stop: no test can run "
             "until the sandbox works."
+        )
+
+    def cite_rules(self, rules: list[str] | None = None) -> str:
+        """Record the IDs of the context rules that shaped this phase's work."""
+        if self.context is None:
+            return "Error: no context file was read, so there is no rule to cite."
+        if isinstance(rules, str):
+            rules = [rules]
+        if rules is None:
+            rules = []
+        if not isinstance(rules, list) or any(not isinstance(item, str) for item in rules):
+            return 'Error: rules must be a list of rule IDs, for example ["LAB-1", "ORG-3"].'
+        if not rules:
+            return "Recorded: no rule applies."
+        checked = self.context.check(rules)
+        self.cited.extend(rules)
+        parts: list[str] = []
+        if checked.applied:
+            parts.append("Recorded: " + ", ".join(checked.applied_ids) + ".")
+        if checked.unknown:
+            parts.append(
+                "Not rules of the context files in the prompt (the pull request flags them): "
+                + ", ".join(checked.unknown)
+                + ". Cite only the IDs written in those blocks."
+            )
+        return " ".join(parts)
+
+    def stop_for_rule(self, rule: str, reason: str) -> str:
+        """Stop the repair because the work would go against a rule; a person then decides."""
+        if self.context is None:
+            return "Error: no context file was read, so there is no rule to stop for."
+        rule_id = normalise_id(rule if isinstance(rule, str) else "")
+        ref = self.context.rules().get(rule_id)
+        if ref is None:
+            shown = mask_text(rule_id)[:MAX_UNKNOWN_ID_CHARS] or "(no ID)"
+            return (
+                f"Error: {shown} is not a rule of the Organization Context or the ETL Information in the "
+                "prompt. Name the ID of the rule the work would go against, or go on when no rule is broken."
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            return "Error: say in one sentence why the work would go against the rule."
+        self.rule_conflict = {
+            "rule": rule_id,
+            "reason": mask_text(reason).strip()[:MAX_CONFLICT_REASON_CHARS],
+            "where": ref.where,
+            "phase": self.phase,
+        }
+        self.cited.append(rule_id)  # the rule of a stop counts as cited
+        logger.info("repair tool (%s): stopped for rule %s", self.phase, rule_id)
+        return (
+            f"Stopped: the repair ends here and a person decides about {rule_id}. Change no more files and "
+            "finish with a one-line summary."
         )
 
     # ------------------------------------------------------------------ provider view
@@ -939,7 +1057,38 @@ class RepairTools:
             '"exit code N: X passed, Y failed, ..." followed by the pytest output tail, or a message '
             'starting with "Error:".',
         )
-        return [list_files, read_file, search, write_file, replace_in_file, run_tests]
+        functions = [list_files, read_file, search, write_file, replace_in_file, run_tests]
+        if self.context is None:
+            return functions
+
+        def cite_rules(rules: list[str]) -> str:
+            return _guard(tools.cite_rules, rules)
+
+        def stop_for_rule(rule: str, reason: str) -> str:
+            return _guard(tools.stop_for_rule, rule, reason)
+
+        work = "test" if self.phase == "test" else "fix"
+        cite_rules.__doc__ = _tool_doc(
+            f"Record the IDs of the rules of the Organization Context and the ETL Information that shaped "
+            f"your {work}.",
+            "Call it once before you finish, with an empty list when no rule applies. Only IDs written in "
+            "the context blocks of the prompt count; the pull request lists the rules and flags the others.",
+            [("rules", 'Rule IDs, for example ["LAB-1", "ORG-3"].')],
+            '"Recorded: ..." with the IDs that exist, and the ones that do not, or a message starting with '
+            '"Error:".',
+        )
+        stop_for_rule.__doc__ = _tool_doc(
+            f"Stop the repair because the {work} this failure needs would go against a rule of the context.",
+            "Nothing is committed or pushed: the incident waits for a person, who sees the rule and your "
+            "reason. Use it instead of working around a rule; after it, change nothing more and finish.",
+            [
+                ("rule", 'The ID of the rule, for example "LAB-1".'),
+                ("reason", "One sentence: why the work would go against the rule."),
+            ],
+            '"Stopped: ..." when the repair stops, or a message starting with "Error:" (for example for an '
+            "ID that is not a rule of the context).",
+        )
+        return [*functions, cite_rules, stop_for_rule]
 
 
 # --------------------------------------------------------------------------- repair flow
@@ -1000,6 +1149,7 @@ class _Repair:
         github_token: str | None,
         extra_env: Mapping[str, str | None] | None = None,
         sandbox: Sandbox | None = None,
+        citations: Citations | None = None,
     ) -> None:
         self.cfg = cfg
         self.incident = dict(incident)
@@ -1024,6 +1174,10 @@ class _Repair:
         self.ws: Workspace | None = None
         self.base_commit: str | None = None  # HEAD of the healer branch when it was created
         self.contracts = contracts_prefix(cfg.contracts.dir, cfg.repo_root)
+        self.context_paths = context_paths(cfg)
+        self.context = context_snapshot_of(ctx)  # the context files the gathering read, if any
+        self.prior_citations = citations or Citations()  # what the classification cited
+        self.cited: list[str] = []  # what the repair sessions cited (checked when used)
         self.linked: frozenset[str] | None = None  # what protected links of the base commit lead to
         self.setup_findings: list[SetupFinding] = []  # GitHub setup problems for "Before you merge"
         self.layout: TestLayout | None = None
@@ -1065,6 +1219,7 @@ class _Repair:
             extra_env=self.extra_env,
             sandbox=self.sandbox,
             linked=self._linked_paths(),
+            context=self.context,
         )
 
     def _linked_paths(self) -> frozenset[str]:
@@ -1072,8 +1227,13 @@ class _Repair:
         assert self.ws is not None
         if self.linked is None:
             links = committed_links(self.ws.path, self.base_commit or "HEAD")
-            self.linked = linked_paths(links, contracts_dir=self.contracts)
+            self.linked = linked_paths(links, contracts_dir=self.contracts, context_paths=self.context_paths)
         return self.linked
+
+    def citations(self) -> Citations:
+        """The rules the classification and the repair sessions cited, checked against what was read."""
+        repair = self.context.check(self.cited) if self.context is not None else Citations()
+        return self.prior_citations.merge(repair)
 
     def _check_sandbox(self) -> None:
         """Refuse to run any code, the existing suite included, without a usable test sandbox."""
@@ -1124,9 +1284,17 @@ class _Repair:
             partial = getattr(exc, "partial", None)
             if partial is not None:  # tokens spent before the failure still count
                 self.budget.add(partial.input_tokens, partial.output_tokens)
+            self.cited.extend(tools.cited)
+            if tools.rule_conflict is not None:  # the agent stopped for a rule before the failure
+                raise RuleConflictStop(tools.rule_conflict) from exc
             raise
         self.budget.add(session.input_tokens, session.output_tokens)
         self.result.tokens_used = self.budget.used
+        self.cited.extend(tools.cited)
+        if tools.rule_conflict is not None:  # a person decides: nothing else of this repair runs
+            if session.final_text:
+                self.agent_summary = mask_text(session.final_text).strip()[:1500] or self.agent_summary
+            raise RuleConflictStop(tools.rule_conflict)
         if session.final_text:
             self.agent_summary = mask_text(session.final_text).strip()[:1500] or self.agent_summary
         if tools.sandbox_error is not None:  # the agent's run_tests could not start pytest
@@ -1489,6 +1657,7 @@ class _Repair:
         if self.agent_summary:
             notes.append(f"Repair agent summary: {self.agent_summary}")
         return render_pr_markdown(
+            rules=self.citations() if self.context is not None or self.prior_citations else None,
             incident=self.incident,
             diagnosis=self._diagnosis(),
             test_path=self.test_rel or "",
@@ -1522,7 +1691,9 @@ class _Repair:
 
     def _protected_listing(self, paths: Iterable[str]) -> str | None:
         """``path (reason), ...`` for the protected ``paths`` (at most ten named), or None."""
-        protected = protected_changes(paths, contracts_dir=self.contracts, linked=self._linked_paths())
+        protected = protected_changes(
+            paths, contracts_dir=self.contracts, linked=self._linked_paths(), context_paths=self.context_paths
+        )
         return _listed([f"{path} ({reason})" for path, reason in protected]) if protected else None
 
     def _refuse_protected_changes(self) -> None:
@@ -1757,6 +1928,8 @@ class _Repair:
             self.result.error = None
         except RepairAborted as exc:
             self._fail(str(exc))
+        except RuleConflictStop as exc:
+            self._stop_for_rule(exc.conflict)
         except LLMUnavailable as exc:
             self._fail(f"The LLM is unavailable: {mask_text(exc)}")
         except LLMRefusal as exc:
@@ -1768,8 +1941,23 @@ class _Repair:
             self._fail(f"Unexpected error during the repair: {type(exc).__name__}: {mask_text(exc)}")
         finally:
             self.result.tokens_used = self.budget.used
+            self.result.citations = self.citations()
             self._cleanup()
         return self.result
+
+    def _stop_for_rule(self, conflict: Mapping[str, Any]) -> None:
+        """End the repair with ``rule_conflict``: nothing was committed or pushed, a person decides."""
+        self.result.status = RULE_CONFLICT
+        self.result.rule_conflict = dict(conflict)
+        work = "test" if conflict.get("phase") == "test" else "fix"
+        where = f" ({conflict['where']})" if conflict.get("where") else ""
+        reason = str(conflict.get("reason") or "").rstrip(".")
+        rule = conflict.get("rule")
+        self.result.error = (
+            f"Needs a decision: the {work} this failure needs would go against {rule}{where}: {reason}. "
+            "Nothing was committed or pushed; a person decides."
+        )
+        logger.warning("incident %s: repair stopped for rule %s", self.incident_id, conflict.get("rule"))
 
     def _fail(self, message: str) -> None:
         self.result.status = REPAIR_FAILED
@@ -1804,6 +1992,7 @@ def run_repair(
     github_token: str | None = None,
     extra_env: Mapping[str, str | None] | None = None,
     sandbox: Sandbox | None = None,
+    citations: Citations | None = None,
 ) -> RepairResult:
     """Reproduce a CODE incident with a failing test, fix it minimally and publish the fix.
 
@@ -1820,10 +2009,13 @@ def run_repair(
             ``sandbox_env()``; ``None`` removes a variable), applied to every pytest run.
         sandbox: The test sandbox of every pytest run (default: the one ``cfg.repo.sandbox``
             configures). When it is not usable the repair fails before any code runs.
+        citations: The rules the classification cited (``ClassificationOutcome.citations``),
+            listed with the repair's own under "Rules applied" in the pull request.
 
     Returns:
-        A :class:`RepairResult`; ``status`` is ``"repaired"`` or ``"repair_failed"`` (with
-        ``error``). Never raises.
+        A :class:`RepairResult`; ``status`` is ``"repaired"``, ``"repair_failed"`` (with
+        ``error``) or ``"rule_conflict"`` (the agent stopped for a rule: ``rule_conflict`` and
+        ``error`` say which and why; nothing was committed). Never raises.
     """
     return _Repair(
         cfg,
@@ -1834,6 +2026,7 @@ def run_repair(
         github_token=github_token,
         extra_env=extra_env,
         sandbox=sandbox,
+        citations=citations,
     ).run()
 
 
@@ -1843,11 +2036,14 @@ __all__ = [
     "MAX_TEST_ATTEMPTS",
     "REPAIRED",
     "REPAIR_FAILED",
+    "RULE_CONFLICT",
     "SKIP_CI_LINE",
     "RepairAborted",
     "RepairResult",
     "RepairTools",
+    "RuleConflictStop",
     "WriteRecord",
     "branch_name",
+    "context_paths",
     "run_repair",
 ]

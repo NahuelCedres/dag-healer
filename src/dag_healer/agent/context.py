@@ -20,7 +20,11 @@ effort and without ever raising for a missing piece (each gap becomes a ``notes`
   ``draft_violations``, which are evidence only;
 * a masked sample of the most relevant dataset (offending rows first);
 * the orchestrator's vocabulary and display name (the words of the notes, the prompts and the
-  PR texts: :func:`prompt_words`) and its deep links (``links.links``).
+  PR texts: :func:`prompt_words`) and its deep links (``links.links``);
+* the Organization Context and the pipeline's ETL Information
+  (:func:`dag_healer.context.read_context`): read from the commit of ``repo.base_branch``, never
+  from the working tree, refused when they hold a secret or are too large, and masked
+  (``context_snapshot``; a refused, invalid or stale file also gets a note).
 
 Without an orchestrator the gathering is offline: the error comes from the explicit error text
 or the incident's ``error_summary`` and the repository is scanned for Airflow DAGs, as before
@@ -59,6 +63,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from dag_healer.config import HealerConfig
+    from dag_healer.context import ContextSnapshot
     from dag_healer.core.ports import OrchestratorAdapter
     from dag_healer.core.specs import DagInfo
 
@@ -159,6 +164,7 @@ class IncidentContext:
     log_confidence: str = "exact"
     vocabulary: dict[str, str] = field(default_factory=dict)
     native_links: dict[str, str] = field(default_factory=dict)
+    context_snapshot: ContextSnapshot | None = None
 
     @property
     def top_repo_frame(self) -> dict[str, Any] | None:
@@ -1146,6 +1152,21 @@ def _apply_contract(cfg: HealerConfig, ctx: IncidentContext) -> None:
         _safely(ctx, "Sampling the configured dataset", lambda: _sample_from_config(cfg, ctx))
 
 
+def _apply_context_files(cfg: HealerConfig, ctx: IncidentContext) -> None:
+    """Read the Organization Context and the ETL Information of the pipeline (base branch only).
+
+    A configuration without a ``context`` section (a duck-typed one) reads nothing.
+    """
+    if getattr(cfg, "context", None) is None:
+        return
+    from dag_healer.context import read_context
+
+    snapshot = read_context(cfg, ctx.dag_id or None)
+    ctx.context_snapshot = snapshot
+    for note in snapshot.notes:
+        _note(ctx, note)
+
+
 # =========================================================================== entry point
 
 
@@ -1228,6 +1249,11 @@ def gather_context(
     )
     _safely(ctx, "Collecting source code", lambda: _apply_code_snippets(cfg, ctx))
     _safely(ctx, "Checking the data contract", lambda: _apply_contract(cfg, ctx))
+    _safely(
+        ctx,
+        "Reading the Organization Context and the ETL Information",
+        lambda: _apply_context_files(cfg, ctx),
+    )
     if orch is not None:
         ctx.native_links = _native_links(ctx, orch)
     logger.info(

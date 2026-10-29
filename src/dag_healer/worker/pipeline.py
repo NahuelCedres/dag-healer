@@ -24,13 +24,22 @@ phase-5 Airflow REST client passed as ``client`` is wrapped by
                              -> repairing -> repaired | repair_failed (CODE)
                              -> waiting_human                         (AMBIGUOUS)
 
-  gather the context (logs, code, contract, masked sample), classify it (policy + LLM;
-  skipped when a human already resolved the category), persist the masked results, then
-  report, repair or wait for a human, and send the alert of the final state. Every step adds
-  a timeline event (``context``, ``classification``, ``repair``, ``alert``...). It never
-  raises: an unexpected failure puts the incident in ``error`` with a masked event. A CODE
-  incident whose test sandbox (``repo.sandbox``) is not usable ends ``repair_failed`` before
-  any code runs, with the reason and how to fix it; ``retry repair`` works once it is.
+  gather the context (logs, code, contract, masked sample, the Organization Context and the
+  ETL Information), classify it (policy + LLM; skipped when a human already resolved the
+  category), persist the masked results, then report, repair or wait for a human, and send the
+  alert of the final state. Every step adds a timeline event (``context``, ``classification``,
+  ``repair``, ``alert``...). It never raises: an unexpected failure puts the incident in
+  ``error`` with a masked event. A CODE incident whose test sandbox (``repo.sandbox``) is not
+  usable ends ``repair_failed`` before any code runs, with the reason and how to fix it;
+  ``retry repair`` works once it is. A repair that the agent stopped because the fix would go
+  against a rule of the context files waits for a person (``waiting_human``), with the rule
+  and the reason ("needs a decision").
+
+  What the triage read of the context files is stored as a context snapshot
+  (``healer_context_snapshots``), and every decision goes to the decision log
+  (``healer_decisions``): the classification (a fixed rule, or the model with its confidence)
+  and the outcome of the repair (fix proposed, fix failed, stopped by a rule conflict). The
+  human actions are logged where they are applied (:mod:`dag_healer.worker.commands`).
 
 Everything persisted or logged goes through :mod:`dag_healer.masking` first: error texts are
 masked by the context gathering, samples are masked before they are stored.
@@ -1054,6 +1063,88 @@ def pick_violation(
     return data
 
 
+#: The outcome of a repair that the agent stopped for a rule (``dag_healer.agent.repair.RULE_CONFLICT``).
+RULE_CONFLICT = "rule_conflict"
+#: The decision of the decision log for each repair outcome.
+REPAIR_DECISIONS: dict[str, str] = {
+    REPAIRED: "fix_proposed",
+    REPAIR_FAILED: "fix_failed",
+    RULE_CONFLICT: "rule_conflict",
+}
+#: How the decision log names the repair's own checks when they end a repair.
+REPAIR_CHECKS = "repair"
+
+
+def model_name(provider: Any) -> str:
+    """The name of the model behind ``provider`` (its ``model``, else the provider's name)."""
+    model = getattr(provider, "model", None)
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return str(getattr(provider, "name", None) or "llm")
+
+
+def classification_decider(outcome: ClassificationOutcome, provider: Any) -> tuple[str, str, float | None]:
+    """``(kind, who, confidence)`` of a classification for the decision log.
+
+    The model decided when its answer was needed and the final category is its own (rule ``b`` or
+    the ``llm`` gate), or when it said that the follow-up would go against a context rule; any
+    other decision belongs to the fixed rule that took it (``a``, ``b``, ``c``, ``d``, ``infra``...).
+    """
+    from dag_healer.agent.policy import RULE_B, RULE_CONTEXT, RULE_LLM, RULE_NAMES
+
+    decision, answer = outcome.decision, outcome.classification
+    if answer is None:
+        return "rule", RULE_NAMES.get(decision.rule, decision.rule), None
+    own = decision.needs_llm_confirmation and decision.rule in (RULE_B, RULE_LLM)
+    if (own and decision.category == answer.category) or decision.rule == RULE_CONTEXT:
+        return "model", model_name(provider), round(float(answer.confidence), 4)
+    return "rule", RULE_NAMES.get(decision.rule, decision.rule), None
+
+
+def repair_decider(result: Any, provider: Any) -> tuple[str, str]:
+    """``(kind, who)`` of a repair outcome: the model proposed the fix or stopped for a rule; the
+    repair's checks ended every other repair."""
+    if result.status in (REPAIRED, RULE_CONFLICT):
+        return "model", model_name(provider)
+    return "rule", REPAIR_CHECKS
+
+
+def citation_event_data(citations: Any, conflict: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The citation keys of a timeline event: present only when there is something to say."""
+    data: dict[str, Any] = {}
+    if citations is not None and citations.applied:
+        data["rules_applied"] = citations.applied_ids
+    if citations is not None and citations.unknown:
+        data["rules_unknown"] = list(citations.unknown)
+    if conflict:
+        data["rule_conflict"] = dict(conflict)
+    return data
+
+
+def context_event_data(snapshot: Any) -> list[dict[str, Any]]:
+    """What the ``context`` event says of the context files: one entry per file that is not missing."""
+    from dag_healer.context.model import short_sha
+
+    entries: list[dict[str, Any]] = []
+    for item in snapshot.files():
+        if item.status == "missing" and not item.uncommitted:
+            continue
+        entry: dict[str, Any] = {"path": item.path, "status": item.status}
+        if snapshot.commit:
+            entry["ref"] = snapshot.ref_name
+            entry["commit"] = short_sha(snapshot.commit)
+        if item.is_read:
+            entry["rules"] = len(item.rules)
+            if item.problems:
+                entry["problems"] = len(item.problems)
+            if item.stale:
+                entry["stale"] = True
+        if item.reason:
+            entry["reason"] = _clip(item.reason, 500)
+        entries.append(entry)
+    return entries
+
+
 class _Pipeline:
     """State of one :func:`process_incident` call."""
 
@@ -1081,6 +1172,7 @@ class _Pipeline:
         self.now = now
         self.stage = "starting"
         self.outcome: ClassificationOutcome | None = None
+        self.snapshot_id: int | None = None  # the context snapshot of this triage
 
     # ------------------------------------------------------------------ store access
     def _get(self, session: Session) -> Incident:
@@ -1129,6 +1221,11 @@ class _Pipeline:
         violations, _status = evidence_violations(ctx)
         with self.sf() as session:
             incident = self._get(session)
+            files = None
+            if ctx.context_snapshot is not None:
+                record = store_repo.add_context_snapshot(session, incident, ctx.context_snapshot.to_dict())
+                self.snapshot_id = record.id
+                files = context_event_data(ctx.context_snapshot)
             if ctx.exception_type:
                 incident.error_summary = compose_error_summary(
                     ctx.exception_type, ctx.exception_message, ctx.traceback_text
@@ -1158,6 +1255,7 @@ class _Pipeline:
                     "draft_violation_count": len(ctx.draft_violations),
                     "sample_dataset": ctx.sample_dataset,
                     "notes": [_clip(note, 500) for note in ctx.notes[:MAX_EVENT_NOTES]],
+                    **({"context_files": files} if files else {}),
                 },
             )
         return ctx
@@ -1212,6 +1310,29 @@ class _Pipeline:
                     "contract_status": ctx.contract_status,
                     "error_kind": outcome.signals.error_kind,
                     "violations": _violation_dicts(violations, status),
+                    **citation_event_data(outcome.citations, outcome.rule_conflict),
+                },
+            )
+            kind, who, confidence = classification_decider(outcome, self.provider)
+            store_repo.record_decision(
+                session,
+                incident=incident,
+                stage="classification",
+                decision=decision.category,
+                decided_by_kind=kind,
+                decided_by=who,
+                confidence=confidence,
+                reason=_clip(decision.reason, 4000),
+                rules=[ref.to_dict() for ref in outcome.citations.applied],
+                unknown_rules=outcome.citations.unknown,
+                snapshot_id=self.snapshot_id,
+                data={
+                    "rule": decision.rule,
+                    "confidence": round(float(decision.confidence), 4),
+                    "llm_category": classification.category if classification is not None else None,
+                    "llm_confidence": classification.confidence if classification is not None else None,
+                    "llm_error": _clip(outcome.llm_error, 500) if outcome.llm_error else None,
+                    "rule_conflict": outcome.rule_conflict,
                 },
             )
             transition(
@@ -1388,8 +1509,10 @@ class _Pipeline:
                     workspace_root=self.workspace_root,
                     extra_env=self._sandbox_env(),
                     sandbox=usable,
+                    citations=self.outcome.citations if self.outcome is not None else None,
                 )
-        final = REPAIRED if result.status == REPAIRED else REPAIR_FAILED
+        stopped = result.status == RULE_CONFLICT
+        final = REPAIRED if result.status == REPAIRED else (WAITING_HUMAN if stopped else REPAIR_FAILED)
         error = _clip(result.error, 2000) if result.error else None
         notes = [_clip(note, 500) for note in result.notes[:MAX_EVENT_NOTES]]
         with self.sf() as session:
@@ -1410,6 +1533,8 @@ class _Pipeline:
                 else:
                     where = "no pull request"
                 message = f"Fix proposed on branch {result.branch} ({where})"
+            elif stopped:
+                message = error or "Needs a decision: the fix would go against a rule of the context files."
             else:
                 message = f"Repair failed: {error or 'unknown error'}"
             store_repo.add_event(
@@ -1429,6 +1554,27 @@ class _Pipeline:
                     "tokens_used": int(result.tokens_used or 0),
                     "error": error,
                     "notes": notes,
+                    **citation_event_data(result.citations, result.rule_conflict),
+                },
+            )
+            kind, who = repair_decider(result, self.provider)
+            store_repo.record_decision(
+                session,
+                incident=incident,
+                stage="repair",
+                decision=REPAIR_DECISIONS.get(result.status, "fix_failed"),
+                decided_by_kind=kind,
+                decided_by=who,
+                reason=_clip(message, 4000),
+                rules=[ref.to_dict() for ref in result.citations.applied],
+                unknown_rules=result.citations.unknown,
+                snapshot_id=self.snapshot_id,
+                data={
+                    "status": result.status,
+                    "branch": result.branch,
+                    "pr_url": result.pr_url,
+                    "pr_md_path": result.pr_md_path,
+                    "rule_conflict": result.rule_conflict,
                 },
             )
             transition(session, incident, final, message)
@@ -1447,6 +1593,12 @@ class _Pipeline:
             extra["fix_summary"] = fix_summary
         if final == REPAIR_FAILED:
             extra["error"] = error or "The repair failed."
+        if stopped:
+            violations, _status = evidence_violations(ctx)
+            self._alert(
+                WAITING_HUMAN, {"reason": message, "violations": violations, "sample": ctx.masked_sample}
+            )
+            return final
         self._alert(final, extra)
         return final
 
@@ -1581,6 +1733,7 @@ def process_incident(
 
 __all__ = [
     "INITIAL_LOOKBACK",
+    "REPAIR_DECISIONS",
     "STALE_CLAIM_AFTER",
     "TRIAGE_EVENT",
     "WORKER_ACTOR",
@@ -1590,6 +1743,7 @@ __all__ = [
     "combine_pytest_output",
     "compose_error_summary",
     "default_session_factory",
+    "classification_decider",
     "evidence_violations",
     "failure_signature",
     "first_poll_cursor",
@@ -1597,9 +1751,11 @@ __all__ = [
     "get_watermark",
     "load_state",
     "log_claim",
+    "model_name",
     "pick_violation",
     "process_incident",
     "reconcile",
+    "repair_decider",
     "reset_state",
     "save_state",
     "set_watermark",

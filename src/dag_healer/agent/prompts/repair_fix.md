@@ -56,7 +56,7 @@ You have these tools: {{tool_names}}.
 - `run_tests(paths)`: run pytest on the given files (default: the tests folder) and get a
   summary plus the output tail.
 
-## The failing test: `{{test_file}}`
+{{context}}## The failing test: `{{test_file}}`
 
 {{test_code}}
 

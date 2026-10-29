@@ -30,6 +30,11 @@ gates, in order:
     contract (otherwise ambiguous), ``code`` is refused while an approved contract is violated.
 (d) ``d_low_confidence`` - any LLM-dependent decision with confidence < ``min_confidence``
     -> **ambiguous**.
+``context_rule`` - after the gates: when the LLM says that the automatic follow-up of a data or
+    code decision (the data alert, an automated fix) would go against a rule of the Organization
+    Context or the ETL Information, the decision becomes **ambiguous** ("needs a decision", with the
+    rule and the reason; :func:`apply_rule_conflict`). The context files can only make a decision
+    more cautious: no rule of theirs ever turns a failure into data or code.
 
 Data-shaped errors: a ``KeyError`` naming a column, pandas ``ParserError`` / ``EmptyDataError``,
 "not in index", "missing column", dtype/conversion errors raised by pandas/numpy/pyarrow on
@@ -59,6 +64,7 @@ RULE_INFRA = "infra"
 RULE_LLM = "llm"
 RULE_DEFINITION = "definition"
 RULE_AGGREGATE = "aggregate"
+RULE_CONTEXT = "context_rule"
 RULES: tuple[str, ...] = (
     RULE_A,
     RULE_B,
@@ -68,7 +74,22 @@ RULES: tuple[str, ...] = (
     RULE_LLM,
     RULE_DEFINITION,
     RULE_AGGREGATE,
+    RULE_CONTEXT,
 )
+#: How the decision log names the fixed rules (``a`` for ``a_contract_violated``, ...).
+RULE_NAMES: dict[str, str] = {
+    RULE_A: "a",
+    RULE_B: "b",
+    RULE_C: "c",
+    RULE_D: "d",
+    RULE_INFRA: "infra",
+    RULE_LLM: "llm",
+    RULE_DEFINITION: "definition",
+    RULE_AGGREGATE: "aggregate",
+    RULE_CONTEXT: "context",
+}
+#: What a data or a code decision does automatically (the follow-up a rule conflict stops).
+FOLLOW_UPS: dict[str, str] = {"data": "the data alert", "code": "an automated code fix"}
 
 #: Fields of :class:`Signals` left out of :meth:`Signals.to_dict` while they are ``None``.
 _NATIVE_SIGNALS: tuple[str, ...] = ("native_error_name", "native_error_kind")
@@ -722,22 +743,56 @@ def decide(signals: Signals, llm: Any, *, min_confidence: float, step: str = "ta
     )
 
 
+def apply_rule_conflict(decision: Decision, conflict: Mapping[str, Any] | None) -> Decision:
+    """The decision once a rule conflict is taken into account: never less cautious than before.
+
+    ``conflict`` is ``{"rule": ID, "reason": text}`` plus, from the classification, ``where``
+    (``path@sha`` of a known rule) and ``known`` (False when the ID is not in the context files
+    read: the conflict still counts, flagged). A data or code decision becomes ambiguous with the
+    rule :data:`RULE_CONTEXT`; an ambiguous one keeps its rule and gains the conflict in its reason.
+    """
+    if not conflict or not str(conflict.get("rule") or "").strip():
+        return decision
+    rule = mask_text(conflict.get("rule")).strip()
+    reason = mask_text(conflict.get("reason") or "no reason given").strip().rstrip(".")
+    where = str(conflict.get("where") or "").strip()
+    named = f"rule {rule}" + (f" ({where})" if where else "")
+    if conflict.get("known") is False:
+        named += ", which is not in the context files that were read"
+    follow_up = FOLLOW_UPS.get(decision.category)
+    if follow_up is None:
+        decision.reason = f"{decision.reason} It also goes against {named}: {reason}."
+        return decision
+    return Decision(
+        "ambiguous",
+        decision.confidence,
+        f"Needs a decision: {follow_up} would go against {named}: {reason}. A person decides "
+        f"(the {decision.category} verdict was: {decision.reason})",
+        RULE_CONTEXT,
+        decision.needs_llm_confirmation,
+    )
+
+
 __all__ = [
     "AMBIGUOUS_CONFIDENCE",
     "DATA_GATE_CONFIDENCE",
+    "FOLLOW_UPS",
     "RULES",
     "RULE_A",
     "RULE_AGGREGATE",
     "RULE_B",
     "RULE_C",
+    "RULE_CONTEXT",
     "RULE_D",
     "RULE_DEFINITION",
     "RULE_INFRA",
     "RULE_LLM",
+    "RULE_NAMES",
     "Decision",
     "ErrorKind",
     "PolicyHint",
     "Signals",
+    "apply_rule_conflict",
     "classify_error",
     "compute_signals",
     "decide",

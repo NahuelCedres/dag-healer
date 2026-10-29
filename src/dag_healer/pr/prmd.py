@@ -16,6 +16,11 @@ The orchestrator's words (``vocabulary``: the ``Vocabulary.as_dict()`` shape of
 :mod:`dag_healer.core.vocab`) name the pipeline, step and attempt. Missing words fall back to
 the Airflow ones, so without a vocabulary the text is exactly the Airflow text.
 
+"Rules applied" (after the root cause) is there when the Organization Context or the ETL
+Information was read, or a rule was cited: each rule that the classification or the repair cited
+and that exists in what was read, with a short text and ``path@sha``, then the cited IDs that do
+not exist, flagged. Rule texts are masked when they are read and escaped here as plain text.
+
 Two sections depend on how the fix is published. "Before you merge" (right after the intro)
 lists the problems the read-only GitHub setup checks found (:mod:`dag_healer.pr.github_checks`),
 each as plain one-line text: what is wrong, cut if long, then what to change, whole. "CI" (after
@@ -37,6 +42,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from dag_healer._version import __version__
+from dag_healer.context.model import Citations
 from dag_healer.core.vocab import Vocabulary
 from dag_healer.masking import mask_text
 
@@ -59,6 +65,10 @@ MAX_SETUP_TEXT_CHARS = 400
 #: repository's or the base branch's name in it, so it stays whole. With the escapes, 20 problems
 #: then leave room enough below :data:`MAX_BODY_CHARS` for the other sections.
 MAX_SETUP_FIX_CHARS = 600
+#: At most this many rules are listed under "Rules applied" (and this many unknown citations).
+MAX_LISTED_RULES = 30
+#: A rule's text is cut to this many characters there.
+MAX_RULE_TEXT_CHARS = 200
 #: The description stays below this many characters, counted as UTF-16 code units (never fewer
 #: than GitHub counts): GitHub refuses a pull request whose body is longer than 65536.
 MAX_BODY_CHARS = 65000
@@ -264,6 +274,43 @@ def render_pr_title(incident: Mapping[str, Any], *, vocabulary: Mapping[str, str
 # --------------------------------------------------------------------------- sections
 
 
+def rules_section(rules: Citations | None) -> list[str]:
+    """The "Rules applied" lines (``[]`` when ``rules`` is ``None``)."""
+    if rules is None:
+        return []
+    out = ["## Rules applied", ""]
+    if not rules.applied and not rules.unknown:
+        out += ["_No rule of the Organization Context or the ETL Information was cited._", ""]
+        return out
+    if rules.applied:
+        out += [
+            "The rules of the Organization Context and the ETL Information that the classification and "
+            "the repair cited, as dag-healer read them from the base branch:",
+            "",
+        ]
+        for ref in rules.applied[:MAX_LISTED_RULES]:
+            overridden = f"; replaced here by {_code(ref.overridden_by)}" if ref.overridden_by else ""
+            out.append(
+                f"- {_code(ref.id)} {_plain(ref.text, MAX_RULE_TEXT_CHARS)} ({_code(ref.where)}{overridden})"
+            )
+        if len(rules.applied) > MAX_LISTED_RULES:
+            out.append(f"- ... and {len(rules.applied) - MAX_LISTED_RULES} more")
+        out.append("")
+    if rules.unknown:
+        shown = ", ".join(_code(_plain(item, 40)) for item in rules.unknown[:MAX_LISTED_RULES])
+        more = (
+            f" and {len(rules.unknown) - MAX_LISTED_RULES} more"
+            if len(rules.unknown) > MAX_LISTED_RULES
+            else ""
+        )
+        out += [
+            f"> **Unknown citations:** {shown}{more}: not rules of the context files that were read. They "
+            "count as no rule; check what they were meant to be.",
+            "",
+        ]
+    return out
+
+
 def _before_you_merge(findings: Iterable[SetupProblem]) -> list[str]:
     """The "Before you merge" section, the problems in the given order (no lines without any).
 
@@ -392,6 +439,7 @@ def render_pr_markdown(
     branch_on_github: bool = False,
     setup_findings: Iterable[SetupProblem] = (),
     branch_in_local_repository: bool = True,
+    rules: Citations | None = None,
 ) -> str:
     """Return the English pull-request description for a CODE fix.
 
@@ -419,6 +467,8 @@ def render_pr_markdown(
         branch_in_local_repository: when the branch is not on GitHub, it was pushed into the
             local repository; otherwise it is nowhere (the change is only in ``fix.patch``) and
             the "CI" section says how to commit it with the skip marker first.
+        rules: the rules cited by the classification and the repair (:class:`Citations`), for
+            the "Rules applied" section after the root cause; ``None`` leaves the section out.
 
     Returns:
         Markdown with a summary, the root cause, the failing test, the fix, the test
@@ -446,6 +496,7 @@ def render_pr_markdown(
     note_lines = [n for n in note_lines if n]
     before_you_merge = _before_you_merge(setup_findings or ())
     ci = _ci_section(branch, branch_on_github, branch_in_local_repository) if skip_ci else []
+    rules_lines = rules_section(rules)
 
     def render(limits: Mapping[str, int]) -> str:
         out: list[str] = []
@@ -494,6 +545,9 @@ def render_pr_markdown(
             _head(cause, limits["diagnosis"], "diagnosis") if cause else "_No diagnosis was recorded._"
         )
         out.append("")
+
+        # -- rules applied ------------------------------------------------------
+        out.extend(rules_lines)
 
         # -- failing test ----------------------------------------------------
         out.append("## The failing test")
@@ -605,6 +659,7 @@ def write_pr_artifacts(
 
 __all__ = [
     "MAX_BODY_CHARS",
+    "MAX_LISTED_RULES",
     "MAX_NOTES_CHARS",
     "MAX_SETUP_FINDINGS",
     "MAX_SETUP_FIX_CHARS",
@@ -621,5 +676,6 @@ __all__ = [
     "render_pr_markdown",
     "render_pr_title",
     "review_checklist",
+    "rules_section",
     "write_pr_artifacts",
 ]

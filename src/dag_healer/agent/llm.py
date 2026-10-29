@@ -87,6 +87,13 @@ _STOP_REASONS: tuple[str, ...] = (
 # --------------------------------------------------------------------------- models
 
 
+class RuleConflict(BaseModel):
+    """A rule of the context files that the automatic follow-up of a category would go against."""
+
+    rule: str = Field(description="The ID of the rule, exactly as the context files write it, e.g. 'LAB-1'.")
+    reason: str = Field(description="One sentence: why the automatic follow-up would go against the rule.")
+
+
 class Classification(BaseModel):
     """Structured classification of one failed task, as returned by the LLM."""
 
@@ -116,6 +123,20 @@ class Classification(BaseModel):
     )
     fix_summary: str | None = Field(
         default=None, description="For code failures: one sentence describing the minimal fix."
+    )
+    rules_cited: list[str] = Field(
+        default_factory=list,
+        description=(
+            "IDs of the rules of the Organization Context and the ETL Information that apply to this "
+            "failure, e.g. ['ORG-2', 'LAB-1']; only IDs written in those blocks; empty when none applies."
+        ),
+    )
+    rule_conflict: RuleConflict | None = Field(
+        default=None,
+        description=(
+            "Set when the automatic follow-up of the category (an alert about the data, an automated "
+            "code fix) would go against a rule of the context files: the incident then waits for a person."
+        ),
     )
 
     @field_validator("confidence", mode="before")
@@ -710,6 +731,7 @@ __all__ = [
     "LLMRefusal",
     "LLMUnavailable",
     "RepairSessionResult",
+    "RuleConflict",
     "ToolCallRecord",
     "excerpt",
     "get_provider",

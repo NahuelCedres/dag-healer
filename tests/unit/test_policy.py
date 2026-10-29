@@ -14,6 +14,7 @@ from dag_healer.agent.policy import (
     RULE_AGGREGATE,
     RULE_B,
     RULE_C,
+    RULE_CONTEXT,
     RULE_D,
     RULE_DEFINITION,
     RULE_INFRA,
@@ -617,7 +618,7 @@ def with_native(ctx: FakeContext, error_name: str | None = None, **native: Any) 
 
 def test_the_new_rules_are_listed() -> None:
     assert (RULE_DEFINITION, RULE_AGGREGATE) == ("definition", "aggregate")
-    assert RULES[-2:] == (RULE_DEFINITION, RULE_AGGREGATE)
+    assert RULES[-3:] == (RULE_DEFINITION, RULE_AGGREGATE, RULE_CONTEXT)
     assert len(set(RULES)) == len(RULES)
 
 

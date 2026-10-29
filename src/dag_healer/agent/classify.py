@@ -8,6 +8,12 @@ carrying the policy hint) and lets :func:`dag_healer.agent.policy.decide` take t
 decision. When the provider is missing or fails (no API key, refusal, network error...), the
 decision comes from the policy alone: LLM-dependent gates fall back to ``ambiguous`` and the
 diagnosis says that the LLM was unavailable.
+
+The Organization Context and the ETL Information that the context gathering read go before the
+``<incident>`` block (:func:`dag_healer.context.context_blocks`). The rule IDs the answer cites are
+checked against what was read (:meth:`dag_healer.context.ContextSnapshot.check`): an unknown ID is
+never "applied" and is flagged. A rule conflict in the answer can only make the decision more
+cautious (:func:`dag_healer.agent.policy.apply_rule_conflict`).
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from dag_healer.agent.policy import (
     Decision,
     PolicyHint,
     Signals,
+    apply_rule_conflict,
     compute_signals,
     decide,
     policy_hint,
@@ -31,6 +38,8 @@ from dag_healer.agent.policy import (
 )
 from dag_healer.agent.prompts import load_prompt
 from dag_healer.agent.tests_gen import render_template
+from dag_healer.context.model import MAX_UNKNOWN_ID_CHARS, Citations, ContextSnapshot, normalise_id
+from dag_healer.context.prompt import context_blocks
 from dag_healer.masking import mask_text, to_json_safe
 
 if TYPE_CHECKING:
@@ -40,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 PROMPT_FILE = "classify.md"
 DEFAULT_MIN_CONFIDENCE = 0.75
+#: A rule conflict's reason is masked and cut to this many characters.
+MAX_CONFLICT_REASON_CHARS = 500
 PROMPT_EXCERPT_HEAD = 2500
 PROMPT_EXCERPT_TAIL = 1500
 _ERROR_CHARS = 300
@@ -78,7 +89,10 @@ class ClassificationOutcome:
     ``classification`` is the LLM answer (``None`` when the LLM was not available).
     ``diagnosis`` is always filled: the LLM diagnosis, or a policy-only explanation.
     ``violated_rule`` is the primary violation of the approved contract (a ``Violation`` dict)
-    or ``None``; ``evidence`` merges policy facts and the LLM evidence (masked).
+    or ``None``; ``evidence`` merges policy facts and the LLM evidence (masked). ``citations`` are
+    the rule IDs the answer cited, checked against the context files read, and ``rule_conflict``
+    the rule the answer said the follow-up would go against (``{"rule", "reason", "known",
+    "where"}``), which made the decision ambiguous.
     """
 
     decision: Decision
@@ -90,6 +104,8 @@ class ClassificationOutcome:
     violated_rule: dict[str, Any] | None = None
     evidence: list[str] = field(default_factory=list)
     llm_error: str | None = None
+    citations: Citations = field(default_factory=Citations)
+    rule_conflict: dict[str, Any] | None = None
 
     @property
     def category(self) -> str:
@@ -112,6 +128,8 @@ class ClassificationOutcome:
             "violated_rule": self.violated_rule,
             "evidence": list(self.evidence),
             "llm_error": self.llm_error,
+            "citations": self.citations.to_dict(),
+            "rule_conflict": dict(self.rule_conflict) if self.rule_conflict else None,
         }
 
 
@@ -169,8 +187,14 @@ def signals_payload(
     return to_json_safe(data)
 
 
+def _snapshot(ctx: Any) -> ContextSnapshot | None:
+    snapshot = _attr(ctx, "context_snapshot")
+    return snapshot if isinstance(snapshot, ContextSnapshot) else None
+
+
 def build_classify_prompt(ctx: Any, signals: Signals, hint: PolicyHint, *, min_confidence: float) -> str:
-    """User prompt: the masked context as JSON, then the ``<signals>`` block (always last)."""
+    """User prompt: the context files read (their blocks), the masked context as JSON, then the
+    ``<signals>`` block (always last)."""
     words = prompt_words(ctx)
     incident = json.dumps(context_payload(ctx), ensure_ascii=False, indent=1, default=str)
     block = json.dumps(
@@ -179,9 +203,11 @@ def build_classify_prompt(ctx: Any, signals: Signals, hint: PolicyHint, *, min_c
         indent=1,
         default=str,
     )
+    blocks = context_blocks(_snapshot(ctx))
     return (
         f"Classify the failed {words['product']} {words['step']} described below.\n\n"
-        f"<incident>\n{incident}\n</incident>\n\n"
+        + (f"{blocks}\n\n" if blocks else "")
+        + f"<incident>\n{incident}\n</incident>\n\n"
         f"<signals>\n{block}\n</signals>\n"
     )
 
@@ -286,6 +312,34 @@ def _diagnosis(
     return text
 
 
+def check_citations(
+    snapshot: ContextSnapshot | None, classification: Classification | None
+) -> tuple[Citations, dict[str, Any] | None]:
+    """The answer's cited rules checked against the context files read, and its rule conflict.
+
+    The rule of a conflict counts as cited. Without a snapshot every cited ID is unknown; a
+    conflict naming an unknown rule is kept (``known: False``): it still makes the decision more
+    cautious, and it is flagged.
+    """
+    if classification is None:
+        return Citations(), None
+    known_rules = snapshot.rules() if snapshot is not None else {}
+    citations = (snapshot or ContextSnapshot()).check(classification.rules_cited or [])
+    conflict = classification.rule_conflict
+    if conflict is None or not normalise_id(conflict.rule):
+        return citations, None
+    rule_id = normalise_id(conflict.rule)
+    ref = known_rules.get(rule_id)
+    data: dict[str, Any] = {
+        "rule": rule_id if ref is not None else mask_text(rule_id)[:MAX_UNKNOWN_ID_CHARS],
+        "reason": mask_text(conflict.reason).strip()[:MAX_CONFLICT_REASON_CHARS],
+        "known": ref is not None,
+        "where": ref.where if ref is not None else None,
+    }
+    extra = Citations([ref], []) if ref is not None else Citations([], [data["rule"]])
+    return citations.merge(extra), data
+
+
 # --------------------------------------------------------------------------- entry point
 
 
@@ -364,6 +418,8 @@ def classify_incident(
         tokens_used = int(tokens_used or 0)
 
     decision = decide(signals, classification, min_confidence=min_confidence, step=words["step"])
+    citations, conflict = check_citations(_snapshot(ctx), classification)
+    decision = apply_rule_conflict(decision, conflict)
     diagnosis = _diagnosis(decision, classification, signals, llm_error, step=words["step"])
     if llm_error and decision.needs_llm_confirmation:
         decision.reason = f"{decision.reason} (LLM unavailable: {llm_error})"
@@ -385,7 +441,15 @@ def classify_incident(
         violated_rule=primary_violation(ctx, signals),
         evidence=evidence,
         llm_error=llm_error,
+        citations=citations,
+        rule_conflict=conflict,
     )
+    if citations.unknown:
+        logger.warning(
+            "Incident %s: the classification cites rules that are not in the context files read: %s",
+            _attr(ctx, "incident_id") or "?",
+            ", ".join(citations.unknown),
+        )
     logger.info(
         "Incident %s classified as %s (rule %s, confidence %.2f, %d tokens)",
         _attr(ctx, "incident_id") or "?",
@@ -400,6 +464,7 @@ def classify_incident(
 __all__ = [
     "ClassificationOutcome",
     "build_classify_prompt",
+    "check_citations",
     "classify_incident",
     "context_payload",
     "primary_violation",
