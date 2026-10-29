@@ -1,0 +1,7 @@
+# Fake LLM script: CODE scenario (customers_sync), the classification.
+# CUS-1 says that ISO-8601 timestamps are valid signup dates, so the code must accept them.
+name: customers_sync_classify
+match:
+  dag_id: customers_sync
+  phase: classify
+rules_cited: [CUS-1, ORG-4]

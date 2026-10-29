@@ -34,6 +34,8 @@ steps:
   - tool: run_tests
     input:
       paths: [tests/test_customers_signup_date.py]
+  - tool: cite_rules
+    input: {rules: [CUS-1, ORG-1]}
 final_text: >-
   Added tests/test_customers_signup_date.py. test_parse_signup_date_accepts_iso_timestamp_with_z
   reproduces the failure of customers_sync.transform: parse_signup_date raises ValueError on the

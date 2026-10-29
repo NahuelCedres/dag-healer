@@ -369,7 +369,7 @@ def test_init_rejects_an_orchestrator_that_cannot_load(
     )
     assert main(["init", "--repo", str(demo_repo)]) == 1
     assert "module 'no_such_pkg.adapter' is not installed" in capsys.readouterr().err
-    assert not (demo_repo / "healer").exists()
+    assert not (demo_repo / "healer" / "contracts").exists()  # healer/ holds the example's context files
     assert not (isolated / "healer.db").exists()
 
 
@@ -408,7 +408,7 @@ def test_init_reports_a_factory_that_fails_in_its_own_way(
     err = capsys.readouterr().err
     assert "the orchestrator adapter cannot be built: ValueError: token for [email] is not set" in err
     assert "ann@example.com" not in err and "Traceback" not in err
-    assert not (demo_repo / "healer").exists()
+    assert not (demo_repo / "healer" / "contracts").exists()  # healer/ holds the example's context files
 
 
 # --------------------------------------------------------------------------- the store
@@ -786,7 +786,7 @@ def test_init_rejects_an_invalid_existing_config(
     (demo_repo / "healer.yaml").write_text("repo:\n  pathh: .\n", encoding="utf-8")
     assert main(["init", "--repo", str(demo_repo)]) == 1
     assert "unknown key" in capsys.readouterr().err
-    assert not (demo_repo / "healer").exists()
+    assert not (demo_repo / "healer" / "contracts").exists()  # healer/ holds the example's context files
 
 
 def test_unresolved_datasets_are_reported_and_configured_locators_are_used(

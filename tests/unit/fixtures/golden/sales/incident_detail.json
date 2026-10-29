@@ -59,6 +59,22 @@
       "actor": "dag-healer",
       "at": "<timestamp>",
       "data": {
+        "context_files": [
+          {
+            "commit": "d350bf9",
+            "path": "healer/organization.md",
+            "ref": "main",
+            "rules": 5,
+            "status": "read"
+          },
+          {
+            "commit": "d350bf9",
+            "path": "healer/etl/sales_daily_etl.md",
+            "ref": "main",
+            "rules": 4,
+            "status": "read"
+          }
+        ],
         "contract_status": "approved",
         "dag_file": "dags/sales_daily_etl.py",
         "datasets_checked": [
@@ -96,6 +112,10 @@
         "needs_llm_confirmation": false,
         "reason": "The approved contract is violated (missing_column: sales.amount) and the task failed with a data-shaped error (KeyError).",
         "rule": "a_contract_violated",
+        "rules_applied": [
+          "SAL-3",
+          "ORG-2"
+        ],
         "tokens_used": 0,
         "violations": [
           {

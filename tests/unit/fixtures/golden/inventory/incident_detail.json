@@ -60,6 +60,22 @@
       "actor": "dag-healer",
       "at": "<timestamp>",
       "data": {
+        "context_files": [
+          {
+            "commit": "d350bf9",
+            "path": "healer/organization.md",
+            "ref": "main",
+            "rules": 5,
+            "status": "read"
+          },
+          {
+            "commit": "d350bf9",
+            "path": "healer/etl/inventory_report.md",
+            "ref": "main",
+            "rules": 3,
+            "status": "read"
+          }
+        ],
         "contract_status": "draft",
         "dag_file": "dags/inventory_report.py",
         "datasets_checked": [
@@ -99,6 +115,10 @@
         "needs_llm_confirmation": false,
         "reason": "There is no approved data contract (status: draft) and the task failed with a data-shaped error (KeyError); the draft contract reports missing_column: a human must decide whether the data or the code is wrong.",
         "rule": "c_no_approved_contract",
+        "rules_applied": [
+          "INV-2",
+          "ORG-2"
+        ],
         "tokens_used": 0,
         "violations": [
           {

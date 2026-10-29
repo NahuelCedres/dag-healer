@@ -24,6 +24,8 @@ steps:
       paths: [tests/test_inventory_build_report.py]
   - tool: run_tests
     input: {}
+  - tool: cite_rules
+    input: {rules: [INV-1, INV-3, ORG-4]}
 final_text: >-
   The inventory export renamed the qty column to quantity, so buildReport failed with
   KeyError: 'qty'. buildReport now renames quantity back to qty when only the new name is

@@ -11,7 +11,9 @@ The fake provider does two things:
 - **Classification** - it reads the `<signals>` JSON block that dag-healer
   appends to every classification prompt and answers with the category of the
   deterministic policy hint (confidence 0.9 for `data` / `code`, 0.5 for
-  `ambiguous`) and a diagnosis built from the signals. No script is needed.
+  `ambiguous`) and a diagnosis built from the signals. No script is needed; a
+  `classify` script adds the rules of the Organization Context and the ETL
+  Information (`healer/`) that the answer cites.
 - **Repair sessions** - instead of letting a model decide which tools to call,
   it replays the YAML scripts in this folder.
 
@@ -45,6 +47,18 @@ final_text: >-                 # optional: what the "model" says at the end
   Added a regression test ...
 ```
 
+A classification script has `phase: classify` in its `match` and, instead of
+`steps`, the rule IDs the answer cites and, optionally, a rule conflict (which
+makes the incident wait for a person):
+
+```yaml
+match:
+  dag_id: sales_daily_etl
+  phase: classify
+rules_cited: [SAL-3, ORG-2]
+rule_conflict: {rule: ORG-3, reason: the only fix would fill the empty amounts}   # optional
+```
+
 `match` keys are `dag_id`, `task_id`, `exception_type` and `phase`. A key that is
 left out matches anything, and a list matches any of its values. When several
 scripts match, the one with the most matching keys wins (ties: first file name
@@ -56,7 +70,9 @@ the repair fails the same way a real model that cannot help would.
 `list_files(path, pattern)`, `read_file(path, start_line, end_line)`,
 `search(pattern, path)`, `write_file(path, content)`,
 `replace_in_file(path, old, new)` (exactly one occurrence of `old`) and
-`run_tests(paths)`. The tools enforce the same guardrails as with Claude: in the
+`run_tests(paths)`, and, when the context files were read, `cite_rules(rules)`
+(the rules that shaped the test or the fix, listed in the PR) and
+`stop_for_rule(rule, reason)` (the repair stops and waits for a person). The tools enforce the same guardrails as with Claude: in the
 `test` phase only the tests folder can be written, in the `fix` phase only
 `repo.allowed_paths`, and protected files (`healer.yaml`, `fixtures/**`,
 `data/**`, `.env*`, ...) never. A refused or failing call is recorded as an
@@ -70,10 +86,13 @@ match whatever line endings the checkout uses.
 
 | Script | Phase | What it does |
 |--------|-------|--------------|
-| `customers_sync_test.yaml` | test | Writes `tests/test_customers_signup_date.py`: `parse_signup_date("2026-10-02T14:03:00Z")` must return `date(2026, 10, 2)` (fails before the fix with `ValueError`) and plain dates must keep working. |
-| `customers_sync_fix.yaml` | fix | Minimal change to `src/etl/customers.py::parse_signup_date`: parse with `datetime.fromisoformat` (a trailing `Z` becomes `+00:00`) and still return a date; then runs the new test and the whole suite. |
-| `inventory_report_test.yaml` | test | Writes `tests/test_inventory_build_report.py`: `buildReport` fed (through `monkeypatch`, no data files) with the day 2 schema (`quantity`, `warehouse_code`) must still aggregate stock per SKU (fails before the fix with `KeyError: 'qty'`); the old `qty` schema must keep working. |
-| `inventory_report_fix.yaml` | fix | Minimal change to `src/etl/inventory.py::buildReport`: rename `quantity` back to `qty` when only the new name is present; then runs the new test and the whole suite. |
+| `sales_daily_etl_classify.yaml` | classify | Cites SAL-3 (an unannounced change of the export is the export's problem) and ORG-2. |
+| `customers_sync_classify.yaml` | classify | Cites CUS-1 (ISO-8601 timestamps are valid signup dates) and ORG-4. |
+| `inventory_report_classify.yaml` | classify | Cites INV-2 (a renamed column waits for a word from ops) and ORG-2. |
+| `customers_sync_test.yaml` | test | Writes `tests/test_customers_signup_date.py`: `parse_signup_date("2026-10-02T14:03:00Z")` must return `date(2026, 10, 2)` (fails before the fix with `ValueError`) and plain dates must keep working; cites CUS-1 and ORG-1. |
+| `customers_sync_fix.yaml` | fix | Minimal change to `src/etl/customers.py::parse_signup_date`: parse with `datetime.fromisoformat` (a trailing `Z` becomes `+00:00`) and still return a date; then runs the new test and the whole suite; cites CUS-1 and ORG-4. |
+| `inventory_report_test.yaml` | test | Writes `tests/test_inventory_build_report.py`: `buildReport` fed (through `monkeypatch`, no data files) with the day 2 schema (`quantity`, `warehouse_code`) must still aggregate stock per SKU (fails before the fix with `KeyError: 'qty'`); the old `qty` schema must keep working; cites INV-1. |
+| `inventory_report_fix.yaml` | fix | Minimal change to `src/etl/inventory.py::buildReport`: rename `quantity` back to `qty` when only the new name is present; then runs the new test and the whole suite; cites INV-1, INV-3 and ORG-4. |
 
 The `customers_sync` scripts cover the CODE scenario of the demo (see
 `../README.md`). The `inventory_report` scripts are only used when a human

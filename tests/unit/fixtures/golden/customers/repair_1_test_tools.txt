@@ -97,3 +97,32 @@ Args:
 Returns:
     "exit code N: X passed, Y failed, ..." followed by the pytest output tail, or a message starting
     with "Error:".
+
+## cite_rules(rules: 'list[str]') -> 'str'
+
+Record the IDs of the rules of the Organization Context and the ETL Information that shaped your test.
+
+Call it once before you finish, with an empty list when no rule applies. Only IDs written in the
+context blocks of the prompt count; the pull request lists the rules and flags the others.
+
+Args:
+    rules: Rule IDs, for example ["LAB-1", "ORG-3"].
+
+Returns:
+    "Recorded: ..." with the IDs that exist, and the ones that do not, or a message starting with
+    "Error:".
+
+## stop_for_rule(rule: 'str', reason: 'str') -> 'str'
+
+Stop the repair because the test this failure needs would go against a rule of the context.
+
+Nothing is committed or pushed: the incident waits for a person, who sees the rule and your reason.
+Use it instead of working around a rule; after it, change nothing more and finish.
+
+Args:
+    rule: The ID of the rule, for example "LAB-1".
+    reason: One sentence: why the work would go against the rule.
+
+Returns:
+    "Stopped: ..." when the repair stops, or a message starting with "Error:" (for example for an ID
+    that is not a rule of the context).

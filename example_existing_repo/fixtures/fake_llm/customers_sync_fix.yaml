@@ -31,6 +31,8 @@ steps:
       paths: [tests/test_customers_signup_date.py]
   - tool: run_tests
     input: {}
+  - tool: cite_rules
+    input: {rules: [CUS-1, ORG-4]}
 final_text: >-
   parse_signup_date hardcoded the "%Y-%m-%d" format, so the ISO-8601 timestamps that the CRM
   export now sends (for example 2026-10-02T14:03:00Z) raised ValueError. It now parses the value

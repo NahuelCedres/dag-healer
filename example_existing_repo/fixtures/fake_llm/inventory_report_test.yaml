@@ -55,6 +55,8 @@ steps:
   - tool: run_tests
     input:
       paths: [tests/test_inventory_build_report.py]
+  - tool: cite_rules
+    input: {rules: [INV-1]}
 final_text: >-
   Added tests/test_inventory_build_report.py. test_build_report_accepts_the_quantity_column
   reproduces the failure of inventory_report.build_report: the inventory export now names the

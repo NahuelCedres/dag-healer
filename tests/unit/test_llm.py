@@ -988,6 +988,7 @@ class SimpleRepoTools:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.pytest_exit_codes: list[int] = []
+        self.cited: list[str] = []
 
     def functions(self) -> list[Callable[..., str]]:
         root = self.root
@@ -1044,7 +1045,12 @@ class SimpleRepoTools:
             self.pytest_exit_codes.append(proc.returncode)
             return f"exit code {proc.returncode}\n{proc.stdout[-4000:]}"
 
-        return [list_files, read_file, write_file, replace_in_file, run_tests]
+        def cite_rules(rules: list[str]) -> str:
+            """Record the rules that shaped the work (the demo's context files)."""
+            self.cited.extend(rules)
+            return "Recorded: " + ", ".join(rules) + "."
+
+        return [list_files, read_file, write_file, replace_in_file, run_tests, cite_rules]
 
 
 DEMO_CASES = [
@@ -1090,7 +1096,9 @@ def test_demo_scripts_turn_the_new_test_red_then_green(
     assert (repo / test_file).is_file()
     assert (repo / module).read_text(encoding="utf-8") == original
     assert tools.pytest_exit_codes == [1]  # collected and failing, not a collection error (2)
-    assert "1 failed, 1 passed" in red.tool_calls[-1].output_excerpt
+    test_runs = [record for record in red.tool_calls if record.name == "run_tests"]
+    assert "1 failed, 1 passed" in test_runs[-1].output_excerpt
+    assert red.tool_calls[-1].name == "cite_rules"  # the scripts cite the demo's context rules
 
     green = prov.repair_session(
         system="s",

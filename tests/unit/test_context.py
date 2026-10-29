@@ -120,7 +120,13 @@ def demo_repo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     from dag_healer.cli.init_cmd import run_init
 
     root = tmp_path_factory.mktemp("context") / "legacy repo"
-    shutil.copytree(EXAMPLE_REPO, root, ignore=shutil.ignore_patterns("__pycache__", "processed"))
+
+    def ignored(folder: str, names: list[str]) -> list[str]:
+        # the example's context files (healer/) are left out: these tests check the phase-5 evidence
+        skip = {"__pycache__", "processed"} | ({"healer"} if Path(folder) == EXAMPLE_REPO else set())
+        return [name for name in names if name in skip]
+
+    shutil.copytree(EXAMPLE_REPO, root, ignore=ignored)
     with pytest.MonkeyPatch.context() as mp:
         for name in ("HEALER_CONFIG", "AIRFLOW_HOME", "HEALER_DATABASE_URL"):
             mp.delenv(name, raising=False)

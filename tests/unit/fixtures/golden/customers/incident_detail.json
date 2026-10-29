@@ -57,6 +57,22 @@
       "actor": "dag-healer",
       "at": "<timestamp>",
       "data": {
+        "context_files": [
+          {
+            "commit": "d350bf9",
+            "path": "healer/organization.md",
+            "ref": "main",
+            "rules": 5,
+            "status": "read"
+          },
+          {
+            "commit": "d350bf9",
+            "path": "healer/etl/customers_sync.md",
+            "ref": "main",
+            "rules": 3,
+            "status": "read"
+          }
+        ],
         "contract_status": "approved",
         "dag_file": "dags/customers_sync.py",
         "datasets_checked": [
@@ -99,6 +115,10 @@
         "needs_llm_confirmation": true,
         "reason": "The data satisfies the approved contract, the traceback points into src/etl/customers.py::parse_signup_date and the LLM confirmed a code defect.",
         "rule": "b_code_with_valid_data",
+        "rules_applied": [
+          "CUS-1",
+          "ORG-4"
+        ],
         "tokens_used": 0,
         "violations": []
       },
@@ -139,6 +159,11 @@
         "patch_path": "<HEALER_HOME>/prs/[number]/fix.patch",
         "pr_md_path": "<HEALER_HOME>/prs/[number]/PR.md",
         "pr_url": null,
+        "rules_applied": [
+          "CUS-1",
+          "ORG-4",
+          "ORG-1"
+        ],
         "status": "repaired",
         "test_path": "tests/test_customers_signup_date.py",
         "tokens_used": 0

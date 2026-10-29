@@ -1,0 +1,7 @@
+# Fake LLM script: AMBIGUOUS scenario (inventory_report), the classification.
+# INV-2: a renamed column of the warehouse export waits for a word from ops.
+name: inventory_report_classify
+match:
+  dag_id: inventory_report
+  phase: classify
+rules_cited: [INV-2, ORG-2]

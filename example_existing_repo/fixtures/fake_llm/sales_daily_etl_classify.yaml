@@ -1,0 +1,8 @@
+# Fake LLM script: DATA scenario (sales_daily_etl), the classification.
+# Adds the rules of the context files that the answer cites; the category still comes from
+# the policy hint of the prompt (here gate (a): the approved contract is violated).
+name: sales_daily_etl_classify
+match:
+  dag_id: sales_daily_etl
+  phase: classify
+rules_cited: [SAL-3, ORG-2]

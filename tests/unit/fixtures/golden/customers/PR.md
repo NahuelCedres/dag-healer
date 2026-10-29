@@ -44,6 +44,14 @@ Traceback (most recent call last):
 
 Task customers_sync.transform failed with ValueError: unconverted data remains: T08:30:00Z raised in src/etl/customers.py::parse_signup_date (line 19). The input data satisfies the approved contract, so this is a defect in the code: it does not handle input that the contract allows. A minimal fix plus a regression test should resolve it.
 
+## Rules applied
+
+The rules of the Organization Context and the ETL Information that the classification and the repair cited, as dag-healer read them from the base branch:
+
+- `CUS-1` \`signup\_date\` is the day the customer signed up. The CRM export sends it as a date (2025-01-14) or as an ISO-8601 timestamp in UTC (2026-10-02T14:03:00Z). Both are valid, and the signup date is the... (`healer/etl/customers_sync.md@d350bf9`)
+- `ORG-4` A fix is the smallest change that makes the failing test pass. Files from before a change must still load, because old dates are run again. (`healer/organization.md@d350bf9`)
+- `ORG-1` Customer names, e-mail addresses and phone numbers are personal data. They are masked everywhere: samples, alerts, logs, tests and pull requests. Tests use made-up values. (`healer/organization.md@d350bf9`)
+
 ## The failing test
 
 `tests/test_customers_signup_date.py` reproduces the failure: it fails on the base branch and passes with the fix.
