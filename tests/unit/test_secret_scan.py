@@ -379,3 +379,50 @@ def test_a_token_shaped_example_is_still_refused() -> None:
     """A value shaped like a real token cannot be told from one: write it as dapi... instead."""
     finding = find_secret("dapi" + "0123456789abcdef" * 2 + " is how a Databricks token starts.")
     assert finding == SecretFinding("a Databricks token", 1)
+
+
+# --------------------------------------------------------------------------- credentials that look like code
+
+#: AWS's documented example secret key, put together from pieces.
+AWS_EXAMPLE_SECRET = "wJalrXUtnFEMI" + "/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
+#: Values with letters and digits stay credentials whatever their separators: dots, a bracket or
+#: slashes do not make them code or a path.
+STILL_CREDENTIALS = [
+    "password: " + "P4ss" + ".Word99",
+    "password = " + "hunter2" + ".hunter2",
+    "api_key = " + "abc123" + ".def456ghi789",
+    "secret: " + "Tango.Down7" + ".Alpha",
+    "password: " + "Passw0rd" + "(2026",
+    "password: " + "S3cret" + "[prod]x",
+    "client_secret: " + "8f9Xk2/Lm3pQ" + "/zR7tYv1",
+    "token: " + "/9j4kLmN0pQr" + "S7tUvW2xYz",
+    "aws_secret = " + AWS_EXAMPLE_SECRET,
+    "AWS_SECRET=" + AWS_EXAMPLE_SECRET,
+    "secret: " + AWS_EXAMPLE_SECRET,
+    "password = " + AWS_EXAMPLE_SECRET,
+]
+
+
+@pytest.mark.parametrize("line", STILL_CREDENTIALS)
+def test_a_value_with_letters_and_digits_is_a_credential_whatever_its_separators(line: str) -> None:
+    assert find_secret(_lines("# Systems", "", line)) == SecretFinding("a credential with its value", 3)
+
+
+#: What the check no longer finds, the price of reading the lines of ABOUT_CREDENTIALS
+#: (docs/security.md, 4.7, "What remains").
+ACCEPTED_MISSES = [
+    "db password=" + "supersecret" + "value",
+    "passphrase: " + "correcthorse" + "batterystaple",
+    "password: " + "correct-horse" + "-battery-staple",
+    "password: " + "Correct_Horse" + "_Battery_Staple",
+    "Authorization: Basic " + "dXNlcjpw" + "YXNz",
+    "Authorization: Bearer " + "abcdef" + "ghijkl",
+    "glpat-" + "abcdefgh-ijklmnop" + "_qrstuv",
+    "hvs." + "abcdefghijklm" + "nopqrstuvwxyz",
+    "password:\n  " + "s3cr3t" + "Passw0rd: true",
+]
+
+
+@pytest.mark.parametrize("line", ACCEPTED_MISSES)
+def test_the_accepted_misses_stay_documented(line: str) -> None:
+    assert find_secret(_lines("# Systems", "", line)) is None

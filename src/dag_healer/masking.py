@@ -356,11 +356,11 @@ _NAME_ALONE_RE = re.compile(rf"(?i){_CREDENTIAL_NAME}[ \t]*[:=][ \t]*(?:[|>][-+]
 _LEADING_VALUE_RE = re.compile(r"^\s*[\"']?(?P<value>[^\s\"'`,;)]{8,})")
 #: A line that is a key of its own (``description: ...``): no value of the name before it.
 _KEY_LINE_RE = re.compile(r"^\s*[\"']?[A-Za-z_][\w.-]*[\"']?\s*:(?:\s|$)")
-#: A value that is code, not a credential: a call or an index (``Variable.get(``, ``os.environ[``)
-#: or a dotted name (``settings.CRM_CLIENT_SECRET``, ``conn.password``).
+#: A value without digits that is code, not a credential: a call or an index (``Variable.get(``,
+#: ``os.environ[``) or a dotted name (``settings.CRM_CLIENT_SECRET``, ``conn.password``).
 _CODE_VALUE_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*[(\[]|^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\.?$")
-#: A value that is a path: absolute, home or relative (``/opt/airflow/dags``), or three parts or more
-#: (``etl/prod/warehouse-credentials``).
+#: A value without digits that is a path: absolute, home or relative (``/opt/airflow/dags``), or
+#: three parts or more (``etl/prod/warehouse-credentials``).
 _PATH_VALUE_RE = re.compile(r"^(?:~?/|\.{1,2}/)[\w.#~-]*(?:/[\w.#~-]*)*$|^[\w.#~-]+(?:/[\w.#~-]+){2,}/?$")
 #: Words joined by ``-`` or ``_`` (``stored-in-vault``, ``etl_service_account``): a name, not a value.
 _WORDS_RE = re.compile(r"[A-Za-z]+(?:[-_][A-Za-z#]+)+")
@@ -410,13 +410,16 @@ def _random_case(value: str) -> bool:
 
 
 def _credential_value(value: str) -> bool:
-    """True when an assigned value can be a credential: not a placeholder, code or a path, and
-    letters and digits, or :data:`LONG_CREDENTIAL_VALUE` characters or more that look random (upper
-    case after the first letter, and none of ``- _ . / ( [``: words, names and paths are not)."""
-    if _placeholder(value) or _CODE_VALUE_RE.match(value) or _PATH_VALUE_RE.match(value):
+    """True when an assigned value can be a credential: not a placeholder, and letters and digits
+    (whatever its separators: ``P4ss.Word99``, ``8f9Xk2/Lm3pQ/zR7``), or, without digits, neither
+    code nor a path and :data:`LONG_CREDENTIAL_VALUE` characters or more that look random (upper
+    case after the first letter, and none of ``- _ . / ( [``: words and names are not)."""
+    if _placeholder(value):
         return False
     if any(char.isdigit() for char in value) and any(char.isalpha() for char in value):
         return True
+    if _CODE_VALUE_RE.match(value) or _PATH_VALUE_RE.match(value):
+        return False
     return len(value) >= LONG_CREDENTIAL_VALUE and _random_case(value) and not re.search(r"[-_./(\[]", value)
 
 
