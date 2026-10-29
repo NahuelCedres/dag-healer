@@ -1075,3 +1075,60 @@ def test_template_parameters_are_quoted(tmp_path: Path) -> None:
     assert raw["repo"]["tests_dir"] is None
     cfg = config_from_mapping(raw, base_dir=tmp_path / "cfg")
     assert cfg.repo_root == (tmp_path / "my repo").resolve()
+
+
+# --------------------------------------------------------------------------- context
+
+
+def test_the_context_section_has_defaults_and_is_left_out_of_dumps() -> None:
+    from dag_healer.config import ContextConfig, HealerConfig
+
+    cfg = HealerConfig()
+    assert cfg.context == ContextConfig()
+    assert (cfg.context.organization, cfg.context.etl_dir, cfg.context.max_file_bytes) == (
+        "healer/organization.md",
+        "healer/etl",
+        16384,
+    )
+    assert cfg.context.paths == ("healer/organization.md", "healer/etl")
+    assert "context" not in cfg.model_dump()
+    custom = config_from_mapping({"context": {"organization": "./docs\\org.md", "etl_dir": "docs/etl/"}})
+    assert custom.context.paths == ("docs/org.md", "docs/etl")
+    assert custom.model_dump()["context"] == {
+        "organization": "docs/org.md",
+        "etl_dir": "docs/etl",
+        "max_file_bytes": 16384,
+    }
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ({"organization": "../org.md"}, "must stay inside the repository"),
+        ({"organization": "healer/../../org.md"}, "must stay inside the repository"),
+        ({"etl_dir": "/srv/etl"}, "use a path relative to repo.path"),
+        ({"etl_dir": "C:/etl"}, "use a path relative to repo.path"),
+        ({"organization": "~/org.md"}, "use a path relative to repo.path"),
+        ({"organization": "."}, "expected the path of the Organization Context"),
+        ({"etl_dir": ""}, "expected the path of the ETL Information folder"),
+        ({"organization": 3}, "valid string"),
+        ({"organization": "healer/etl/organization.md"}, "cannot be inside context.etl_dir"),
+        ({"max_file_bytes": 100}, "greater than or equal to 1024"),
+        ({"max_file_bytes": 10_000_000}, "less than or equal to 262144"),
+        ({"rules_dir": "x"}, "rules_dir"),
+    ],
+)
+def test_invalid_context_settings_are_refused(section: dict[str, Any], message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        config_from_mapping({"context": section})
+
+
+def test_allowed_paths_cannot_name_the_context_files() -> None:
+    data = {"context": {"organization": "docs/org.md", "etl_dir": "docs/etl"}}
+    for entry in ("docs/org.md", "docs/etl/", "docs/etl/lab"):
+        with pytest.raises(ConfigError, match="cannot be an allowed path"):
+            config_from_mapping({**data, "repo": {"allowed_paths": [entry]}})
+    assert config_from_mapping({**data, "repo": {"allowed_paths": ["docs/", "."]}}).repo.allowed_paths == [
+        "docs/",
+        ".",
+    ]

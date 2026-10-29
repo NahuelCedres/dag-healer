@@ -13,7 +13,9 @@ or the LLM reads against the files under ``tests/unit/fixtures/golden/``:
   for the example repository and the ``dag-healer check`` output.
 
 How it stays deterministic: a git copy of ``example_existing_repo`` is prepared like the
-demo (``init``, sales and customers contracts approved at a fixed time, day-2 files copied);
+demo (``init``, sales and customers contracts approved at a fixed time, day-2 files copied),
+committed with a fixed author, committer and date, so the context files (``healer/``) are read
+at a fixed commit, and a fixed day decides which context files are overdue for a review;
 the incidents have fixed ids and creation times; the Airflow API is a fake that serves the
 recorded/synthetic task logs of ``tests/unit/fixtures/logs`` (the same fixtures as
 ``test_context.py``); the LLM is the real ``FakeProvider`` replaying the repository's
@@ -60,8 +62,10 @@ RUN_ID = "manual__2026-10-18T09:00:00+00:00"
 GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Test",
     "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_AUTHOR_DATE": "2026-10-17T09:00:00+00:00",
     "GIT_COMMITTER_NAME": "Test",
     "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_DATE": "2026-10-17T09:00:00+00:00",
 }
 #: case -> (incident id, dag_id, task_id, recorded log fixture, expected final status)
 CASES: dict[str, tuple[str, str, str, str, str]] = {
@@ -332,6 +336,7 @@ def build_snapshots(work: Path) -> dict[str, str]:
         for name in ISOLATED_ENV:
             mp.delenv(name, raising=False)
         mp.setenv("HEALER_HOME", str(home))
+        mp.setattr("dag_healer.context.read._today", lambda today: today or T0.date())
         real_run_pytest = repair_module.run_pytest
         mp.setattr(
             repair_module, "run_pytest", lambda *a, **k: stable_pytest_result(real_run_pytest(*a, **k))

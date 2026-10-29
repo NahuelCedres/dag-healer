@@ -374,6 +374,24 @@ def _without_first_poll_line(text: str) -> str:
     return text.replace(FIRST_POLL_LINE, "")
 
 
+#: The ``context:`` block of the templates (the Organization Context and the ETL Information), with
+#: the blank line before it.
+CONTEXT_BLOCK = (
+    "\n# The Organization Context and the ETL Information (docs/context.md): Markdown files with the\n"
+    "# team's rules, read from the commit of repo.base_branch before every classification and fix.\n"
+    "# `dag-healer init --context` writes starter files.\n"
+    "context:\n"
+    "  organization: healer/organization.md   # the Organization Context (rules ORG-1, ORG-2, ...)\n"
+    "  etl_dir: healer/etl            # the ETL Information of each pipeline: <etl_dir>/<pipeline id>.md\n"
+    "  max_file_bytes: 16384          # a larger file is refused and never sent to the model\n"
+)
+
+
+def _without_context_block(text: str) -> str:
+    assert text.count(CONTEXT_BLOCK) == 1
+    return text.replace(CONTEXT_BLOCK, "")
+
+
 #: The ``llm`` lines that changed since phase 5, and their phase-5 text.
 PHASE5_LLM_LINES = {
     '  provider: "${HEALER_LLM_PROVIDER:-anthropic}"   # anthropic | bedrock | fake (offline tests)': (
@@ -405,7 +423,7 @@ def _without_bedrock_lines(text: str) -> str:
 def _phase5_view(text: str) -> str:
     """The template without the blocks phase 5 did not have (the comment-only ones included)."""
     without_new_blocks = _without_sandbox_block(_without_skip_ci_block(_without_bedrock_lines(text)))
-    return _without_orchestrator_block(_without_first_poll_line(without_new_blocks))
+    return _without_orchestrator_block(_without_first_poll_line(_without_context_block(without_new_blocks)))
 
 
 def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> None:
@@ -420,6 +438,11 @@ def test_airflow_template_is_the_phase5_template_plus_a_commented_block() -> Non
     assert raw["monitor"].pop("first_poll_lookback_hours") == 24
     assert raw["github"].pop("skip_ci") is True
     assert raw["llm"].pop("model") == "${HEALER_LLM_MODEL:-claude-opus-5-5}"
+    assert raw.pop("context") == {
+        "organization": "healer/organization.md",
+        "etl_dir": "healer/etl",
+        "max_file_bytes": 16384,
+    }
     expected = yaml.safe_load(phase5)
     assert expected["llm"].pop("model") == "claude-opus-5-5"
     assert raw == expected

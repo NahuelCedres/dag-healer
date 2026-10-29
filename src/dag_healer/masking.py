@@ -22,7 +22,9 @@ pandas is imported lazily: :func:`mask_value`, :func:`mask_text` and
 :func:`known_secrets`, :func:`hide_secrets` and :func:`holds_secret` find known values, such as
 those of credential variables, in a text: whole, or as a fragment of 16 or more characters. The
 LLM providers hide them in their error messages, and the CLI's log filter drops the records that
-hold them.
+hold them. :func:`find_secret` also looks for what is shaped like a credential (private keys, AWS
+access keys, GitHub and other tokens, passwords in URLs, ``password: <value>``); the context files
+(:mod:`dag_healer.context`) that hold one are never sent to the model.
 """
 
 from __future__ import annotations
@@ -280,6 +282,112 @@ def holds_secret(text: str, secrets: Iterable[str]) -> bool:
     fragments = _secret_fragments(secrets)
     size = SECRET_FRAGMENT_CHARS
     return any(text[start : start + size] in fragments for start in range(len(text) - size + 1))
+
+
+# --------------------------------------------------------------------------- secrets in a text
+
+#: What looks like a credential in a text, as ``(kind, pattern)``, the most specific first. The
+#: kind names the credential in a sentence ("it holds what looks like an AWS access key ID").
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("a private key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
+    ("an AWS access key ID", re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}(?![A-Z0-9])")),
+    (
+        "an AWS secret access key",
+        re.compile(r"(?i)aws.?secret.?access.?key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"),
+    ),
+    (
+        "a GitHub token",
+        re.compile(r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})"),
+    ),
+    ("an Anthropic API key", re.compile(r"(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("an API key", re.compile(r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{32,}")),
+    ("a Stripe key", re.compile(r"(?<![A-Za-z0-9_])[rs]k_live_[A-Za-z0-9]{20,}")),
+    ("a Google API key", re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])")),
+    ("a Slack token", re.compile(r"(?<![A-Za-z0-9-])xox[abposr]-[A-Za-z0-9-]{10,}")),
+    (
+        "a Slack webhook URL",
+        re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]{16,}"),
+    ),
+    (
+        "a JSON web token",
+        re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    ),
+)
+#: A password in a URL (``postgresql://user:secret@host``); placeholders are not credentials.
+_URL_PASSWORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:(?P<value>[^\s@/]+)@[^\s/]+")
+#: A credential given a value (``password: hunter22``, ``api_key = "..."``, ``DB_PASSWORD=...``).
+_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<![a-z0-9])(?:password|passwd|pwd|passphrase|secret|client.?secret|api.?key|access.?key|auth.?token"
+    r"|access.?token|token)\b[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"'`,;)]{8,})"
+)
+#: Values that stand for a credential without being one: ``${TOKEN}``, ``$TOKEN``, ``<password>``,
+#: ``{{ secret }}``, ``***``, ``xxxxxxxx``, ``[hidden]``.
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:\$\{[^}]*\}|\$[A-Z_][A-Z0-9_]*|<[^>]*>|\{\{[^}]*\}\}|[*x.#-]+|\[[^\]]*\])$", re.IGNORECASE
+)
+_PLACEHOLDER_WORDS = frozenset(
+    {"password", "passwd", "secret", "changeme", "example", "redacted", "placeholder", "token", "hidden"}
+)
+#: Shown for a value of a configured secret (``known`` of :func:`find_secret`).
+KNOWN_SECRET_KIND = "the value of a configured secret"
+
+
+@dataclass(frozen=True)
+class SecretFinding:
+    """What looks like a secret in a text: its kind and its line (1-based), never the value."""
+
+    kind: str
+    line: int
+
+    def describe(self) -> str:
+        """``"an AWS access key ID on line 12"``."""
+        return f"{self.kind} on line {self.line}"
+
+
+def _placeholder(value: str) -> bool:
+    return bool(_PLACEHOLDER_RE.match(value)) or value.lower().strip("_-") in _PLACEHOLDER_WORDS
+
+
+def _credential_value(value: str) -> bool:
+    """True when an assigned value can be a credential: letters and digits, not a placeholder."""
+    if _placeholder(value):
+        return False
+    return any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
+
+
+def _line_secret(line: str) -> str | None:
+    for kind, pattern in _SECRET_PATTERNS:
+        if pattern.search(line):
+            return kind
+    if any(not _placeholder(match.group("value")) for match in _URL_PASSWORD_RE.finditer(line)):
+        return "a password in a URL"
+    if any(_credential_value(match.group("value")) for match in _ASSIGNMENT_RE.finditer(line)):
+        return "a credential with its value"
+    return None
+
+
+def find_secret(text: str, known: Iterable[str] = ()) -> SecretFinding | None:
+    """The first thing in ``text`` that looks like a secret, or ``None``.
+
+    Looks for private keys, AWS access keys, GitHub, Anthropic, Slack, Google and Stripe tokens,
+    JSON web tokens, passwords in URLs and credentials written with their value
+    (``password: ...``, ``api_key = ...``; a placeholder such as ``${TOKEN}`` or ``<password>`` is
+    not one), then for the values in ``known`` (:func:`known_secrets`: whole, or a fragment of 16
+    characters). The finding names the kind and the line, never the value.
+    """
+    lines = text.splitlines() or [text]
+    for number, line in enumerate(lines, start=1):
+        kind = _line_secret(line)
+        if kind is not None:
+            return SecretFinding(kind, number)
+    secrets = known_secrets(known)
+    if secrets:
+        for number, line in enumerate(lines, start=1):
+            if holds_secret(line, secrets):
+                return SecretFinding(KNOWN_SECRET_KIND, number)
+        if holds_secret("".join(text.split()), secrets):  # split over lines or spaces
+            return SecretFinding(KNOWN_SECRET_KIND, 1)
+    return None
 
 
 # --------------------------------------------------------------------------- settings
@@ -542,10 +650,13 @@ def masked_sample(
 
 __all__ = [
     "HASH_PREFIX",
+    "KNOWN_SECRET_KIND",
     "REDACTED",
     "MaskingHookError",
     "MaskingSettings",
+    "SecretFinding",
     "dataframe_to_records",
+    "find_secret",
     "hide_secrets",
     "holds_secret",
     "is_sensitive_column",

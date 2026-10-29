@@ -19,15 +19,17 @@ own default applies.
 ``version: 1`` stays: the orchestrator abstraction (section 5 of
 ``docs/architecture/orchestrators.md``) only adds sections. ``orchestrator:`` selects
 the adapter (absent: Airflow, configured by the ``airflow:`` section as before),
-``serve:`` configures the standalone host ``dag-healer serve`` and ``repo.sandbox``
-where a repair runs pytest. The three are left out of dumps while they hold their
+``serve:`` configures the standalone host ``dag-healer serve``, ``repo.sandbox``
+where a repair runs pytest and ``context:`` where the Organization Context and the ETL
+Information live (``docs/context.md``). The four are left out of dumps while they hold their
 defaults, so ``dag-healer check`` prints an existing ``healer.yaml`` exactly as before;
 ``github.skip_ci`` (default true) is left out the same way, and so are the Amazon Bedrock
 settings ``llm.aws_region``, ``llm.aws_profile`` and ``llm.endpoint_url`` while they are unset.
 
 ``repo.allowed_paths`` cannot name a path that a fix never changes (the policy of
-:mod:`dag_healer.repo.protected_paths`), the contracts folder of ``contracts.dir`` included;
-``.`` stays allowed, and the policy still applies inside it. ``github.token`` loses the
+:mod:`dag_healer.repo.protected_paths`), the contracts folder of ``contracts.dir`` and the context
+files of ``context:`` included; ``.`` stays allowed, and the policy still applies inside it. The
+``context:`` paths are relative to ``repo.path`` and stay inside it. ``github.token`` loses the
 whitespace around it and must be printable ASCII; ``llm.endpoint_url`` is an https URL (http
 only for a loopback host) without user info, query, fragment or backslash, so it never carries
 a credential (:func:`valid_endpoint_url`); ``llm.model`` loses the whitespace around it and
@@ -546,6 +548,68 @@ class ContractsConfig(_Model):
     """Where data contracts live (relative to ``repo.path``)."""
 
     dir: str = "healer/contracts"
+
+
+#: Bounds of ``context.max_file_bytes``.
+MIN_CONTEXT_FILE_BYTES = 1024
+MAX_CONTEXT_FILE_BYTES = 256 * 1024
+
+
+def _context_path(value: Any, what: str) -> str:
+    """A repository-relative posix path without ``..``: ``./healer/x.md`` is ``healer/x.md``."""
+    if not isinstance(value, str):
+        raise ValueError(f"expected the path of the {what}, relative to repo.path")
+    cleaned = value.strip().replace("\\", "/")
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    cleaned = cleaned.rstrip("/")
+    if not cleaned or cleaned == ".":
+        raise ValueError(f"expected the path of the {what}, relative to repo.path")
+    if cleaned.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", cleaned):
+        raise ValueError(f"the {what} is read from the repository: use a path relative to repo.path")
+    parts = cleaned.split("/")
+    if ".." in parts or any(part in ("", ".") for part in parts):
+        raise ValueError(f"the {what} must stay inside the repository (no '..' and no empty parts)")
+    return cleaned
+
+
+class ContextConfig(_Model):
+    """Where the Organization Context and the ETL Information live (relative to ``repo.path``).
+
+    ``organization`` is the Organization Context file, ``etl_dir`` the folder of the ETL
+    Information files (``<etl_dir>/<pipeline id>.md``). dag-healer reads both from the commit of
+    ``repo.base_branch``, never from the working tree, and refuses (never sends to the model) a
+    file larger than ``max_file_bytes`` (docs/context.md). Dumps leave the section out while it
+    holds its defaults.
+    """
+
+    organization: str = "healer/organization.md"
+    etl_dir: str = "healer/etl"
+    max_file_bytes: int = Field(default=16384, ge=MIN_CONTEXT_FILE_BYTES, le=MAX_CONTEXT_FILE_BYTES)
+
+    @field_validator("organization")
+    @classmethod
+    def _organization_path(cls, value: Any) -> str:
+        return _context_path(value, "Organization Context")
+
+    @field_validator("etl_dir")
+    @classmethod
+    def _etl_path(cls, value: Any) -> str:
+        return _context_path(value, "ETL Information folder")
+
+    @model_validator(mode="after")
+    def _organization_outside_the_etl_folder(self) -> ContextConfig:
+        if self.organization.startswith(self.etl_dir + "/"):
+            raise ValueError(
+                f"context.organization ({self.organization!r}) cannot be inside context.etl_dir "
+                f"({self.etl_dir!r}): every file there is the ETL Information of a pipeline"
+            )
+        return self
+
+    @property
+    def paths(self) -> tuple[str, str]:
+        """The Organization Context file and the ETL Information folder (the protected paths)."""
+        return (self.organization, self.etl_dir)
 
 
 class ClassificationConfig(_Model):
@@ -1149,7 +1213,7 @@ class ServeConfig(_Model):
 
 
 #: Sections that dumps leave out while they hold their defaults (phase-5 dumps stay identical).
-_OPTIONAL_SECTIONS: tuple[str, ...] = ("orchestrator", "serve")
+_OPTIONAL_SECTIONS: tuple[str, ...] = ("orchestrator", "serve", "context")
 
 
 class HealerConfig(_Model):
@@ -1161,6 +1225,7 @@ class HealerConfig(_Model):
     airflow: AirflowConfig = Field(default_factory=AirflowConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     contracts: ContractsConfig = Field(default_factory=ContractsConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     datasets: dict[str, dict[str, DatasetLocator]] = Field(default_factory=dict)
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
@@ -1201,14 +1266,24 @@ class HealerConfig(_Model):
 
         repo_path = Path(self.repo.path).expanduser()
         prefix = contracts_prefix(self.contracts.dir, repo_path if repo_path.is_absolute() else None)
-        if prefix is None or prefix == ".":
-            return self
         for entry in self.repo.allowed_paths:
-            if str(entry).strip() and allowed_path_reason(str(entry), contracts_dir=prefix) is not None:
+            if not str(entry).strip():
+                continue
+            if (
+                prefix not in (None, ".")
+                and allowed_path_reason(str(entry), contracts_dir=prefix) is not None
+            ):
                 raise ValueError(
                     f"repo.allowed_paths: {entry!r} cannot be an allowed path (it is the contracts folder "
                     f"of contracts.dir, {self.contracts.dir!r}, or inside it); a fix never changes it. "
                     "'.' allows every path that is not protected"
+                )
+            if allowed_path_reason(str(entry), context_paths=self.context.paths) is not None:
+                raise ValueError(
+                    f"repo.allowed_paths: {entry!r} cannot be an allowed path (it is the Organization "
+                    f"Context of context.organization, {self.context.organization!r}, or the ETL "
+                    f"Information folder of context.etl_dir, {self.context.etl_dir!r}, or inside one of "
+                    "them); a fix never changes them. '.' allows every path that is not protected"
                 )
         return self
 
@@ -1564,6 +1639,7 @@ def _yaml_str(value: str | Path | None) -> str:
 # The templates are str.format strings: literal braces are doubled. The Airflow template is the
 # phase-5 one plus the commented ``orchestrator:`` block, ``repo.sandbox``,
 # ``monitor.first_poll_lookback_hours`` (24, the window the first poll had before it existed),
+# ``context:`` (its defaults),
 # ``github.skip_ci`` and the Amazon Bedrock lines of ``llm:`` (``llm.model`` reads
 # ``$HEALER_LLM_MODEL``, the commented settings change nothing); both share the sections between
 # ``classification:`` and ``masking:``. ``dag-healer init --orchestrator stepfunctions`` writes
@@ -1611,6 +1687,14 @@ monitor:
 
 contracts:
   dir: healer/contracts          # data contracts, relative to repo.path
+
+# The Organization Context and the ETL Information (docs/context.md): Markdown files with the
+# team's rules, read from the commit of repo.base_branch before every classification and fix.
+# `dag-healer init --context` writes starter files.
+context:
+  organization: healer/organization.md   # the Organization Context (rules ORG-1, ORG-2, ...)
+  etl_dir: healer/etl            # the ETL Information of each pipeline: <etl_dir>/<pipeline id>.md
+  max_file_bytes: 16384          # a larger file is refused and never sent to the model
 
 # Dataset locators per DAG and task (`init` fills in the ones it discovered). Add the
 # inputs it could not resolve by hand:
@@ -1770,6 +1854,14 @@ monitor:
 contracts:
   dir: healer/contracts          # data contracts, relative to repo.path
 
+# The Organization Context and the ETL Information (docs/context.md): Markdown files with the
+# team's rules, read from the commit of repo.base_branch before every classification and fix.
+# `dag-healer init --context` writes starter files.
+context:
+  organization: healer/organization.md   # the Organization Context (rules ORG-1, ORG-2, ...)
+  etl_dir: healer/etl            # the ETL Information of each pipeline: <etl_dir>/<pipeline id>.md
+  max_file_bytes: 16384          # a larger file is refused and never sent to the model
+
 # Dataset locators per pipeline and state (`init` fills in the ones it discovered); a path
 # may be an s3:// URI. Add the inputs it could not resolve by hand:
 # datasets:
@@ -1884,6 +1976,7 @@ __all__ = [
     "TEMPLATE_ORCHESTRATORS",
     "AirflowConfig",
     "ClassificationConfig",
+    "ContextConfig",
     "ConfigError",
     "ContractsConfig",
     "EmailConfig",

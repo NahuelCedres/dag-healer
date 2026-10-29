@@ -472,3 +472,41 @@ def test_name_helpers() -> None:
     assert is_manifest("Requirements-Dev.txt") and is_manifest("constraints.txt") and is_manifest("setup.cfg")
     assert not is_manifest("requirements.py")
     assert is_data_file("x.Parquet") and is_data_file("dump.sqlite3") and not is_data_file("x.py")
+
+
+# =========================================================================== the context files
+
+
+def test_the_context_files_are_protected_wherever_they_are_configured() -> None:
+    from dag_healer.repo.protected_paths import CONTEXT_FILES, is_context_path
+
+    context = ("docs/organization.md", "docs/etl")
+    for path in ("docs/organization.md", "docs/etl/lab_results_daily.md", "DOCS/ETL/x.md", "docs/etl./x.md"):
+        assert protected_reason(path, context_paths=context) == CONTEXT_FILES, path
+        assert is_context_path(path, context), path
+    for path in ("docs/readme.md", "docs/etl.md", "docs/organization.md.bak", "src/docs/etl/x.md"):
+        assert protected_reason(path, context_paths=context) is None, path
+        assert not is_context_path(path, context), path
+    # the default paths are under healer/, which is protected as dag-healer's own folder first
+    assert (
+        protected_reason("healer/organization.md", context_paths=("healer/organization.md",)) == HEALER_CONFIG
+    )
+    assert is_context_path("healer/etl/x.md", ("healer/organization.md", "healer/etl"))
+    # entries that name the whole repository or leave it protect nothing more
+    assert protected_reason("src/x.py", context_paths=(".", "", "../outside")) is None
+
+
+def test_allowed_paths_and_links_honour_the_context_paths() -> None:
+    from dag_healer.repo.protected_paths import CONTEXT_FILES, allowed_path_reason, linked_paths
+
+    context = ("docs/organization.md", "docs/etl")
+    assert allowed_path_reason("docs/etl/", context_paths=context) == CONTEXT_FILES
+    assert allowed_path_reason("docs/etl/sub", context_paths=context) == CONTEXT_FILES
+    assert allowed_path_reason("docs/", context_paths=context) is None  # the files inside stay protected
+    assert allowed_path_reason(".", context_paths=context) is None
+    links = {"docs/etl": "../src/knowledge"}
+    assert "src/knowledge" in linked_paths(links, context_paths=context)
+    assert linked_paths(links) == frozenset()
+    assert protected_changes(["docs/etl/x.md", "src/a.py"], context_paths=context) == [
+        ("docs/etl/x.md", CONTEXT_FILES)
+    ]

@@ -51,7 +51,7 @@ SRC_DIR = PACKAGE_DIR.parent
 PACKAGE = "dag_healer"
 
 #: The neutral core (goal 1 of the design, ``ui/`` aside): package directories and modules.
-CORE_PACKAGES = ("agent", "worker", "store", "contracts", "alerts", "pr", "api")
+CORE_PACKAGES = ("agent", "worker", "store", "contracts", "context", "alerts", "pr", "api")
 CORE_MODULES = (
     "repo/git.py",
     "repo/profile.py",

@@ -1,0 +1,257 @@
+"""Unit tests for dag_healer.masking.find_secret: what looks like a credential in a text.
+
+A context file (dag_healer.context) that holds one is refused: nothing of it reaches the model or
+the store. Every fake credential below is put together from pieces at run time, so this file
+holds no string that looks like a real one.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from dag_healer.masking import KNOWN_SECRET_KIND, SecretFinding, find_secret
+
+
+def _lines(*lines: str) -> str:
+    return "\n".join(lines) + "\n"
+
+
+def _in_a_file(fragment: str) -> str:
+    """A small context file with ``fragment`` in a sentence on line 3."""
+    return _lines("# Systems and owners", "", f"The export uses {fragment} for now.", "", "- ORG-1: A rule.")
+
+
+def _key_header(algorithm: str) -> str:
+    return "-----BEGIN " + algorithm + "PRIV" + "ATE KEY-----"
+
+
+def _jwt() -> str:
+    return ".".join(["eyJ" + "a1" * 6, "eyJ" + "b2" * 6, "c3" * 8])
+
+
+PATTERNS = [
+    pytest.param(_key_header("RSA "), "a private key", id="rsa-private-key"),
+    pytest.param(_key_header(""), "a private key", id="private-key"),
+    pytest.param(_key_header("OPENSSH "), "a private key", id="openssh-private-key"),
+    pytest.param(_key_header("ENCRYPTED "), "a private key", id="encrypted-private-key"),
+    pytest.param("-----BEGIN PGP " + "PRIV" + "ATE KEY BLOCK-----", "a private key", id="pgp-private-key"),
+    pytest.param("AKIA" + "X" * 16, "an AWS access key ID", id="aws-access-key-id"),
+    pytest.param("ASIA" + "Q7" * 8, "an AWS access key ID", id="aws-temporary-access-key-id"),
+    pytest.param("aws_secret_access_key = " + "a1B2/c3D4+" * 4, "an AWS secret access key", id="aws-secret"),
+    pytest.param(
+        'AWS_SECRET_ACCESS_KEY: "' + "Zz9" * 13 + 'x"', "an AWS secret access key", id="aws-secret-yaml"
+    ),
+    pytest.param("gh" + "p_" + "a1" * 18, "a GitHub token", id="github-classic"),
+    pytest.param("gh" + "s_" + "B2" * 18, "a GitHub token", id="github-app"),
+    pytest.param(
+        "github" + "_pat_" + "c3" * 11 + "_" + "d4" * 20, "a GitHub token", id="github-fine-grained"
+    ),
+    # an Anthropic key is also an sk- key: the more specific kind wins
+    pytest.param("sk-" + "ant-" + "api03-" + "e5" * 20, "an Anthropic API key", id="anthropic"),
+    pytest.param("sk-" + "f6" * 16, "an API key", id="sk-key"),
+    pytest.param("sk-" + "proj-" + "g7" * 16, "an API key", id="sk-project-key"),
+    pytest.param("sk" + "_live_" + "h8" * 10, "a Stripe key", id="stripe-secret-key"),
+    pytest.param("rk" + "_live_" + "i9" * 10, "a Stripe key", id="stripe-restricted-key"),
+    pytest.param("AIza" + "j0" * 17 + "k", "a Google API key", id="google-api-key"),
+    pytest.param("xox" + "b-" + "1234567890" + "-" + "l1" * 6, "a Slack token", id="slack-token"),
+    pytest.param(
+        "https://hooks" + ".slack.com/services/" + "T0" * 4 + "/" + "B1" * 4 + "/" + "m2" * 12,
+        "a Slack webhook URL",
+        id="slack-webhook",
+    ),
+    pytest.param(_jwt(), "a JSON web token", id="json-web-token"),
+    pytest.param(
+        "postgresql://etl:" + "n3" * 5 + "@db.internal:5432/lab", "a password in a URL", id="url-password"
+    ),
+    pytest.param("password: " + "hunter" + "22a", "a credential with its value", id="password"),
+    pytest.param('api_key = "' + "abc123" + 'def456"', "a credential with its value", id="api-key"),
+    pytest.param("token=" + "abcd1234" + "efgh", "a credential with its value", id="token"),
+    pytest.param(
+        '{"client_secret": "' + "cs" + "9" * 10 + '"}', "a credential with its value", id="json-secret"
+    ),
+    pytest.param("passphrase: " + "correct7" + "horse", "a credential with its value", id="passphrase"),
+    pytest.param("auth-token: " + "t0k3n" + "Value", "a credential with its value", id="auth-token"),
+    pytest.param("Access_Token = " + "AT" + "12345678", "a credential with its value", id="access-token"),
+    pytest.param("pwd: " + "Passw0rd" + "!", "a credential with its value", id="pwd"),
+    pytest.param(
+        "sftp-password: " + "Lab2026" + "Upload", "a credential with its value", id="hyphenated-name"
+    ),
+]
+
+
+@pytest.mark.parametrize(("fragment", "kind"), PATTERNS)
+def test_find_secret_names_the_kind_and_the_line_never_the_value(fragment: str, kind: str) -> None:
+    finding = find_secret(_in_a_file(fragment))
+    assert finding == SecretFinding(kind, 3)
+    assert finding.describe() == f"{kind} on line 3"
+    assert fragment not in finding.describe() and fragment not in repr(finding)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        pytest.param("-----BEGIN PUBLIC KEY-----", id="public-key"),
+        pytest.param("AKIA" + "X" * 17, id="aws-access-key-id-too-long"),
+        pytest.param("akia" + "x" * 16, id="aws-access-key-id-lower-case"),
+        pytest.param("aws_secret_access_key = " + "aB" * 20 + "x", id="aws-secret-too-long"),
+        pytest.param("gh" + "p_" + "a" * 35, id="github-too-short"),
+        pytest.param("sk-" + "a" * 31, id="sk-key-too-short"),
+        pytest.param("sk" + "_test_" + "a" * 24, id="stripe-test-key"),
+        pytest.param("AIza" + "a" * 36, id="google-too-long"),
+        pytest.param("xox" + "b-" + "short", id="slack-too-short"),
+        pytest.param("eyJ" + "a" * 8 + ".eyJ" + "b" * 8, id="jwt-without-signature"),
+        pytest.param("password: " + "hunter2", id="value-of-7-characters"),
+        pytest.param("password: " + "correcthorsebattery", id="value-without-digits"),
+        pytest.param("password: " + "12345678", id="value-without-letters"),
+    ],
+)
+def test_near_misses_are_not_secrets(fragment: str) -> None:
+    assert find_secret(_in_a_file(fragment)) is None
+
+
+def test_find_secret_reports_the_first_line_that_holds_one() -> None:
+    text = _lines(
+        "# Systems",
+        "",
+        "- ORG-1: No secret here.",
+        "",
+        "- the token " + "gh" + "p_" + "b" * 36,
+        "- the key " + "AKIA" + "Z" * 16,
+    )
+    assert find_secret(text) == SecretFinding("a GitHub token", 5)
+
+
+def test_find_secret_counts_lines_of_every_line_ending() -> None:
+    text = "a\r\nb\r\nc " + "AKIA" + "Z" * 16 + "\r\n"
+    assert find_secret(text) == SecretFinding("an AWS access key ID", 3)
+
+
+def test_a_text_without_secret_gives_none() -> None:
+    assert find_secret("") is None
+    assert find_secret("", ["known" + "Value2026"]) is None
+    assert find_secret(_lines("# Organization Context", "", "- ORG-1: A rule.")) is None
+
+
+# --------------------------------------------------------------------------- placeholders
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "token: ${TOKEN}",
+        "api_key: ${API_KEY}",
+        "token: $TOKEN",
+        "api_key = $ANTHROPIC_API_KEY",
+        "password: <password>",
+        "password: <your password here>",
+        "secret: {{ secret }}",
+        "client_secret: {{client_secret}}",
+        "password: ***",
+        "password: ********",
+        "password: xxxxxxxx",
+        "access_key: XXXXXXXXXXXXXXXX",
+        "password: [hidden]",
+        "password: changeme",
+        "password: REDACTED",
+        "password: required",
+        "The SFTP password: required for every upload; ops rotates it.",
+        "api_key: your-api-key",
+        "postgresql://user:<password>@host:5432/db",
+        "postgresql://etl:${DB_PASSWORD}@db.internal/lab",
+        "https://user:$PASSWORD@example.com",
+        "https://user:***@example.com",
+        "https://user:[hidden]@example.com",
+        "https://user:password@example.com",
+    ],
+)
+def test_placeholders_are_not_secrets(line: str) -> None:
+    assert find_secret(_lines("# Systems", "", line)) is None
+
+
+# --------------------------------------------------------------------------- known values
+
+#: 24 characters, put together so that no literal looks like a credential.
+KNOWN = "Zq7" + "Lm2" + "Pw9" + "Xc4" + "Vb8" + "Nk3" + "Rt5" + "Hy6"
+
+
+def test_a_known_value_is_found_whole() -> None:
+    finding = find_secret(_in_a_file(KNOWN), [KNOWN])
+    assert finding == SecretFinding(KNOWN_SECRET_KIND, 3)
+    assert finding.describe() == f"{KNOWN_SECRET_KIND} on line 3"
+    assert KNOWN not in finding.describe()
+
+
+def test_a_16_character_fragment_of_a_known_value_is_found() -> None:
+    assert find_secret(_in_a_file(KNOWN[3:19]), [KNOWN]) == SecretFinding(KNOWN_SECRET_KIND, 3)
+    assert find_secret(_in_a_file(KNOWN[3:18]), [KNOWN]) is None  # 15 characters are not enough
+
+
+@pytest.mark.parametrize("separator", ["\n", " ", "\n  "], ids=["line-break", "space", "indented-line"])
+def test_a_known_value_split_over_lines_or_spaces_is_found_on_line_1(separator: str) -> None:
+    text = _lines("# Systems", "", KNOWN[:12] + separator + KNOWN[12:])
+    assert find_secret(text, [KNOWN]) == SecretFinding(KNOWN_SECRET_KIND, 1)
+
+
+def test_known_values_shorter_than_8_characters_are_ignored() -> None:
+    short = "Ab3" + "Cd4" + "E"
+    assert find_secret(_in_a_file(short), [short]) is None
+    eight = short + "f"
+    assert find_secret(_in_a_file(eight), [eight]) == SecretFinding(KNOWN_SECRET_KIND, 3)
+
+
+def test_known_values_are_stripped_and_only_strings_count() -> None:
+    known: list = [f"  {KNOWN}\n", None, 42]
+    assert find_secret(_in_a_file(KNOWN), known) == SecretFinding(KNOWN_SECRET_KIND, 3)
+    assert find_secret(_in_a_file("nothing"), [None, 42, ""]) is None  # type: ignore[list-item]
+
+
+def test_patterns_are_looked_for_before_known_values() -> None:
+    text = _lines(f"line one {KNOWN}", "line two", "AKIA" + "Z" * 16)
+    assert find_secret(text, [KNOWN]) == SecretFinding("an AWS access key ID", 3)
+
+
+# --------------------------------------------------------------------------- ordinary text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- ORG-1: Files from 2026-10-01 must still load, because old dates are run again.",
+        "- ORG-2: The on-call phone is +54 11 5555-1234; write to data-eng@example.com.",
+        "- LAB-3 (overrides ORG-3): An empty quantity counts as 0 since 2026-10-02T14:03:00Z.",
+        "- CUS-1: `signup_date` is a date (2025-01-14) or an ISO-8601 timestamp in UTC.",
+        "The CRM export (`data/incoming/customers.csv`): crm-team, Slack #crm.",
+        "See https://example.com/docs/context.md#rules and postgresql://db.internal:5432/lab.",
+        "Clone ssh://git@github.com:acme/etl.git and ask ana.perez@example.org for access.",
+        "| SKU-1001 | 20 units | 150 units | 0.0.0.0 |",
+        "```sql\nSELECT customer_id, email FROM customers WHERE signup_date >= '2026-01-01';\n```",
+        "The token rotates every 90 days; the password policy needs 12 characters.",
+        "A key such as AKIA... is never written here; nor is sk-... or ghp_...",
+        "<!-- Never write secrets here: a file that holds one is not sent to the model. -->",
+        "Order 1234567 of customer 7654321 was refunded on 2026-10-27 at 08:30.",
+    ],
+)
+def test_ordinary_prose_and_markdown_are_not_secrets(text: str) -> None:
+    assert find_secret(text) is None
+
+
+# --------------------------------------------------------------------------- gaps
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "DB_PASSWORD=" + "Pr0d" + "Pass2026",
+        "github_token: " + "abc123" + "def456ghi",
+        "smtp_password = " + "s3cret" + "Value1",
+        "export SNOWFLAKE_PASSWORD=" + "Sn0w" + "flake2026",
+    ],
+    ids=["env-variable", "yaml-key", "config-key", "shell-export"],
+)
+def test_a_credential_name_with_a_prefix_is_found(line: str) -> None:
+    assert find_secret(line) == SecretFinding("a credential with its value", 1)
+
+
+def test_a_longer_aws_secret_with_digits_is_still_a_credential_with_its_value() -> None:
+    finding = find_secret("aws_secret_access_key = " + "a1B2" * 10 + "x")
+    assert finding is not None and finding.kind == "a credential with its value"

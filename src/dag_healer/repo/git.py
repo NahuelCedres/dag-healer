@@ -277,6 +277,65 @@ def git_environment(extra: Mapping[str, str | None] | None = None) -> dict[str, 
     return env
 
 
+def _run_raw(
+    args: Sequence[str | os.PathLike[str]],
+    cwd: str | os.PathLike[str],
+    *,
+    env: Mapping[str, str | None] | None,
+    timeout: float | None,
+    secrets: Sequence[str],
+) -> tuple[list[str], str, subprocess.CompletedProcess[bytes]]:
+    """Run git with the safe prefix of :func:`run_git`; ``(command, shown command, process)``."""
+    hooks_path, fsmonitor = _hooks_settings()
+    prefix = ["git", *GIT_SAFE_CONFIG, "-c", hooks_path, "-c", fsmonitor, *_GIT_OBJECT_CONFIG]
+    cmd = [*prefix, *(os.fspath(a) for a in args)]
+    shown = _redact(" ".join(cmd[len(prefix) :]), secrets)
+    log.debug("git %s (cwd=%s)", shown, cwd)
+    if not Path(os.fspath(cwd)).is_dir():
+        raise GitError(f"git working directory does not exist: {cwd}", command=cmd)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=os.fspath(cwd),
+            env=git_environment(env),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {shown} timed out after {timeout} s", command=cmd) from exc
+    except FileNotFoundError as exc:
+        raise GitError("the git executable was not found on PATH", command=cmd) from exc
+    except OSError as exc:
+        raise GitError(f"could not run git {shown}: {exc}", command=cmd) from exc
+    return cmd, shown, proc
+
+
+def git_bytes(
+    args: Sequence[str | os.PathLike[str]],
+    cwd: str | os.PathLike[str],
+    *,
+    timeout: float | None = DEFAULT_GIT_TIMEOUT,
+) -> bytes:
+    """The standard output of ``git <args>`` as bytes, run as :func:`run_git` runs it.
+
+    For contents that must be checked byte for byte (``git cat-file blob <id>``): nothing is
+    decoded. Raises :class:`GitError` like :func:`run_git` with ``check=True``.
+    """
+    cmd, shown, proc = _run_raw(args, cwd, env=None, timeout=timeout, secrets=())
+    if proc.returncode != 0:
+        stderr = _decode(proc.stderr)
+        detail = (stderr.strip() or "no output")[-2000:]
+        raise GitError(
+            f"git {shown} failed (exit {proc.returncode}): {detail}",
+            command=cmd,
+            returncode=proc.returncode,
+            stderr=stderr,
+        )
+    return proc.stdout or b""
+
+
 def run_git(
     args: Sequence[str | os.PathLike[str]],
     cwd: str | os.PathLike[str],
@@ -307,30 +366,7 @@ def run_git(
             git exited with a non-zero status.
     """
     secrets = [s for s in redact if s]
-    hooks_path, fsmonitor = _hooks_settings()
-    prefix = ["git", *GIT_SAFE_CONFIG, "-c", hooks_path, "-c", fsmonitor, *_GIT_OBJECT_CONFIG]
-    cmd = [*prefix, *(os.fspath(a) for a in args)]
-    shown = _redact(" ".join(cmd[len(prefix) :]), secrets)
-    log.debug("git %s (cwd=%s)", shown, cwd)
-    if not Path(os.fspath(cwd)).is_dir():
-        raise GitError(f"git working directory does not exist: {cwd}", command=cmd)
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=os.fspath(cwd),
-            env=git_environment(env),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise GitError(f"git {shown} timed out after {timeout} s", command=cmd) from exc
-    except FileNotFoundError as exc:
-        raise GitError("the git executable was not found on PATH", command=cmd) from exc
-    except OSError as exc:
-        raise GitError(f"could not run git {shown}: {exc}", command=cmd) from exc
-
+    cmd, shown, proc = _run_raw(args, cwd, env=env, timeout=timeout, secrets=secrets)
     stdout = _redact(_decode(proc.stdout), secrets)
     stderr = _redact(_decode(proc.stderr), secrets)
     result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
@@ -908,6 +944,7 @@ __all__ = [
     "askpass_env",
     "detect_eol",
     "empty_hooks_dir",
+    "git_bytes",
     "git_environment",
     "github_https_url",
     "is_git_repo",

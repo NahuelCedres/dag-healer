@@ -55,6 +55,14 @@ monitor:
 contracts:
   dir: healer/contracts          # data contracts, relative to repo.path
 
+# The Organization Context and the ETL Information (docs/context.md): Markdown files with the
+# team's rules, read from the commit of repo.base_branch before every classification and fix.
+# `dag-healer init --context` writes starter files.
+context:
+  organization: healer/organization.md   # the Organization Context (rules ORG-1, ORG-2, ...)
+  etl_dir: healer/etl            # the ETL Information of each pipeline: <etl_dir>/<pipeline id>.md
+  max_file_bytes: 16384          # a larger file is refused and never sent to the model
+
 # Dataset locators per DAG and task (`init` fills in the ones it discovered). Add the
 # inputs it could not resolve by hand:
 # datasets:

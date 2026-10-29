@@ -9,7 +9,8 @@ Protected, by :func:`protected_reason`:
 
 * ``.git`` internals, at any depth;
 * dag-healer's configuration and inputs: ``healer.yaml`` at any depth, the root folders
-  ``.github``, ``data``, ``fixtures`` and ``healer``, and the contracts folder;
+  ``.github``, ``data``, ``fixtures`` and ``healer``, the contracts folder, and the Organization
+  Context and the ETL Information (``context_paths``: the file and the folder of ``context:``);
 * the CI definitions of other services (``.gitlab-ci.yml``, ``.gitlab/``, ``.circleci/``,
   ``Jenkinsfile``, ``azure-pipelines.yml``, ``.buildkite/``, ...) at the root of the
   repository;
@@ -176,6 +177,7 @@ MAX_LINK_HOPS = 40
 #: Why a path is protected (the texts the write tools show in parentheses).
 GIT_INTERNALS = ".git internals"
 HEALER_CONFIG = "protected path: healer config, contracts, CI, data or fixtures"
+CONTEXT_FILES = "the Organization Context and the ETL Information"
 CI_CONFIG = "CI configuration"
 HOOK_CONFIG = "git hook configuration"
 DEV_ENV_CONFIG = "development environment configuration"
@@ -296,8 +298,28 @@ def _linked_reason(parts: tuple[str, ...], linked: Iterable[str]) -> str | None:
     return None
 
 
+def _context_parts(context_paths: Iterable[str]) -> list[tuple[str, ...]]:
+    """The context files and folders as compared parts (``.`` and paths that leave are left out)."""
+    found: list[tuple[str, ...]] = []
+    for entry in context_paths:
+        parts = compared_parts(normalise_prefix(str(entry))) if str(entry).strip() else None
+        if parts:
+            found.append(parts)
+    return found
+
+
+def is_context_path(path: str, context_paths: Iterable[str]) -> bool:
+    """True when ``path`` is one of the ``context_paths`` or under one (compared as the policy compares)."""
+    parts = compared_parts(path)
+    return parts is not None and any(_under(parts, context) for context in _context_parts(context_paths))
+
+
 def protected_reason(
-    path: str, *, contracts_dir: str | None = None, linked: Iterable[str] = ()
+    path: str,
+    *,
+    contracts_dir: str | None = None,
+    linked: Iterable[str] = (),
+    context_paths: Iterable[str] = (),
 ) -> str | None:
     """Why a fix may never change ``path``, or None when the policy allows it.
 
@@ -307,6 +329,9 @@ def protected_reason(
             (:func:`contracts_prefix`); None, ``""`` and ``"."`` protect nothing more.
         linked: Repository-relative paths that protected links lead to (:func:`linked_paths`);
             each one is protected with everything under it (``""`` is the root: everything).
+        context_paths: The Organization Context file and the ETL Information folder
+            (``context.organization`` and ``context.etl_dir``), repository-relative; each one is
+            protected with everything under it.
 
     Returns:
         One of the reason constants of this module (the first rule that matches), or None.
@@ -322,6 +347,8 @@ def protected_reason(
     contracts = (compared_parts(contracts_dir) or ()) if contracts_dir else ()
     if name == CONFIG_NAME or first in DENIED_ROOTS or _under(parts, contracts):
         return HEALER_CONFIG
+    if is_context_path(path, context_paths):
+        return CONTEXT_FILES
     if first in CI_ROOT_DIRS or (len(parts) == 1 and first in CI_ROOT_FILES):
         return CI_CONFIG
     if (
@@ -348,15 +375,22 @@ def protected_reason(
 
 
 def protected_changes(
-    paths: Iterable[str], *, contracts_dir: str | None = None, linked: Iterable[str] = ()
+    paths: Iterable[str],
+    *,
+    contracts_dir: str | None = None,
+    linked: Iterable[str] = (),
+    context_paths: Iterable[str] = (),
 ) -> list[tuple[str, str]]:
     """``(path, reason)`` for every protected path of ``paths``, without duplicates, sorted by path."""
     linked = tuple(linked)
+    context_paths = tuple(context_paths)
     found: dict[str, str] = {}
     for path in paths:
         if path in found:
             continue
-        reason = protected_reason(path, contracts_dir=contracts_dir, linked=linked)
+        reason = protected_reason(
+            path, contracts_dir=contracts_dir, linked=linked, context_paths=context_paths
+        )
         if reason is not None:
             found[path] = reason
     return sorted(found.items())
@@ -403,7 +437,9 @@ def resolve_links(path: str, links: Mapping[str, str]) -> tuple[str | None, tupl
     return "/".join(done), tuple(followed)
 
 
-def linked_paths(links: Mapping[str, str], *, contracts_dir: str | None = None) -> frozenset[str]:
+def linked_paths(
+    links: Mapping[str, str], *, contracts_dir: str | None = None, context_paths: Iterable[str] = ()
+) -> frozenset[str]:
     """What the protected links of a repository lead to, and the links on the way there.
 
     A hook manager or a CI service that reads a protected file reads what its link leads to:
@@ -415,8 +451,9 @@ def linked_paths(links: Mapping[str, str], *, contracts_dir: str | None = None) 
     tools never write outside the repository.
     """
     found: set[str] = set()
+    context_paths = tuple(context_paths)
     for link in links:
-        if protected_reason(link, contracts_dir=contracts_dir) is None:
+        if protected_reason(link, contracts_dir=contracts_dir, context_paths=context_paths) is None:
             continue
         real, followed = resolve_links(link, links)
         found.update(followed)
@@ -425,16 +462,18 @@ def linked_paths(links: Mapping[str, str], *, contracts_dir: str | None = None) 
     return frozenset(found)
 
 
-def allowed_path_reason(entry: str, *, contracts_dir: str | None = None) -> str | None:
+def allowed_path_reason(
+    entry: str, *, contracts_dir: str | None = None, context_paths: Iterable[str] = ()
+) -> str | None:
     """Why ``entry`` cannot be a ``repo.allowed_paths`` entry, or None (``.`` is always allowed).
 
     ``contracts_dir`` (a repository-relative prefix) makes the contracts folder, and every
-    folder inside it, a protected entry too.
+    folder inside it, a protected entry too; ``context_paths`` the same for the context files.
     """
     prefix = normalise_prefix(entry)
     if prefix == ".":
         return None
-    return protected_reason(prefix, contracts_dir=contracts_dir)
+    return protected_reason(prefix, contracts_dir=contracts_dir, context_paths=context_paths)
 
 
 __all__ = [
@@ -444,6 +483,7 @@ __all__ = [
     "CODEOWNERS_PATHS",
     "CODE_OWNERS",
     "CONFIG_NAME",
+    "CONTEXT_FILES",
     "DATA_FILES",
     "DATA_SUFFIXES",
     "DENIED_ROOTS",
@@ -471,6 +511,7 @@ __all__ = [
     "compared_parts",
     "contracts_prefix",
     "fold_name",
+    "is_context_path",
     "is_data_file",
     "is_lockfile",
     "is_manifest",
