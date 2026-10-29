@@ -76,6 +76,35 @@ PATTERNS = [
     pytest.param(
         "sftp-password: " + "Lab2026" + "Upload", "a credential with its value", id="hyphenated-name"
     ),
+    # review fixes: names glued to a prefix, long values without digits, more token shapes
+    pytest.param("PGPASSWORD=" + "s3cr3t" + "Passw0rd", "a credential with its value", id="pgpassword"),
+    pytest.param("DBPASSWORD=" + "Pr0d" + "Pass2026", "a credential with its value", id="dbpassword"),
+    pytest.param("APPSECRET: " + "Zq7Lm2" + "Pw9Xc4", "a credential with its value", id="glued-secret"),
+    pytest.param(
+        "password: " + "Correct" + "HorseBatteryStaple", "a credential with its value", id="long-passphrase"
+    ),
+    pytest.param(
+        "db password=" + "supersecret" + "value", "a credential with its value", id="long-lowercase"
+    ),
+    pytest.param(
+        'curl -H "Authorization: Bearer ' + "8f14e45f" * 4 + '"', "an Authorization header", id="bearer"
+    ),
+    pytest.param("Authorization: Basic " + "ZXRsOlMz" + "Y3JldFB3", "an Authorization header", id="basic"),
+    pytest.param("glpat-" + "xYz12AbCd" + "EfGhIjKlMnO", "a GitLab token", id="gitlab-token"),
+    pytest.param(
+        "DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=" + "abc123def456" * 4 + "==",
+        "an Azure storage account key",
+        id="azure-account-key",
+    ),
+    pytest.param("dapi" + "0123456789abcdef" * 2, "a Databricks token", id="databricks-token"),
+    pytest.param("hvs." + "CAESIJlU9JMY" + "EhOPYv4igdhm9PnZ", "a HashiCorp Vault token", id="vault-token"),
+    pytest.param("npm_" + "abcdefghij" * 3 + "012345", "an npm token", id="npm-token"),
+    pytest.param(
+        "SG." + "abcdefghijk" * 2 + "." + "abcdefghijklmnopqrstuvwxyz" + "0123456789ABCDEFG",
+        "a SendGrid API key",
+        id="sendgrid-key",
+    ),
+    pytest.param("secret key: " + "wJalrXUtn/" * 4, "an AWS secret access key", id="aws-secret-key-label"),
 ]
 
 
@@ -93,7 +122,6 @@ def test_find_secret_names_the_kind_and_the_line_never_the_value(fragment: str, 
         pytest.param("-----BEGIN PUBLIC KEY-----", id="public-key"),
         pytest.param("AKIA" + "X" * 17, id="aws-access-key-id-too-long"),
         pytest.param("akia" + "x" * 16, id="aws-access-key-id-lower-case"),
-        pytest.param("aws_secret_access_key = " + "aB" * 20 + "x", id="aws-secret-too-long"),
         pytest.param("gh" + "p_" + "a" * 35, id="github-too-short"),
         pytest.param("sk-" + "a" * 31, id="sk-key-too-short"),
         pytest.param("sk" + "_test_" + "a" * 24, id="stripe-test-key"),
@@ -101,7 +129,11 @@ def test_find_secret_names_the_kind_and_the_line_never_the_value(fragment: str, 
         pytest.param("xox" + "b-" + "short", id="slack-too-short"),
         pytest.param("eyJ" + "a" * 8 + ".eyJ" + "b" * 8, id="jwt-without-signature"),
         pytest.param("password: " + "hunter2", id="value-of-7-characters"),
-        pytest.param("password: " + "correcthorsebattery", id="value-without-digits"),
+        pytest.param("password: " + "correcthors", id="value-of-11-characters-without-digits"),
+        pytest.param("Authorization: Bearer " + "${TOKEN}", id="bearer-placeholder"),
+        pytest.param("Authorization: Bearer " + "<token>", id="bearer-angle-placeholder"),
+        pytest.param("glpat-" + "short", id="gitlab-too-short"),
+        pytest.param("hvs." + "short", id="vault-too-short"),
         pytest.param("password: " + "12345678", id="value-without-letters"),
     ],
 )
@@ -252,6 +284,42 @@ def test_a_credential_name_with_a_prefix_is_found(line: str) -> None:
     assert find_secret(line) == SecretFinding("a credential with its value", 1)
 
 
-def test_a_longer_aws_secret_with_digits_is_still_a_credential_with_its_value() -> None:
-    finding = find_secret("aws_secret_access_key = " + "a1B2" * 10 + "x")
+@pytest.mark.parametrize("value", ["a1B2" * 10 + "x", "aB" * 20 + "x"], ids=["with-digits", "letters-only"])
+def test_a_longer_aws_secret_is_still_a_credential_with_its_value(value: str) -> None:
+    finding = find_secret("aws_secret_access_key = " + value)
     assert finding is not None and finding.kind == "a credential with its value"
+
+
+# --------------------------------------------------------------------------- value on the next line
+
+NEXT_LINE_VALUE = "s3cr3t" + "Passw0rd"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        pytest.param(("password:", "  " + NEXT_LINE_VALUE), id="yaml-plain"),
+        pytest.param(("db_password: |", "", "  " + NEXT_LINE_VALUE), id="yaml-block-after-a-blank-line"),
+        pytest.param(
+            ("- ORG-4: Log in with password:", "  " + NEXT_LINE_VALUE + " and say nothing."), id="prose"
+        ),
+        pytest.param(('"api_key":', '  "' + NEXT_LINE_VALUE + '"'), id="quoted"),
+    ],
+)
+def test_a_credential_whose_value_is_on_the_next_line_is_found(lines: tuple[str, ...]) -> None:
+    text = _lines("# Systems", *lines)
+    assert find_secret(text) == SecretFinding("a credential with its value", len(lines) + 1)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("password:", "  is kept in the vault."),
+        ("password:", "  ${DB_PASSWORD}"),
+        ("## Secret:", "Rotation is quarterly."),
+        ("password:", "", "- ORG-2: A rule."),
+        ("The password: is required.", "Sentence two follows here."),
+    ],
+)
+def test_a_line_after_a_credential_name_that_is_no_value_is_not_a_secret(lines: tuple[str, ...]) -> None:
+    assert find_secret(_lines("# Systems", *lines)) is None

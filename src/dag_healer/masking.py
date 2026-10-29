@@ -23,8 +23,9 @@ pandas is imported lazily: :func:`mask_value`, :func:`mask_text` and
 those of credential variables, in a text: whole, or as a fragment of 16 or more characters. The
 LLM providers hide them in their error messages, and the CLI's log filter drops the records that
 hold them. :func:`find_secret` also looks for what is shaped like a credential (private keys, AWS
-access keys, GitHub and other tokens, passwords in URLs, ``password: <value>``); the context files
-(:mod:`dag_healer.context`) that hold one are never sent to the model.
+access keys, GitHub and other tokens, ``Authorization`` headers, passwords in URLs,
+``password: <value>``); the context files (:mod:`dag_healer.context`) that hold one are never sent
+to the model.
 """
 
 from __future__ import annotations
@@ -293,12 +294,15 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("an AWS access key ID", re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}(?![A-Z0-9])")),
     (
         "an AWS secret access key",
-        re.compile(r"(?i)aws.?secret.?access.?key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"),
+        re.compile(
+            r"(?i)(?:aws.?)?secret.?(?:access.?)?key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"
+        ),
     ),
     (
         "a GitHub token",
         re.compile(r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})"),
     ),
+    ("a GitLab token", re.compile(r"(?<![A-Za-z0-9_-])glpat-[A-Za-z0-9_-]{20,}")),
     ("an Anthropic API key", re.compile(r"(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}")),
     ("an API key", re.compile(r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{32,}")),
     ("a Stripe key", re.compile(r"(?<![A-Za-z0-9_])[rs]k_live_[A-Za-z0-9]{20,}")),
@@ -308,28 +312,49 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "a Slack webhook URL",
         re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]{16,}"),
     ),
+    ("an Azure storage account key", re.compile(r"(?i)\bAccountKey\s*=\s*[A-Za-z0-9+/]{20,}")),
+    ("a Databricks token", re.compile(r"(?<![A-Za-z0-9_])dapi[0-9a-f]{32}(?![0-9a-f])")),
+    ("a HashiCorp Vault token", re.compile(r"(?<![A-Za-z0-9_])hv[sbr]\.[A-Za-z0-9_-]{24,}")),
+    ("an npm token", re.compile(r"(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])")),
+    ("a SendGrid API key", re.compile(r"(?<![A-Za-z0-9_])SG\.[A-Za-z0-9_-]{16,32}\.[A-Za-z0-9_-]{16,64}")),
     (
         "a JSON web token",
         re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
     ),
 )
+#: An ``Authorization`` header with its credential (``Authorization: Bearer ...``, ``Basic ...``).
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)\bauthorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token|digest)\s+(?P<value>[A-Za-z0-9._~+/=-]{8,})"
+)
 #: A password in a URL (``postgresql://user:secret@host``); placeholders are not credentials.
 _URL_PASSWORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:(?P<value>[^\s@/]+)@[^\s/]+")
-#: A credential given a value (``password: hunter22``, ``api_key = "..."``, ``DB_PASSWORD=...``).
-_ASSIGNMENT_RE = re.compile(
-    r"(?i)(?<![a-z0-9])(?:password|passwd|pwd|passphrase|secret|client.?secret|api.?key|access.?key|auth.?token"
-    r"|access.?token|token)\b[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"'`,;)]{8,})"
+#: The name of a credential: ``password``, ``passwd``, ``passphrase`` and ``secret`` also glued to a
+#: prefix (``PGPASSWORD``, ``DBPASSWORD``), the others as words of their own (``api_key``, ``token``).
+_CREDENTIAL_NAME = (
+    r"(?:password|passwd|passphrase|secret"
+    r"|(?<![a-z0-9])(?:pwd|api.?key|access.?key|auth.?token|access.?token|token))\b[\"']?"
 )
+#: A credential given a value (``password: hunter22``, ``api_key = "..."``, ``DB_PASSWORD=...``).
+_ASSIGNMENT_RE = re.compile(rf"(?i){_CREDENTIAL_NAME}\s*[:=]\s*[\"']?(?P<value>[^\s\"'`,;)]{{8,}})")
+#: A credential name whose value is on the next line that is not blank (``password:`` or
+#: ``password: |`` in YAML, then the value alone on its line).
+_NAME_ALONE_RE = re.compile(rf"(?i){_CREDENTIAL_NAME}[ \t]*[:=][ \t]*(?:[|>][-+]?[ \t]*)?$")
+_LEADING_VALUE_RE = re.compile(r"^\s*[\"']?(?P<value>[^\s\"'`,;)]{8,})")
 #: Values that stand for a credential without being one: ``${TOKEN}``, ``$TOKEN``, ``<password>``,
-#: ``{{ secret }}``, ``***``, ``xxxxxxxx``, ``[hidden]``.
+#: ``{{ secret }}``, ``***``, ``xxxxxxxx``, ``[hidden]``, ``your-api-key``.
 _PLACEHOLDER_RE = re.compile(
-    r"^(?:\$\{[^}]*\}|\$[A-Z_][A-Z0-9_]*|<[^>]*>|\{\{[^}]*\}\}|[*x.#-]+|\[[^\]]*\])$", re.IGNORECASE
+    r"^(?:\$\{[^}]*\}|\$[A-Z_][A-Z0-9_]*|<[^>]*>|\{\{[^}]*\}\}|[*x.#-]+|\[[^\]]*\]"
+    r"|(?:your|my|the|some|example|sample|dummy|fake)(?:[-_.][a-z]+)+)$",
+    re.IGNORECASE,
 )
 _PLACEHOLDER_WORDS = frozenset(
     {"password", "passwd", "secret", "changeme", "example", "redacted", "placeholder", "token", "hidden"}
 )
+#: A value of this many characters is a credential even without digits (``CorrectHorseBattery``).
+LONG_CREDENTIAL_VALUE = 12
 #: Shown for a value of a configured secret (``known`` of :func:`find_secret`).
 KNOWN_SECRET_KIND = "the value of a configured secret"
+_CREDENTIAL_KIND = "a credential with its value"
 
 
 @dataclass(frozen=True)
@@ -349,9 +374,12 @@ def _placeholder(value: str) -> bool:
 
 
 def _credential_value(value: str) -> bool:
-    """True when an assigned value can be a credential: letters and digits, not a placeholder."""
+    """True when an assigned value can be a credential: not a placeholder, and letters and digits
+    or :data:`LONG_CREDENTIAL_VALUE` characters or more."""
     if _placeholder(value):
         return False
+    if len(value) >= LONG_CREDENTIAL_VALUE:
+        return True
     return any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
 
 
@@ -359,27 +387,42 @@ def _line_secret(line: str) -> str | None:
     for kind, pattern in _SECRET_PATTERNS:
         if pattern.search(line):
             return kind
+    if any(not _placeholder(match.group("value")) for match in _AUTHORIZATION_RE.finditer(line)):
+        return "an Authorization header"
     if any(not _placeholder(match.group("value")) for match in _URL_PASSWORD_RE.finditer(line)):
         return "a password in a URL"
     if any(_credential_value(match.group("value")) for match in _ASSIGNMENT_RE.finditer(line)):
-        return "a credential with its value"
+        return _CREDENTIAL_KIND
     return None
+
+
+def _value_on_this_line(line: str) -> bool:
+    """True when ``line`` (after a credential name left alone on its line) starts with a value."""
+    match = _LEADING_VALUE_RE.match(line)
+    return match is not None and _credential_value(match.group("value"))
 
 
 def find_secret(text: str, known: Iterable[str] = ()) -> SecretFinding | None:
     """The first thing in ``text`` that looks like a secret, or ``None``.
 
-    Looks for private keys, AWS access keys, GitHub, Anthropic, Slack, Google and Stripe tokens,
-    JSON web tokens, passwords in URLs and credentials written with their value
-    (``password: ...``, ``api_key = ...``; a placeholder such as ``${TOKEN}`` or ``<password>`` is
-    not one), then for the values in ``known`` (:func:`known_secrets`: whole, or a fragment of 16
-    characters). The finding names the kind and the line, never the value.
+    Looks for private keys, AWS access keys, GitHub, GitLab, Anthropic, Slack, Google, Stripe,
+    Azure storage, Databricks, Vault, npm and SendGrid tokens, JSON web tokens, ``Authorization``
+    headers, passwords in URLs and credentials written with their value (``password: ...``,
+    ``PGPASSWORD=...``, ``api_key = ...``, or the value alone on the next line that is not blank;
+    a placeholder such as ``${TOKEN}`` or ``<password>`` is not one), then for the values in
+    ``known`` (:func:`known_secrets`: whole, or a fragment of 16 characters). The finding names
+    the kind and the line, never the value.
     """
     lines = text.splitlines() or [text]
+    named = False  # the last line that is not blank ends with a credential name and no value
     for number, line in enumerate(lines, start=1):
+        if named and line.strip() and _value_on_this_line(line):
+            return SecretFinding(_CREDENTIAL_KIND, number)
         kind = _line_secret(line)
         if kind is not None:
             return SecretFinding(kind, number)
+        if line.strip():
+            named = bool(_NAME_ALONE_RE.search(line))
     secrets = known_secrets(known)
     if secrets:
         for number, line in enumerate(lines, start=1):
