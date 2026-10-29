@@ -13,7 +13,8 @@ The Organization Context and the ETL Information that the context gathering read
 ``<incident>`` block (:func:`dag_healer.context.context_blocks`). The rule IDs the answer cites are
 checked against what was read (:meth:`dag_healer.context.ContextSnapshot.check`): an unknown ID is
 never "applied" and is flagged. A rule conflict in the answer can only make the decision more
-cautious (:func:`dag_healer.agent.policy.apply_rule_conflict`).
+cautious (:func:`dag_healer.agent.policy.apply_rule_conflict`), and only with a rule that was
+read: a conflict with an unknown rule is flagged and changes nothing.
 """
 
 from __future__ import annotations
@@ -92,7 +93,8 @@ class ClassificationOutcome:
     or ``None``; ``evidence`` merges policy facts and the LLM evidence (masked). ``citations`` are
     the rule IDs the answer cited, checked against the context files read, and ``rule_conflict``
     the rule the answer said the follow-up would go against (``{"rule", "reason", "known",
-    "where"}``), which made the decision ambiguous.
+    "where"}``): it made the decision ambiguous when ``known`` is True, and is only flagged when
+    the rule was not read.
     """
 
     decision: Decision
@@ -318,8 +320,8 @@ def check_citations(
     """The answer's cited rules checked against the context files read, and its rule conflict.
 
     The rule of a conflict counts as cited. Without a snapshot every cited ID is unknown; a
-    conflict naming an unknown rule is kept (``known: False``): it still makes the decision more
-    cautious, and it is flagged.
+    conflict naming an unknown rule is kept (``known: False``) to be flagged, and changes no
+    decision (:func:`~dag_healer.agent.policy.apply_rule_conflict`).
     """
     if classification is None:
         return Citations(), None

@@ -32,9 +32,11 @@ gates, in order:
     -> **ambiguous**.
 ``context_rule`` - after the gates: when the LLM says that the automatic follow-up of a data or
     code decision (the data alert, an automated fix) would go against a rule of the Organization
-    Context or the ETL Information, the decision becomes **ambiguous** ("needs a decision", with the
-    rule and the reason; :func:`apply_rule_conflict`). The context files can only make a decision
-    more cautious: no rule of theirs ever turns a failure into data or code.
+    Context or the ETL Information that was read, the decision becomes **ambiguous** ("needs a
+    decision", with the rule and the reason; :func:`apply_rule_conflict`). A conflict with a rule
+    that was not read (no file read, or an ID no file defines) is flagged and changes nothing. A
+    conflict never turns a failure into data or code. (What the model decides on its own, the
+    ``llm`` gate, can still lean on the text of a rule: see ``docs/context.md``.)
 
 Data-shaped errors: a ``KeyError`` naming a column, pandas ``ParserError`` / ``EmptyDataError``,
 "not in index", "missing column", dtype/conversion errors raised by pandas/numpy/pyarrow on
@@ -747,18 +749,17 @@ def apply_rule_conflict(decision: Decision, conflict: Mapping[str, Any] | None) 
     """The decision once a rule conflict is taken into account: never less cautious than before.
 
     ``conflict`` is ``{"rule": ID, "reason": text}`` plus, from the classification, ``where``
-    (``path@sha`` of a known rule) and ``known`` (False when the ID is not in the context files
-    read: the conflict still counts, flagged). A data or code decision becomes ambiguous with the
-    rule :data:`RULE_CONTEXT`; an ambiguous one keeps its rule and gains the conflict in its reason.
+    (``path@sha`` of the rule) and ``known``. Only a conflict with a rule of the context files read
+    (``known`` is True) counts: the model cannot stop a decision with a rule it made up, and the
+    caller flags the others. A data or code decision becomes ambiguous with the rule
+    :data:`RULE_CONTEXT`; an ambiguous one keeps its rule and gains the conflict in its reason.
     """
-    if not conflict or not str(conflict.get("rule") or "").strip():
+    if not conflict or not str(conflict.get("rule") or "").strip() or conflict.get("known") is not True:
         return decision
     rule = mask_text(conflict.get("rule")).strip()
     reason = mask_text(conflict.get("reason") or "no reason given").strip().rstrip(".")
     where = str(conflict.get("where") or "").strip()
     named = f"rule {rule}" + (f" ({where})" if where else "")
-    if conflict.get("known") is False:
-        named += ", which is not in the context files that were read"
     follow_up = FOLLOW_UPS.get(decision.category)
     if follow_up is None:
         decision.reason = f"{decision.reason} It also goes against {named}: {reason}."

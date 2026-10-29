@@ -504,6 +504,23 @@ class RepairTools:
         return rel, None
 
     def _read_denial(self, rel: str) -> str | None:
+        """Why reading ``rel`` is denied, for the path as written and for the path a link in the
+        clone leads to (``src/notes.md`` linked to the Organization Context); ``None`` otherwise."""
+        denial = self._path_read_denial(rel)
+        if denial is not None:
+            return denial
+        try:
+            real = (self.root / rel).resolve().relative_to(self.root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if real == rel:
+            return None
+        denial = self._path_read_denial(real)
+        if denial is None:
+            return None
+        return denial.replace(f"reading {real}", f"reading {rel} (a link to {real})", 1)
+
+    def _path_read_denial(self, rel: str) -> str | None:
         # Deny checks compare the components as the protected-path policy does: case-folded as
         # Windows and macOS fold names (".GIT" is ".git", "ſ" is "s") and without the trailing
         # dots and spaces Windows drops (_resolve has already refused "..").
@@ -1177,7 +1194,7 @@ class _Repair:
         self.context_paths = context_paths(cfg)
         self.context = context_snapshot_of(ctx)  # the context files the gathering read, if any
         self.prior_citations = citations or Citations()  # what the classification cited
-        self.cited: list[str] = []  # what the repair sessions cited (checked when used)
+        self.cited: list[str] = []  # what the accepted sessions and a stop cited (checked when used)
         self.linked: frozenset[str] | None = None  # what protected links of the base commit lead to
         self.setup_findings: list[SetupFinding] = []  # GitHub setup problems for "Before you merge"
         self.layout: TestLayout | None = None
@@ -1261,7 +1278,12 @@ class _Repair:
         }
 
     def _session(self, phase: Phase, tools: RepairTools, prompt: str) -> RepairSessionResult:
-        """Run one agent session, charging its tokens to the incident budget."""
+        """Run one agent session, charging its tokens to the incident budget.
+
+        A stop for a rule (``stop_for_rule``) ends the repair even when the session then fails
+        (a refusal, an API error, anything else), and its citations count. The citations of a
+        session that ends without a stop count only once its attempt is accepted.
+        """
         if self.budget.exhausted:
             raise RepairAborted(self._budget_message(phase))
         self.result.attempts += 1
@@ -1280,18 +1302,25 @@ class _Repair:
                 max_tokens_budget=self.budget.remaining,
                 scenario=self._scenario(phase),
             )
-        except LLMUnavailable as exc:
+        except Exception as exc:
             partial = getattr(exc, "partial", None)
             if partial is not None:  # tokens spent before the failure still count
                 self.budget.add(partial.input_tokens, partial.output_tokens)
-            self.cited.extend(tools.cited)
             if tools.rule_conflict is not None:  # the agent stopped for a rule before the failure
+                logger.warning(
+                    "incident %s: the %s session failed after the agent stopped for %s (%s); the stop stands",
+                    self.incident_id,
+                    phase,
+                    tools.rule_conflict.get("rule"),
+                    type(exc).__name__,
+                )
+                self.cited.extend(tools.cited)
                 raise RuleConflictStop(tools.rule_conflict) from exc
             raise
         self.budget.add(session.input_tokens, session.output_tokens)
         self.result.tokens_used = self.budget.used
-        self.cited.extend(tools.cited)
         if tools.rule_conflict is not None:  # a person decides: nothing else of this repair runs
+            self.cited.extend(tools.cited)
             if session.final_text:
                 self.agent_summary = mask_text(session.final_text).strip()[:1500] or self.agent_summary
             raise RuleConflictStop(tools.rule_conflict)
@@ -1502,6 +1531,7 @@ class _Repair:
                 before, written, self.cfg.limits.max_diff_lines, code, step=self.words["step"]
             )
             if problem is None:
+                self.cited.extend(tools.cited)  # an accepted attempt: its citations count
                 self.test_rel = written
                 self.test_code = code
                 self.kept_paths = set(tools.written_paths)
@@ -1550,6 +1580,7 @@ class _Repair:
             self._session("fix", tools, prompt)
             problem, output = self._check_fix(tools)
             if problem is None:
+                self.cited.extend(tools.cited)  # an accepted attempt: its citations count
                 self.kept_paths |= set(tools.written_paths)
                 self.result.pytest_after = output
                 return
