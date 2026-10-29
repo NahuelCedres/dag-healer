@@ -378,7 +378,8 @@ def _approve_contract(cfg: HealerConfig, sf: SessionFactory, command: Mapping[st
     if contract.dag_id != dag_id:
         raise CommandFailed(f"{path.name} holds the contract of DAG {contract.dag_id}, not {dag_id}.")
     reviewed = payload.get("source_hash")
-    if contract.is_approved and not is_stale(contract):
+    newly_approved = not (contract.is_approved and not is_stale(contract))
+    if not newly_approved:
         message = f"The contract of {dag_id} was already approved by {contract.approved_by}."
         approved = contract
     else:
@@ -409,7 +410,8 @@ def _approve_contract(cfg: HealerConfig, sf: SessionFactory, command: Mapping[st
             source_hash=approved.source_hash,
             orchestrator=str(command.get("orchestrator") or DEFAULT_ORCHESTRATOR),
         )
-        if _finish(session, command["id"], COMMAND_APPLIED, message, actor=actor, data=data):
+        applied = _finish(session, command["id"], COMMAND_APPLIED, message, actor=actor, data=data)
+        if applied and newly_approved:  # an approval of an approved contract decides nothing new
             _log_decision(session, command, message, data=data)
     logger.info("dag-healer worker: %s", _clip(message, 500))
     return _outcome(command, COMMAND_APPLIED, message, data)

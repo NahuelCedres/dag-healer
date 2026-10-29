@@ -457,6 +457,25 @@ def test_the_context_never_turns_a_failure_into_data(lab_repo: Path) -> None:
     assert outcome.citations.applied_ids == ["LAB-1"]
 
 
+def test_the_decision_log_names_the_model_that_answered() -> None:
+    from dag_healer.worker.pipeline import classification_decider, model_name
+
+    class Served:
+        name = "anthropic"
+        model = "claude-opus-5-5"
+        last_model: str | None = "claude-opus-4-8"
+
+    served = Served()
+    assert model_name(served) == "claude-opus-4-8"
+    served.last_model = None
+    assert model_name(served) == "claude-opus-5-5"
+    served.last_model = "claude-sonnet-5-5"
+    answer = code_answer()
+    decision = Decision("code", 0.9, "r", "llm", True)
+    outcome = type("Outcome", (), {"decision": decision, "classification": answer})()
+    assert classification_decider(outcome, served) == ("model", "claude-sonnet-5-5", 0.9)
+
+
 def test_apply_rule_conflict_only_ever_adds_caution() -> None:
     data = Decision("data", 0.95, "The approved contract is violated.", "a_contract_violated", False)
     stopped = apply_rule_conflict(
@@ -1025,6 +1044,12 @@ def test_a_contract_approval_is_logged_without_an_incident(lab_repo: Path, tmp_p
         DAG,
     )
     assert decision.decided_by == "Ana Lopez"
+
+    with session_scope(cfg.database_url) as session:  # approving it again decides nothing new
+        store_repo.enqueue_command(session, kind="approve_contract", dag_id=DAG, actor="Bo Diaz", payload={})
+    [again] = apply_commands(cfg, None, None)
+    assert again.status == "applied" and "already approved by Ana Lopez" in again.message
+    assert [(d.decision, d.decided_by) for d in decisions(cfg)] == [("approve_contract", "Ana Lopez")]
 
 
 def test_a_triage_that_reads_the_same_files_again_reuses_its_snapshot(lab_repo: Path, tmp_path: Path) -> None:

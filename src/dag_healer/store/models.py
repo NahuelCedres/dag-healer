@@ -458,10 +458,11 @@ class DecisionRecord(Base):
     (the action a person took: ``resolve_data``, ``resolve_code``, ``ignore``, ``retry_repair``,
     ``retry_task``, ``approve_contract``) or ``repair`` (``fix_proposed``, ``fix_failed``,
     ``rule_conflict``). ``decided_by_kind`` is ``rule`` (``decided_by``: the fixed rule, such as
-    ``a``, ``b``, ``c``, ``d``, ``infra`` or ``repair``), ``model`` (the model's name, with its
-    ``confidence`` when it gave one) or ``person`` (the person's name). ``rules`` are the cited
-    rules that exist in the context files read (``RuleRef.to_dict``), ``unknown_rules`` the cited
-    IDs that do not. A contract approval has no incident.
+    ``a``, ``b``, ``c``, ``d``, ``infra`` or ``repair``), ``model`` (the name of the model that
+    answered, a fallback model included, with its ``confidence`` when it gave one) or ``person``
+    (the person's name). ``rules`` are the cited rules that exist in the context files read
+    (``RuleRef.to_dict``), ``unknown_rules`` the cited IDs that do not. A contract approval (from
+    the console or from ``dag-healer contracts approve``, ``data.via == "cli"``) has no incident.
     """
 
     __tablename__ = "healer_decisions"

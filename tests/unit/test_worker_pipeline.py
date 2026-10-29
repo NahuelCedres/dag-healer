@@ -447,6 +447,32 @@ def _stored_text(bench: Bench) -> str:
 # =========================================================================== the demo flow
 
 
+def test_a_rule_conflict_on_a_data_verdict_is_the_model_s_decision_in_the_event_and_the_log(
+    bench: Bench,
+) -> None:
+    from dag_healer.agent.llm import RuleConflict
+
+    class ConflictProvider(FakeProvider):
+        """The fake answers, plus a conflict with a rule of the demo's Organization Context."""
+
+        def classify(self, *, system: str, prompt: str) -> Any:
+            answer, tokens = super().classify(system=system, prompt=prompt)
+            conflict = RuleConflict(rule="ORG-2", reason="the export's owner asked for no alert this week")
+            return answer.model_copy(update={"rule_conflict": conflict}), tokens
+
+    bench.fail("sales_daily_etl")
+    bench.run_once(provider=ConflictProvider())
+
+    sales = bench.incident("sales_daily_etl")
+    assert (sales["status"], sales["category"]) == ("waiting_human", "ambiguous")
+    event = _classification(bench.events(sales["id"]))
+    assert (event["rule"], event["decided_by"]) == ("context_rule", "fake")
+    assert event["needs_llm_confirmation"] is False  # gate (a) took the data verdict
+    with session_scope(bench.cfg.database_url) as session:
+        [decision] = [row for row in store_repo.list_decisions(session) if row.stage == "classification"]
+        assert (decision.decided_by_kind, decision.decided_by) == ("model", "fake")
+
+
 def test_full_flow_on_the_example_repo(bench: Bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for dag_id in ETL_TASKS:
         bench.fail(dag_id, extra_line="loaded the CRM export for olivia.martin@example.com")

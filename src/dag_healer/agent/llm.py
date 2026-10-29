@@ -432,6 +432,9 @@ class AnthropicProvider:
         self.effort = (effort or getattr(llm, "effort", None) or "high").strip()
         self.max_tokens = int(max_tokens or getattr(llm, "max_tokens", None) or 16000)
         self.fallbacks = bool(getattr(llm, "fallbacks", True) if fallbacks is None else fallbacks)
+        #: The model that wrote the last answer of the last call (a fallback model when one
+        #: answered; ``None`` before any answer): the decision log names it.
+        self.last_model: str | None = None
         self._client = client
         if self.effort not in EFFORT_LEVELS:
             logger.warning(
@@ -517,11 +520,18 @@ class AnthropicProvider:
         provider of a platform without server-side fallbacks logs none."""
         _log_fallback_hops(message)
 
+    def _served(self, message: Any) -> None:
+        """Remember the model that wrote ``message`` (:attr:`last_model`): the answer's ``model``,
+        which names the fallback model when one answered."""
+        served = _get(message, "model")
+        self.last_model = served.strip() if isinstance(served, str) and served.strip() else self.model
+
     # ------------------------------------------------------------------ classify
     def classify(self, *, system: str, prompt: str) -> tuple[Classification, int]:
         """One structured-output call; returns the parsed classification and the tokens used."""
         import pydantic
 
+        self.last_model = None
         client = self._get_client()
         kwargs = self._request_kwargs(system, prompt)
         action = "the incident classification"
@@ -547,6 +557,7 @@ class AnthropicProvider:
 
         input_tokens, output_tokens = usage_tokens(getattr(message, "usage", None))
         self._log_fallbacks(message)
+        self._served(message)
         self._raise_for_stop(
             getattr(message, "stop_reason", None), getattr(message, "stop_details", None), action
         )
@@ -583,6 +594,7 @@ class AnthropicProvider:
         """
         from anthropic import beta_tool
 
+        self.last_model = None
         client = self._get_client()
         runnable = [fn if hasattr(fn, "to_dict") and hasattr(fn, "call") else beta_tool(fn) for fn in tools]
         budget = TokenBudget(max(0, int(max_tokens_budget)))
@@ -631,6 +643,7 @@ class AnthropicProvider:
             budget.add_usage(getattr(message, "usage", None))
             result.stop_reason = getattr(message, "stop_reason", None)
             self._log_fallbacks(message)
+            self._served(message)
             text = _message_text(message)
             if text:
                 result.final_text = text

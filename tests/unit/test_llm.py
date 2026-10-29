@@ -319,9 +319,28 @@ def test_classify_handles_fallback_blocks() -> None:
             },
         )
     )
-    result, tokens = provider(api).classify(system="S", prompt="P")
+    prov = provider(api)
+    assert prov.last_model is None
+    result, tokens = prov.classify(system="S", prompt="P")
     assert result.category == "code"
     assert tokens == 60
+    assert (prov.model, prov.last_model) == ("claude-opus-5-5", "claude-opus-4-8")  # who answered
+
+
+def test_the_model_of_the_last_answer_is_kept_and_reset_on_every_call() -> None:
+    api = FakeAPI(
+        message([{"type": "text", "text": CLASSIFICATION_JSON}]),
+        message([{"type": "text", "text": "ok"}], model="claude-opus-4-8"),
+        (500, {"type": "error", "error": {"type": "api_error", "message": "boom"}}),
+    )
+    prov = provider(api, fallbacks=False)
+    prov.classify(system="S", prompt="P")
+    assert prov.last_model == "claude-opus-5-5"
+    prov.repair_session(system="S", prompt="P", tools=make_tools([]), max_tokens_budget=10_000, scenario={})
+    assert prov.last_model == "claude-opus-4-8"
+    with pytest.raises(LLMUnavailable):
+        prov.classify(system="S", prompt="P")
+    assert prov.last_model is None
 
 
 @pytest.mark.parametrize("fallbacks", [True, False])

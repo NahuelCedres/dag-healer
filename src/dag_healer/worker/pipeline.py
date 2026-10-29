@@ -1076,10 +1076,12 @@ REPAIR_CHECKS = "repair"
 
 
 def model_name(provider: Any) -> str:
-    """The name of the model behind ``provider`` (its ``model``, else the provider's name)."""
-    model = getattr(provider, "model", None)
-    if isinstance(model, str) and model.strip():
-        return model.strip()
+    """The name of the model behind ``provider``: the one that wrote its last answer
+    (``last_model``, a fallback model when one answered), else its ``model``, else its name."""
+    for attribute in ("last_model", "model"):
+        value = getattr(provider, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return str(getattr(provider, "name", None) or "llm")
 
 
@@ -1223,7 +1225,9 @@ class _Pipeline:
             incident = self._get(session)
             files = None
             if ctx.context_snapshot is not None:
-                record = store_repo.add_context_snapshot(session, incident, ctx.context_snapshot.to_dict())
+                record = store_repo.add_context_snapshot(
+                    session, incident, ctx.context_snapshot.to_dict(), reuse_latest=True
+                )
                 self.snapshot_id = record.id
                 files = context_event_data(ctx.context_snapshot)
             if ctx.exception_type:
@@ -1270,11 +1274,9 @@ class _Pipeline:
         decision = outcome.decision
         violations, status = evidence_violations(ctx)
         classification = outcome.classification
-        decided_by = (
-            getattr(self.provider, "name", "llm")
-            if classification is not None and decision.needs_llm_confirmation
-            else "policy"
-        )
+        kind, who, confidence = classification_decider(outcome, self.provider)
+        # The same decider as the decision log: the provider when the model decided, else the policy.
+        decided_by = getattr(self.provider, "name", "llm") if kind == "model" else "policy"
         with self.sf() as session:
             incident = self._get(session)
             incident.category = decision.category
@@ -1313,7 +1315,6 @@ class _Pipeline:
                     **citation_event_data(outcome.citations, outcome.rule_conflict),
                 },
             )
-            kind, who, confidence = classification_decider(outcome, self.provider)
             store_repo.record_decision(
                 session,
                 incident=incident,

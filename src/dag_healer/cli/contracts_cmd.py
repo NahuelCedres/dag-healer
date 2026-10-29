@@ -83,9 +83,16 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def sync_contract_state(cfg: HealerConfig, contract: Contract, path: Path) -> str | None:
-    """Cache the contract state in the store; returns an error message instead of raising."""
+def sync_contract_state(
+    cfg: HealerConfig, contract: Contract, path: Path, *, approved_now: bool = False
+) -> str | None:
+    """Cache the contract state in the store; returns an error message instead of raising.
+
+    ``approved_now``: the command just approved ``contract``, and the approval goes to the
+    decision log too (a person decided, without an incident), as the worker's approvals do.
+    """
     try:
+        from dag_healer.store import repo as store_repo
         from dag_healer.store import session_scope, upsert_contract_state
 
         with session_scope(cfg.database_url) as session:
@@ -98,6 +105,24 @@ def sync_contract_state(cfg: HealerConfig, contract: Contract, path: Path) -> st
                 approved_at=contract.approved_at,
                 source_hash=contract.source_hash,
             )
+            if approved_now and contract.approved_by:
+                try:
+                    relpath = path.resolve().relative_to(cfg.repo_root).as_posix()
+                except ValueError:
+                    relpath = path.as_posix()
+                store_repo.record_decision(
+                    session,
+                    dag_id=contract.dag_id,
+                    stage="human",
+                    decision="approve_contract",
+                    decided_by_kind="person",
+                    decided_by=contract.approved_by,
+                    reason=(
+                        f"{contract.approved_by} approved the contract of {contract.dag_id} "
+                        f"({len(contract.datasets)} dataset(s)) with dag-healer contracts approve."
+                    ),
+                    data={"path": relpath, "source_hash": contract.source_hash, "via": "cli"},
+                )
     except Exception as exc:  # the store is optional for approvals
         first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
         return f"{type(exc).__name__}: {first_line}"[:300]
@@ -151,7 +176,7 @@ def _cmd_approve(args: argparse.Namespace) -> int:
             f"by {approved.approved_by} at {_format_time(approved.approved_at)}: {path}"
         )
 
-    problem = sync_contract_state(cfg, approved, path)
+    problem = sync_contract_state(cfg, approved, path, approved_now=approved is not contract)
     if problem:
         warn(f"could not record the approval in the store ({problem}); the YAML file is the source of truth")
     return 0

@@ -958,6 +958,11 @@ class BedrockProvider(AnthropicProvider):
         ``fallback_message`` iteration in an answer can only come from a misbehaving endpoint,
         and the model names it gives are not logged."""
 
+    def _served(self, message: Any) -> None:
+        """The configured model wrote the answer: Amazon Bedrock has no server-side fallbacks,
+        and the model name an answer gives is not used (see :meth:`_log_fallbacks`)."""
+        self.last_model = self.model
+
     # ------------------------------------------------------------------ classify
     def classify(self, *, system: str, prompt: str) -> tuple[Classification, int]:
         """One classification; returns it and the tokens of every request made for it.

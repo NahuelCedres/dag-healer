@@ -1901,6 +1901,40 @@ def test_approve_survives_an_unreachable_store(
     assert contract.is_approved and contract.approved_by == "carol"
 
 
+def test_a_contract_approval_from_the_cli_is_in_the_decision_log_once(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dag_healer.config import load_config
+    from dag_healer.store import dispose_engines, session_scope
+    from dag_healer.store import repo as store_repo
+
+    for _time in range(2):  # the second approval finds it approved: nothing new is decided
+        assert main([*_cfg_args(repo), "contracts", "approve", "sales_daily_etl", "--by", "Ana Lopez"]) == 0
+    capsys.readouterr()
+
+    cfg = load_config(repo / "healer.yaml")
+    try:
+        with session_scope(cfg.database_url) as session:
+            rows = [
+                (d.stage, d.decision, d.decided_by_kind, d.decided_by, d.dag_id, d.incident_id, d.data)
+                for d in store_repo.list_decisions(session)
+            ]
+    finally:
+        dispose_engines()
+    source_hash = load_contract(contract_path(repo / "healer" / "contracts", "sales_daily_etl")).source_hash
+    assert rows == [
+        (
+            "human",
+            "approve_contract",
+            "person",
+            "Ana Lopez",
+            "sales_daily_etl",
+            None,
+            {"path": "healer/contracts/sales_daily_etl.yaml", "source_hash": source_hash, "via": "cli"},
+        )
+    ]
+
+
 def test_stale_contract_is_listed_and_can_be_reapproved(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
