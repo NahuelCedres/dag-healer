@@ -138,7 +138,8 @@ A rule is a list item whose text starts with its ID and a colon:
 - IDs are stable: the model cites them, PR.md lists them and the decision log keeps them. Give a
   new rule the next free number, and never reuse the number of a rule you deleted.
 - HTML comments (`<!-- ... -->`) and fenced code blocks never hold rules. Comments are also left
-  out of what the model reads, so they are the place for notes to the team.
+  out of what the model reads (each one counts as a space, so it never joins the words around
+  it), so they are the place for notes to the team.
 
 dag-healer parses the files strictly and reports, with the line, everything that looks like a rule
 but is not one: `ORG1`, `org-1`, `ORG-01`, `**ORG-1**`, an ID without its colon, an ID in a heading
@@ -165,45 +166,74 @@ names it in parentheses after its ID:
 ## What dag-healer does with them
 
 1. **Reading.** Every triage of an incident reads the Organization Context and the pipeline's ETL
-   Information from the commit of `repo.base_branch` in the worker's checkout of the repository
-   (else `origin/<base_branch>`, else `HEAD`, which a git-sync checkout uses). It never reads the
-   working tree: commit a change to the base branch before dag-healer uses it. A file that is in
-   the working tree but not in that commit gets a note in the incident. Each file read is recorded
-   with its path and the commit (`path@sha`).
-2. **Refusing.** A file that holds what looks like a secret (a private key, an AWS access key, a
-   GitHub, Anthropic or Slack token, a password in a URL, `password: ...`, or the value of one of
-   the worker's credentials), is larger than `context.max_file_bytes`, is not UTF-8 text or is a
-   symbolic link is refused: nothing of it reaches the model or the store. The incident and
-   `dag-healer doctor` say why, without the value.
+   Information from the worker's checkout of the repository, from the commit of
+   `repo.base_branch`: the newer of the local branch and `origin/<base_branch>` (a checkout that
+   fetches without updating its local branch reads the fetched commit; when the two have diverged,
+   the local branch is read and the incident says so), else `HEAD`, which a git-sync checkout
+   uses. It never reads the working tree: commit a change to the base branch before dag-healer
+   uses it. A file that is in the working tree but not in that commit gets a note in the incident.
+   Each file read is recorded with its path and the commit (`path@sha`).
+2. **Refusing.** A file that holds what looks like a secret is refused: nothing of it reaches the
+   model or the store. dag-healer looks for private keys, AWS access keys, GitHub, GitLab,
+   Anthropic, Slack, Google, Stripe, Azure storage, Databricks, Vault, npm and SendGrid tokens,
+   `Authorization` headers, passwords in URLs, credentials written with their value
+   (`password: ...`, `PGPASSWORD=...`, or the value alone on the next line) and the values of the
+   worker's credentials. It looks at the file as it is, without its HTML comments (a comment can
+   split a value) and as the model would read it: a rule whose lines are joined, the owner, the
+   text. A file larger than `context.max_file_bytes`, not UTF-8 text or a symbolic link is refused
+   too. The incident and `dag-healer doctor` say why, without the value.
 3. **Masking.** The text and the rules of the files that are read are masked like every other
    prompt input: e-mail addresses, phone numbers, IP addresses, IBANs and long numbers become
-   placeholders before anything else sees them.
+   placeholders before anything else sees them. Dates are not masked, birth dates included: keep
+   them out of the files.
 4. **Classifying.** The classification prompt holds an `<organization_context>` and an
    `<etl_information>` block, before the incident. The model uses them to understand the business
    and cites, in `rules_cited`, the rules that apply. dag-healer checks every cited ID against the
    files it read: an unknown ID is never counted as applied, and it is flagged.
-5. **Only more cautious.** The rules never override dag-healer's fixed rules: a DATA verdict still
-   needs a violated, approved contract, a CODE verdict is still refused while an approved contract
-   is violated, and infrastructure failures still go to a person. When the model says that the
-   automatic follow-up of its verdict would go against a rule (the alert of a DATA verdict, the
-   automated fix of a CODE verdict), the incident waits for a person instead: "Needs a decision",
-   with the rule and the reason.
+5. **Never above the fixed rules.** The rules never override dag-healer's fixed rules: a DATA
+   verdict still needs a violated, approved contract, a CODE verdict is still refused while an
+   approved contract is violated, and infrastructure failures still go to a person. When the model
+   says that the automatic follow-up of its verdict would go against a rule that dag-healer read
+   (the alert of a DATA verdict, the automated fix of a CODE verdict), the incident waits for a
+   person instead: "Needs a decision", with the rule and the reason. A conflict with a rule that
+   was not read (an ID no file defines, or no file read at all) is flagged and changes nothing.
+   Where the model decides on its own (a CODE verdict it confirms, the failures no fixed rule
+   decides), what a rule says still weighs on its verdict, towards CODE too: a rule that calls a
+   case a bug in the pipeline's code makes CODE more likely. Write rules about what a fix may do,
+   not about how to classify.
 6. **Repairing.** Both repair phases (the failing test, then the fix) get the same blocks, and the
    agent two more tools: `cite_rules`, for the rules that shaped its work, and `stop_for_rule`,
    when the only fix it sees would go against a rule. A stop ends the repair before anything is
-   committed or pushed, and the incident waits for a person with the rule and the reason. The
-   agent's file tools never read the context files (it has them in the prompt, masked) and never
-   change them: they are protected paths, like the contracts.
+   committed or pushed, even when the session fails after it, and the incident waits for a person
+   with the rule and the reason. The agent's file tools never read the context files (it has them
+   in the prompt, masked), not even through a link, and never change them: they are protected
+   paths, like the contracts.
 7. **Reporting.** The pull request description (and PR.md) has a "Rules applied" section: each rule
-   that the classification or the repair cited, with a short text and `path@sha`, then the cited
-   IDs that do not exist, flagged.
+   that the classification, the accepted test and fix, or a stop cited (an attempt that was
+   rejected and rolled back does not count), with a short text and `path@sha`, then the cited IDs
+   that do not exist, flagged.
 8. **Remembering.** The store keeps what each triage read (the context snapshot: paths, commits,
    front matter, parsed rules, problems, the masked text, and the refused files with their
-   reasons) and the **decision log**: every classification (by a fixed rule such as `a`, `b`,
-   `c`, `d` or `infra`, or by the model with its confidence), every human action (by the person
-   who took it, with their note) and every repair outcome (fix proposed, fix failed, stopped by a
-   rule conflict), each with the rules it cited. The console can show both from the store, without
-   the worker's checkout.
+   reasons; a triage that reads the same files again reuses it) and the **decision log**: every
+   classification (by a fixed rule such as `a`, `b`, `c`, `d` or `infra`, or by the model that
+   answered, a fallback model included, with its confidence), every human action (by the person
+   who took it, with their note), every contract approval (from the console or with
+   `dag-healer contracts approve`) and every repair outcome (fix proposed, fix failed, stopped by a
+   rule conflict), each with the rules it cited. The console does not show them yet: they are in
+   the store, so a view needs no access to the worker's checkout.
+
+### After a stop for a rule
+
+The incident waits for a person, with the rule and the reason. The way forward:
+
+- **The rule is wrong or too broad:** change it in a pull request to the base branch. Once it is
+  merged, "Retry repair" runs the repair again with the new rule.
+- **The fix is right but needs a person:** fix it by hand in a pull request of your own, then
+  resolve the incident.
+- **Nothing should change:** ignore the incident.
+
+"Retry repair" with the rule unchanged runs the same repair, and the agent may stop again for the
+same rule: the note you write with it does not reach the agent yet.
 
 docs/security.md (section 4.7) describes the context as prompt input: what an author of the files
 can and cannot make dag-healer do.
@@ -218,8 +248,9 @@ context:
 ```
 
 These are the defaults, so the section is optional. Both paths are relative to `repo.path` and
-stay inside the repository. `repo.allowed_paths` cannot name them: a fix never changes the context
-files.
+stay inside the repository, out of `.git`. The Organization Context cannot be the ETL Information
+folder or a file in it (compared without case, as macOS and Windows compare names).
+`repo.allowed_paths` cannot name them: a fix never changes the context files.
 
 ## Starter files
 
@@ -249,9 +280,9 @@ A starter file has no rule until you write one: its examples are inside comments
 ```
 
 It warns about invalid files, files overdue for a review, files refused for their size or
-encoding, edits and files that are not committed, and a base branch it could not find. A secret is
-an error: remove it from the file and from the repository's history, and rotate it. Without any
-context file the line is skipped.
+encoding, edits and files that are not committed, a base branch it could not find, and a base
+branch that has diverged from its `origin` copy. A secret is an error: remove it from the file and
+from the repository's history, and rotate it. Without any context file the line is skipped.
 
 ## Writing good rules
 

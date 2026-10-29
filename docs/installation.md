@@ -184,8 +184,9 @@ dag-healer reads the team's knowledge from two kinds of Markdown files in the re
 Organization Context (`healer/organization.md`: the business, its systems and owners, a glossary,
 regulations, and the rules for every DAG, `ORG-1`, `ORG-2`, ...) and the ETL Information of each
 DAG (`healer/etl/<dag_id>.md`, with rule IDs of its own prefix, such as `LAB-1`). The model reads
-them before it classifies a failure or proposes a fix, cites the rules it applies, and can only
-become more cautious because of them. [docs/context.md](context.md) explains how to write them.
+them before it classifies a failure or proposes a fix, and cites the rules it applies; a rule never
+overrides dag-healer's fixed rules, and a fix that would break one waits for a person.
+[docs/context.md](context.md) explains how to write them.
 
 ```yaml
 context:

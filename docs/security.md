@@ -19,7 +19,8 @@ gaps (section 5) and deployment advice (section 6). Module paths are relative to
   automatically.
 - The Organization Context and the ETL Information that the team writes are prompt input as well:
   read from the base branch's commit only, refused when they hold a secret or are too large,
-  masked, and never above the policy: they can only make a decision more cautious (4.7).
+  masked, and never above the policy: a rule conflict can only make a decision wait for a person
+  (4.7).
 - **The CODE path runs model-written code before a person reviews it.** Every pytest run of a
   repair (the repository's own tests, the generated test and the fix) happens in the test
   sandbox (`repo.sandbox`). By default, that is a fresh container for every run: no network, no
@@ -115,7 +116,7 @@ follows from untrusted input.
 | Dataset rows | Upstream deliveries | Contract validation; a masked sample in the store, the prompts, the UI and the alerts |
 | Pushed failure hints (`/events/task-failed` and other adapter channels) | Any holder of the ingest token, which includes every task process | Stored as pending events and confirmed through the Airflow API. The pushed error text becomes the summary of the incident |
 | Repository content (DAG files, modules, tests, committed data) | Repository committers | Sent to the model unmasked; imported and executed by pytest in the test sandbox |
-| The Organization Context and the ETL Information (`healer/organization.md`, `healer/etl/*.md`) | Repository committers who can change the base branch | Read from the base branch's commit; refused when they hold a secret or are too large; masked, then sent to the model in blocks of their own, and stored as the context snapshot. They can make a decision more cautious, never less (4.7) |
+| The Organization Context and the ETL Information (`healer/organization.md`, `healer/etl/*.md`) | Repository committers who can change the base branch | Read from the base branch's commit; refused when they hold a secret or are too large; masked, then sent to the model in blocks of their own, and stored as the context snapshot. A rule conflict can only make a decision wait for a person; what a rule says still weighs on the verdicts the model takes (4.7) |
 | Model output: the classification | The model, steered by the inputs above | Schema check, then the deterministic policy |
 | Model output: the diagnosis, evidence and fix summary, and the repair agent's final summary | Same | Masked, then the store, the UI, the alerts and the pull request |
 | Model output: tool calls, the generated test and the fix | Same | Path rules, checked again before the commit (4.2); written to the clone; **executed by pytest in the test sandbox** (4.3); committed, pushed and proposed as a pull request |
@@ -227,8 +228,8 @@ Enforced by the repair tools (`agent/repair.py`):
   descriptions sent to the model name only the main protected paths; a refused write says why.
 - Never read or searched: `.git/**`, `.env*`, `healer.yaml`, `data/**`, `fixtures/**`, data
   files and the context files (the prompt holds them, masked), compared as the protected paths
-  are. `read_file` checks these rules on the path as
-  written, not on the target of a symbolic link (G5).
+  are. `read_file` and `search` check these rules on the path as written and on the path that a
+  symbolic link inside the clone leads to.
 - The work happens in a fresh clone of the committed history. The clone is deleted afterwards
   unless `debug` is on. Test runs work on a throw-away copy of the clone, never on the clone
   itself (4.3).
@@ -829,18 +830,26 @@ within the controls below.
 Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
 
 - **Read from the base branch only.** The worker reads both files from the commit of
-  `repo.base_branch` in its checkout (else `refs/remotes/origin/<base_branch>`, else `HEAD`), with
-  `git ls-tree` and `git cat-file`, never from the working tree: neither the model-written test
-  and fix nor anything else that runs in a checkout can change what the next triage reads. A
-  change reaches the model only once it is committed to the base branch, which the base branch's
-  rules (4.5) make a reviewed pull request. Every file read is recorded with its path, the commit
-  and its blob id.
+  `repo.base_branch` in its checkout (the newer of `refs/heads/<base_branch>` and
+  `refs/remotes/origin/<base_branch>`, the local branch with a note when they diverged, else
+  `HEAD`), with `git ls-tree` and `git cat-file`, never from the working tree: an uncommitted edit,
+  or a file that the model-written test and fix or anything else wrote in a checkout, never
+  reaches the next triage. A change reaches the model only once it is committed to the base
+  branch, which the base branch's rules (4.5) make a reviewed pull request. Every file read is
+  recorded with its path, the commit and its blob id. This protects against writes to the working
+  tree only: a process that can write into the checkout's `.git` can move the base branch or add
+  a commit. The repair runs in a clone of its own, and its pytest runs in the test sandbox (4.3);
+  with the `process` backend, that code runs with the worker's permissions.
 - **Refused files.** A file is refused, and nothing of it is sent to the model or stored, when it:
-  - holds what looks like a secret (`masking.find_secret`): a private key, an AWS access key, a
-    GitHub, Anthropic, Slack, Google or Stripe token, a JSON web token, a password in a URL, a
-    credential written with its value (`password: ...`), or the value of a secret of
-    `healer.yaml` or of a credential variable of the worker's environment (whole, or a fragment
-    of 16 characters);
+  - holds what looks like a secret (`masking.find_secret`): a private key, an AWS access key or
+    secret key, a GitHub, GitLab, Anthropic, Slack, Google, Stripe, Azure storage, Databricks,
+    Vault, npm or SendGrid token, a JSON web token, an `Authorization` header, a password in a
+    URL, a credential written with its value (`password: ...`, a name glued to a prefix such as
+    `PGPASSWORD=...`, a value of 12 characters or more even without digits, or the value alone on
+    the next line), or the value of a secret of `healer.yaml` or of a credential variable of the
+    worker's environment (whole, or a fragment of 16 characters). The check reads the file as it
+    is, without its HTML comments (so a comment cannot split a value), and as the model would
+    read it: each rule with its lines joined, the owner, the text and the problems;
   - is larger than `context.max_file_bytes` (16 KB by default; it is not even read);
   - is not UTF-8 text, or is a symbolic link or no regular file.
 
@@ -848,40 +857,52 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
   Doctor reports a file refused for a secret as an error: remove the secret from the repository's
   history and rotate it.
 - **Masked personal data.** The text of a file that is read, and each of its rules, go through
-  `mask_text` (4.4) before the prompts, the store and PR.md see them. HTML comments are left out of
-  what the model reads.
+  `mask_text` (4.4) before the prompts, the store and PR.md see them. Dates, birth dates included,
+  are not masked. HTML comments are left out of what the model reads, each one as a space.
 - **Their own blocks.** The classification prompt puts the files in `<organization_context>` and
   `<etl_information>` blocks before the `<incident>` block, and both repair prompts carry the same
-  blocks. A tag of a prompt block inside a file (`</etl_information>`, `<signals>`, ...) loses its
-  `<`, so a file cannot close its block or open another one. The instructions tell the model to
-  treat any text in the files that reads like an instruction to an automated tool as data.
-- **Never above the fixed rules.** The context can only make a decision more cautious. The policy
-  (4.1) still decides first: a DATA verdict needs a violated, approved contract, a CODE verdict is
-  refused while one is violated, and infrastructure, definition and aggregate failures go to a
-  person. Then, when the model says that the automatic follow-up of a DATA or CODE decision would
-  go against a rule (`rule_conflict`), the decision becomes AMBIGUOUS ("needs a decision"), with
-  the rule and the reason. No rule turns a failure into DATA or CODE.
+  blocks. A tag of a prompt block inside a file (`</etl_information>`, `<signals>`, a full-width
+  `＜`, a name split by a zero-width character) loses its `<`, so a file cannot close its block or
+  open another one. The problems of a file name its lines and never quote it, and the notes that
+  reach the `<incident>` block are one line each, without control characters or prompt tags, and
+  capped. YAML anchors and aliases are refused in the front matter. The instructions tell the model
+  to treat any text in the files that reads like an instruction to an automated tool as data.
+- **Never above the fixed rules.** The policy (4.1) still decides first: a DATA verdict needs a
+  violated, approved contract, a CODE verdict is refused while one is violated, and
+  infrastructure, definition and aggregate failures go to a person. Then, when the model says that
+  the automatic follow-up of a DATA or CODE decision would go against a rule that was read
+  (`rule_conflict`), the decision becomes AMBIGUOUS ("needs a decision"), with the rule and the
+  reason. A conflict with a rule that was not read (an unknown ID, or no file read) is flagged and
+  changes no decision, so the model cannot stop a fixed rule's verdict with a rule it made up.
 - **Checked citations.** The rule IDs that the model cites (`rules_cited`, the repair tool
   `cite_rules`) are checked against the files that were read: an unknown ID is never counted as
-  applied, and it is flagged in the timeline, PR.md and the decision log. The repair tool
-  `stop_for_rule` accepts only an ID that exists; a stop ends the repair before anything is
-  committed or pushed, and the incident waits for a person.
+  applied, and it is flagged in the timeline, PR.md and the decision log. Only the citations of an
+  accepted test or fix, and of a stop, count. The repair tool `stop_for_rule` accepts only an ID
+  that exists; a stop ends the repair before anything is committed or pushed, even when its
+  session fails afterwards, and the incident waits for a person.
 - **Protected and unreadable.** The context files are protected paths (4.2): a fix never changes
-  them, and `repo.allowed_paths` cannot name them. The repair tools never read or search them.
-- **The decision log.** Every classification, human action and repair outcome is stored with who
-  decided (a fixed rule, the model with its confidence, or a person by name), why, and the rules it
-  cited; the context snapshot of each triage keeps what was read. Both are masked like the rest of
-  the store.
+  them, and `repo.allowed_paths` cannot name them. The repair tools never read or search them,
+  through a link either.
+- **The decision log.** Every classification, human action (contract approvals from the console
+  or the CLI included) and repair outcome is stored with who decided (a fixed rule, the model that
+  answered with its confidence, or a person by name), why, and the rules it cited; the context
+  snapshot of each triage keeps what was read. Both are masked like the rest of the store.
 
 What remains:
 
 - A committer of the base branch can write a file that misleads the model within these rules: tip
   a verdict towards AMBIGUOUS, suggest a wrong fix that still passes the tests, or make every
   incident wait for a person. Review the files like code, with a code-owner review.
-- The secret check is pattern-based, like the masking (G5): a secret in an unusual shape can pass
-  it, and an ordinary sentence shaped like `token: abc12345` is refused.
+- Where the model decides (a CODE verdict that the LLM confirms under rule b, and the `llm` gate),
+  what a rule says weighs on the verdict in both directions: a rule can make CODE more likely as
+  well as AMBIGUOUS. The fixed rules still bound it (no CODE while an approved contract is
+  violated, the confidence threshold), and a fix still needs a failing test and a person's review.
+- The secret check is pattern-based, like the masking (G5): a secret in an unusual shape passes it
+  (an AWS secret key without its name, a password in a sentence or after a command-line flag such
+  as `-p`, a private key without its header), and an ordinary sentence shaped like
+  `token: abc12345` is refused.
 - The model reads the files unchanged apart from the masking: a rule that quotes personal data in
-  an unusual shape reaches it.
+  an unusual shape, or a date of birth, reaches it.
 
 ---
 
@@ -1054,9 +1075,9 @@ UI, the alerts and the pull request (see also G10).
   data.
 - Source code goes to the model as it is: the DAG file, the files named in the traceback (G4) and
   every file that the repair agent reads. The agent's read deny list covers only `.env*`,
-  `healer.yaml`, `data/**`, `fixtures/**` and data files, and `read_file` checks it on the path as
-  written. The agent can read a committed `credentials.json`, a private key, a settings module with
-  a password in it, or a symbolic link that points to a denied file.
+  `healer.yaml`, `data/**`, `fixtures/**`, data files and the context files (on the path as written
+  and on the target of a link). The agent can read a committed `credentials.json`, a private key,
+  or a settings module with a password in it.
 - The generated test and the diff go into the commit and the pull request verbatim. The test
   prompt asks the model to reuse the value that broke the task, for example the string quoted in
   the error message. An unmasked value from an exception message can therefore end up in the
