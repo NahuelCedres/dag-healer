@@ -423,7 +423,8 @@ def test_doctor_composes_the_generic_and_the_adapter_checks(
     adapter_checks = [check.name for check in adapter.doctor_checks()]
     assert set(adapter_checks) == AIRFLOW_CHECKS
     assert list(_doctor_lines(out)) == [
-        *("config", "repository", "contracts", "store", "ui bundle", "llm", "sandbox", "orchestrator"),
+        *("config", "repository", "contracts", "context", "store", "ui bundle", "llm", "sandbox"),
+        "orchestrator",
         *adapter_checks,
         *("smtp", "secrets", "ingest", "github"),
     ]
@@ -738,7 +739,8 @@ def test_doctor_on_the_workers_host_skips_what_it_cannot_see_and_calls_nothing_n
     out = capsys.readouterr().out
     status = _doctor_lines(out)
     assert status["airflow plugin"] == status["ingest"] == "[SKIP]"
-    assert [name for name, label in status.items() if label == "[WARN]"] == ["contracts"]  # drafts only
+    # drafts only, and context files that cannot be read: the copy of the example is no git repository
+    assert [name for name, label in status.items() if label == "[WARN]"] == ["contracts", "context"]
     assert calls == [
         ("GET", "http://localhost:8080/api/v2/monitor/health"),
         ("POST", "http://localhost:8080/auth/token"),

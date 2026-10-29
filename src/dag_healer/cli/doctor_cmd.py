@@ -2,7 +2,7 @@
 
 ``doctor`` runs every check and exits 1 when at least one of them reports an error.
 Secrets are never printed: only whether they are set. The generic checks (configuration,
-repository, contracts, store, UI bundle, LLM, test sandbox) come first, then the
+repository, contracts, context, store, UI bundle, LLM, test sandbox) come first, then the
 ``orchestrator`` check (the configured adapter loads and can serve ``monitor.modes`` and
 ``monitor.trigger``) and the adapter's own checks (``adapter.doctor_checks()``: for Airflow the
 API, the poller's login and the plugin entry point), then SMTP, secrets, ingest and GitHub.
@@ -41,6 +41,14 @@ with one attempt per request and a :data:`METADATA_TIMEOUT_SECONDS` timeout. AWS
 shown without any credential (:func:`dag_healer.agent.bedrock.hide_credentials`, shared with the
 provider). ``check`` warns about an explicit ``llm.fallbacks: true`` with the bedrock provider,
 which sends no fallbacks.
+
+The ``context`` line is about the Organization Context and the ETL Information as the worker
+reads them: from the commit of ``repo.base_branch`` (else its ``origin`` copy, else ``HEAD``),
+never from the working tree. It names that commit, the files found and their rule counts, and
+warns about invalid files (front matter, malformed or duplicate rule IDs, overrides), files
+overdue for a review, files refused for their size or encoding, and edits and files that are
+not committed; without any context file it is skipped. A file refused because it holds what
+looks like a secret is an error: remove the secret from the repository's history and rotate it.
 
 For the container backend the ``sandbox`` check starts one container of the configured image
 (no repository code in it) to prove that it runs as a non-root user, without network, with
@@ -162,6 +170,102 @@ def check_contracts(cfg: HealerConfig) -> CheckResult:
     if approved == 0:
         return CheckResult("contracts", WARN, f"{detail}; nothing is enforced until a contract is approved")
     return CheckResult("contracts", OK, detail)
+
+
+#: At most this many files are named per kind of problem on the ``context`` line.
+_CONTEXT_LISTED = 5
+
+
+def _named(items: list[str]) -> str:
+    shown = ", ".join(items[:_CONTEXT_LISTED])
+    return shown + (f" and {len(items) - _CONTEXT_LISTED} more" if len(items) > _CONTEXT_LISTED else "")
+
+
+def _rule_count(count: int) -> str:
+    return f"{count} rule{'' if count == 1 else 's'}"
+
+
+def check_context(cfg: HealerConfig) -> CheckResult:
+    """The Organization Context and the ETL Information of the base branch's commit (module docstring)."""
+    from dag_healer.context.model import short_sha
+    from dag_healer.context.read import edited_in_working_tree, read_all
+
+    context = cfg.context
+    report = read_all(cfg)
+    hint = "dag-healer init --context writes starter files"
+    local = [path for path in (context.organization,) if (cfg.repo_root / path).exists()] + report.uncommitted
+    if report.problem is not None:
+        if local or (cfg.repo_root / context.etl_dir).is_dir():
+            return CheckResult(
+                "context",
+                WARN,
+                f"not read: {report.problem}, and the context files are read from the base branch's commit",
+            )
+        return CheckResult("context", SKIP, f"no context files ({report.problem}); {hint}")
+    ref = report.ref or "HEAD"
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        ref = ref[len(prefix) :] if ref.startswith(prefix) else ref
+    where = f"{ref}@{short_sha(report.commit)}"
+    organization = report.organization
+    files = [item for item in [organization, *report.etl] if item is not None and item.status != "missing"]
+    if not files and not report.uncommitted and not (organization and organization.uncommitted):
+        return CheckResult(
+            "context",
+            SKIP,
+            f"{where}: no Organization Context ({context.organization}) and no ETL Information in "
+            f"{context.etl_dir}/ yet; {hint}",
+        )
+    parts: list[str] = []
+    if organization is not None and organization.is_read:
+        parts.append(f"{organization.path} ({_rule_count(len(organization.rules))})")
+    elif organization is not None and organization.status == "missing":
+        parts.append(f"no Organization Context ({organization.path})")
+    etl_read = [item for item in report.etl if item.is_read]
+    if report.etl:
+        rules = sum(len(item.rules) for item in etl_read)
+        parts.append(
+            f"{len(etl_read)} of {len(report.etl)} ETL Information file(s) in {context.etl_dir}/ "
+            f"({_rule_count(rules)})"
+        )
+    else:
+        parts.append(f"no ETL Information in {context.etl_dir}/")
+    secrets = [item for item in files if item.refusal == "secret"]
+    refused = [item for item in files if item.status == "refused" and item.refusal != "secret"]
+    unreadable = [item for item in files if item.status == "error"]
+    invalid = [item for item in files if item.is_read and item.problems]
+    stale = [item for item in files if item.is_read and item.stale]
+    issues: list[str] = []
+    if ref == "HEAD" and cfg.repo.base_branch:
+        issues.append(f"repo.base_branch {cfg.repo.base_branch} not found: read from HEAD")
+    if secrets:
+        issues.append(
+            "refused, they hold what looks like a secret (remove it from the history and rotate it): "
+            + _named([f"{item.path} ({item.reason})" for item in secrets])
+        )
+    if refused:
+        issues.append("refused: " + _named([f"{item.path} ({item.reason})" for item in refused]))
+    if unreadable:
+        issues.append("unreadable: " + _named([f"{item.path} ({item.reason})" for item in unreadable]))
+    if invalid:
+        issues.append(
+            "invalid: "
+            + _named([f"{item.path} ({len(item.problems)}: {item.problems[0]})" for item in invalid])
+        )
+    if stale:
+        issues.append(
+            "overdue for a review: " + _named([f"{item.path} (since {item.review_due})" for item in stale])
+        )
+    uncommitted = [*report.uncommitted]
+    if organization is not None and organization.uncommitted:
+        uncommitted.insert(0, organization.path)
+    if uncommitted:
+        issues.append("not committed, so not read: " + _named(uncommitted))
+    edited = edited_in_working_tree(cfg, report.commit or "HEAD", [item.path for item in files])
+    if edited:
+        issues.append("edited but not committed (the committed version is read): " + _named(edited))
+    detail = f"{where}: " + "; ".join(parts + issues)
+    status = ERROR if secrets else (WARN if issues else OK)
+    return CheckResult("context", status, detail)
 
 
 def check_store(cfg: HealerConfig) -> CheckResult:
@@ -703,6 +807,7 @@ def run_checks(config_path: str | None = None) -> list[CheckResult]:
     results += [
         _guarded("repository", lambda: check_repo(cfg)),
         _guarded("contracts", lambda: check_contracts(cfg)),
+        _guarded("context", lambda: check_context(cfg)),
         _guarded("store", lambda: check_store(cfg)),
         _guarded("ui bundle", check_bundle),
         _guarded("llm", lambda: check_llm(cfg)),
@@ -851,6 +956,7 @@ __all__ = [
     "check_plugin_entry_point",
     "check_repo",
     "check_sandbox",
+    "check_context",
     "check_secret_literals",
     "check_smtp",
     "check_store",

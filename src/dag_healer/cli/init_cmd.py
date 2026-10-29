@@ -14,7 +14,10 @@ What it does, in order:
    ``<contracts dir>/<dag_id>.yaml``. Approved contracts are never touched; existing drafts
    are only replaced with ``--force``;
 4. writes ``healer.yaml`` (with the detected ``tests_dir`` and the discovered task datasets)
-   only when it does not exist yet;
+   only when it does not exist yet; with ``--context``, also the starter Organization Context
+   (``context.organization``) and one starter ETL Information per pipeline found
+   (``<context.etl_dir>/<pipeline id>.md``), with guiding questions as comments
+   (:mod:`dag_healer.context.starter`); an existing file is never overwritten;
 5. snapshots the ``*.py`` files again and fails loudly if anything changed: ``init`` must
    never modify DAGs or code;
 6. (the command only: :func:`run_init` never opens the store) creates the incident store, or
@@ -55,6 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from dag_healer.config import HealerConfig
+    from dag_healer.context.starter import StarterOutcome
     from dag_healer.contracts.schema import DatasetContract, DatasetLocator
     from dag_healer.core.ports import OrchestratorAdapter
     from dag_healer.repo.dagscan import DagInfo, DatasetRef
@@ -142,6 +146,9 @@ class InitResult:
     # Set by the command: the next commands need ``-c config_path`` (the current directory and
     # the environment lead them to another healer.yaml, or to none).
     config_option: bool = False
+    #: ``--context``: what happened to each starter file (``None`` without the option).
+    context_files: list[StarterOutcome] | None = None
+    base_branch: str = "main"
 
     @property
     def ok(self) -> bool:
@@ -579,13 +586,15 @@ def run_init(
     force: bool = False,
     dags_dir: str | None = None,
     orchestrator: str | None = None,
+    context: bool = False,
 ) -> InitResult:
     """Run ``dag-healer init`` and return what it did (it prints nothing).
 
     ``orchestrator`` (:data:`ORCHESTRATORS`) picks the template of a new ``healer.yaml``
     (Airflow's when ``None``); with an existing file it must name that file's orchestrator.
     Without a ``healer.yaml``, the repository is scanned with the settings of the template
-    that is then written. Raises :class:`InitError` when the repository, DAG folder, samples
+    that is then written. ``context`` writes the starter context files too (never over an
+    existing file). Raises :class:`InitError` when the repository, DAG folder, samples
     folder, an existing ``healer.yaml``, the template or the orchestrator adapter is unusable.
     """
     from dag_healer.repo.profile import detect_test_layout, snapshot_hashes
@@ -658,6 +667,10 @@ def run_init(
         if template == "stepfunctions":
             warnings.append(SFN_TEMPLATE_NOTE.format(config=target_config.name))
 
+    context_files = (
+        write_context_starters(settings, repo_root, [dag.dag_id for dag in dags]) if context else None
+    )
+
     after = snapshot_hashes(repo_root, ("**/*.py",))
     return InitResult(
         repo_root=repo_root,
@@ -671,6 +684,25 @@ def run_init(
         python_files=len(after),
         warnings=warnings,
         vocabulary=words,
+        context_files=context_files,
+        base_branch=settings.repo.base_branch,
+    )
+
+
+def write_context_starters(cfg: HealerConfig, repo_root: Path, pipelines: list[str]) -> list[StarterOutcome]:
+    """Write the starter Organization Context and ETL Information files of ``pipelines``."""
+    from datetime import datetime, timezone
+
+    from dag_healer.context.read import etl_path
+    from dag_healer.context.starter import write_starter_files
+
+    return write_starter_files(
+        repo_root,
+        organization=cfg.context.organization,
+        etl_dir=cfg.context.etl_dir,
+        pipelines=pipelines,
+        today=datetime.now(timezone.utc).date(),
+        valid_pipeline=lambda pipeline: etl_path(cfg, pipeline) is not None,
     )
 
 
@@ -741,6 +773,24 @@ def _header(word: str) -> str:
     return word.upper().replace(" ", "_")
 
 
+def _context_lines(result: InitResult) -> list[str]:
+    """The ``Context:`` lines of the report: each starter file and what happened to it."""
+    from dag_healer.context.starter import WRITTEN
+
+    files = result.context_files or []
+    lines = []
+    for index, item in enumerate(files):
+        label = "Context:" if index == 0 else ""
+        prefix = f" (rules {item.rule_prefix}-1, {item.rule_prefix}-2, ...)" if item.rule_prefix else ""
+        lines.append(f"{label:<15}{item.path}: {item.outcome}{prefix}")
+    if any(item.outcome == WRITTEN for item in files):
+        lines.append(
+            f"{'':<15}Answer the questions in the starter files, then commit them to {result.base_branch}: "
+            "dag-healer reads the committed files only."
+        )
+    return lines
+
+
 def approve_command(result: InitResult) -> str | None:
     """The ``contracts approve`` command of the first draft, quoted for this platform's shell.
 
@@ -786,6 +836,8 @@ def format_report(result: InitResult) -> str:
     ]
     if result.store is not None:
         lines.append(f"Store:         {result.store}")
+    if result.context_files is not None:
+        lines += _context_lines(result)
     if result.ok:
         lines.append(f"Code files:    unchanged ({result.python_files} Python files verified)")
     command = approve_command(result)
@@ -828,6 +880,12 @@ def _configure(parser: argparse.ArgumentParser) -> None:
         "Functions, with example values to replace). An existing healer.yaml is never changed.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing DRAFT contracts.")
+    parser.add_argument(
+        "--context",
+        action="store_true",
+        help="Also write starter files of the Organization Context and of the ETL Information of each "
+        "pipeline found, with guiding questions (an existing file is never overwritten).",
+    )
 
 
 def _needs_config_option(result: InitResult, explicit: bool) -> bool:
@@ -853,6 +911,7 @@ def _run(args: argparse.Namespace) -> int:
             force=args.force,
             dags_dir=args.dags_dir,
             orchestrator=args.orchestrator,
+            context=args.context,
         )
     except InitError as exc:
         error(str(exc))
@@ -896,4 +955,5 @@ __all__ = [
     "run_init",
     "scan_repository",
     "write_config",
+    "write_context_starters",
 ]
