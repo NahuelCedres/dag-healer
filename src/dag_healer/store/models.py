@@ -416,8 +416,9 @@ class ContextSnapshotRecord(Base):
     ``data`` is :meth:`dag_healer.context.ContextSnapshot.to_dict`: the commit and the ref, and for
     the Organization Context and the ETL Information their path, status (``read``, ``refused``,
     ``missing``, ``error``) and why, blob id, front matter, parsed rules, problems and the masked
-    text the model read (never the text of a refused file). The console shows it from the store,
-    without the worker's checkout.
+    text the model read (never the text of a refused file). A view can show it from the store,
+    without the worker's checkout (the console does not show it yet). A triage that reads the same
+    files again reuses the incident's latest snapshot.
     """
 
     __tablename__ = "healer_context_snapshots"
@@ -467,6 +468,7 @@ class DecisionRecord(Base):
     __table_args__ = (
         Index("ix_healer_decisions_incident", "incident_id", "id"),
         Index("ix_healer_decisions_orch_dag_at", "orchestrator", "dag_id", "at"),
+        Index("ix_healer_decisions_snapshot", "snapshot_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

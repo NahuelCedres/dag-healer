@@ -676,14 +676,25 @@ def list_alerts(session: Session, incident_id: str) -> list[Alert]:
 # Context snapshots and the decision log (schema v3)
 # --------------------------------------------------------------------------- #
 def add_context_snapshot(
-    session: Session, incident: Incident, snapshot: Mapping[str, Any], *, now: datetime | None = None
+    session: Session,
+    incident: Incident,
+    snapshot: Mapping[str, Any],
+    *,
+    reuse_latest: bool = False,
+    now: datetime | None = None,
 ) -> ContextSnapshotRecord:
     """Store what one triage of ``incident`` read of the context files.
 
     ``snapshot`` is :meth:`dag_healer.context.ContextSnapshot.to_dict` (already masked): its
-    ``commit`` and ``ref`` also fill their columns. Returns the row, flushed (its ``id`` is set).
+    ``commit`` and ``ref`` also fill their columns. With ``reuse_latest``, the incident's latest
+    snapshot is returned instead when it holds the same data (a triage that read the same files
+    again). Returns the row, flushed (its ``id`` is set).
     """
     data = json_safe(dict(snapshot))
+    if reuse_latest:
+        latest = latest_context_snapshot(session, incident.id)
+        if latest is not None and latest.data == data:
+            return latest
     record = ContextSnapshotRecord(
         incident_id=incident.id,
         orchestrator=_instance(incident.orchestrator),

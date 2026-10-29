@@ -459,6 +459,7 @@ def test_the_v3_tables_have_their_keys_and_indexes(tmp_path: Path) -> None:
     assert {name for name, _cols, _unique in decisions["indexes"]} == {
         "ix_healer_decisions_incident",
         "ix_healer_decisions_orch_dag_at",
+        "ix_healer_decisions_snapshot",  # SET NULL on a snapshot's delete scans by it
     }
     assert [column[0] for column in snapshots["columns"]] == [
         "id",

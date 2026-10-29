@@ -1027,6 +1027,24 @@ def test_a_contract_approval_is_logged_without_an_incident(lab_repo: Path, tmp_p
     assert decision.decided_by == "Ana Lopez"
 
 
+def test_a_triage_that_reads_the_same_files_again_reuses_its_snapshot(lab_repo: Path, tmp_path: Path) -> None:
+    cfg = pipeline_cfg(lab_repo, tmp_path)
+    incident_id = new_incident(cfg)
+    data = snapshot_of(lab_repo).to_dict()
+    with session_scope(cfg.database_url) as session:
+        incident = store_repo.get_incident(session, incident_id)
+        assert incident is not None
+        first = store_repo.add_context_snapshot(session, incident, data, reuse_latest=True).id
+        again = store_repo.add_context_snapshot(session, incident, data, reuse_latest=True).id
+        changed = store_repo.add_context_snapshot(
+            session, incident, {**data, "notes": ["a new note"]}, reuse_latest=True
+        ).id
+        appended = store_repo.add_context_snapshot(session, incident, {**data, "notes": ["a new note"]}).id
+    assert first == again and changed != first and appended not in (first, changed)
+    with session_scope(cfg.database_url) as session:
+        assert len(store_repo.list_context_snapshots(session, incident_id=incident_id)) == 3
+
+
 def test_the_decision_log_filters_and_cascades(lab_repo: Path, tmp_path: Path) -> None:
     cfg = pipeline_cfg(lab_repo, tmp_path)
     incident_id = new_incident(cfg)
