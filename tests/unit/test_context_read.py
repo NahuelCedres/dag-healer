@@ -821,6 +821,20 @@ def test_a_secret_written_in_fullwidth_letters_is_refused(tmp_path: Path) -> Non
     assert reason.startswith(f"it holds what looks like an AWS access key ID on line {_line_of(text, wide)};")
 
 
+def test_a_fullwidth_credential_over_two_lines_of_a_rule_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    wide = "".join(chr(ord(char) + 0xFEE0) for char in "password")  # what NFKC makes ASCII
+    value = "".join(chr(ord(char) + 0xFEE0) for char in _PASSWORD)
+    text = _org(ORG_RULES + f"- ORG-4: The warehouse {wide}\n  = {value} since May.\n")
+    sha = _commit(repo, {ORG_PATH: text})
+
+    reason = _assert_refused(_read(_cfg(repo)), sha, "secret")
+
+    assert reason.startswith(
+        f"it holds what looks like a credential with its value in ORG-4 (line {_line_of(text, wide)}, "
+    )
+
+
 def test_personal_data_split_by_an_invisible_character_is_masked_everywhere(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "repo")
     _commit(
@@ -843,6 +857,58 @@ def test_personal_data_split_by_an_invisible_character_is_masked_everywhere(tmp_
     for text in shown:
         for raw in ("jane.doe", "555", "5678", "1111", "\u200b", "\u2060", "\ufeff"):
             assert raw not in text
+
+
+#: A backslash, written into the file as it is: YAML reads the escapes of a double-quoted value.
+_B = "\\"
+
+
+def _with_owner(owner: str) -> str:
+    """An Organization Context whose front matter writes ``owner`` as a double-quoted YAML value."""
+    return (
+        f'---\nowner: "{owner}"\nreviewed: 2026-10-01\nreview_every: 1y\n---\n\n'
+        f"# Organization Context\n\n{ORG_RULES}"
+    )
+
+
+def test_a_secret_split_by_a_yaml_escape_in_the_owner_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    sha = _commit(repo, {ORG_PATH: _with_owner(f"{_AWS_HALF}{_B}u200b{'Q7' * 4}")})
+
+    reason = _assert_refused(_read(_cfg(repo)), sha, "secret")
+
+    assert reason.startswith("it holds what looks like an AWS access key ID in its owner;")
+
+
+@pytest.mark.parametrize(
+    ("owner", "stored"),
+    [
+        pytest.param(f"jane.doe{_B}u200b@example.com", "[email]", id="e-mail-split-by-a-zero-width-space"),
+        pytest.param(f"MRN 1234{_B}u20605678", "MRN [number]", id="number-split-by-a-word-joiner"),
+        pytest.param(
+            f"{_B}U000E003C{_B}U000E002F{_B}U000E0069ncident{_B}U000E003E @data-eng",
+            "ncident @data-eng",
+            id="tag-characters",
+        ),
+        pytest.param(
+            f"{_B}e[2Kfake {_B}e]8;;https://evil.example/{_B}aclick{_B}e]8;;{_B}a",
+            "[2Kfake ]8;;https://evil.example/click]8;;",
+            id="terminal-escapes",
+        ),
+    ],
+)
+def test_the_owner_is_read_without_invisible_or_control_characters(
+    tmp_path: Path, owner: str, stored: str
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    _commit(repo, {ORG_PATH: _with_owner(owner)})
+
+    snapshot = _read(_cfg(repo))
+
+    org = snapshot.organization
+    assert org is not None and org.status == "read" and org.owner == stored
+    head = context_blocks(snapshot).split("\n")[0]
+    assert all(char.isprintable() and ord(char) < 0xE0000 for char in head), ascii(head)
 
 
 def test_emoji_and_scripts_keep_their_joiners(tmp_path: Path) -> None:

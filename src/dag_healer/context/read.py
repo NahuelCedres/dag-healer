@@ -49,7 +49,7 @@ from dag_healer.context.parse import (
     strip_comments,
     strip_invisible,
 )
-from dag_healer.masking import find_secret, mask_text
+from dag_healer.masking import SecretFinding, find_secret, mask_text
 from dag_healer.repo.git import GitError, git_bytes, run_git
 
 if TYPE_CHECKING:
@@ -255,28 +255,42 @@ def _secret_in_lines(text: str, known: list[str]) -> str | None:
     the value): a comment inside a value (``AKIA<!-- -->...``) hides it from the first look only.
 
     The comments are taken out twice: joining the text around them (the line of a value split by
-    one), then leaving a space, as the model reads them. The compatibility form (NFKC) is checked
-    last: a value written in fullwidth letters reads as one in ASCII.
+    one), then leaving a space, as the model reads them. The compatibility form is checked last
+    (:func:`_compatible`): a value written in fullwidth letters reads as one in ASCII.
     """
     joined = strip_comments(text, filler="")
-    for variant in (text, joined, strip_comments(text), unicodedata.normalize("NFKC", joined)):
+    for variant in (text, joined, strip_comments(text), _compatible(joined)):
         finding = find_secret(variant, known)
         if finding is not None:
             return finding.describe()
     return None
 
 
+def _compatible(text: str) -> str:
+    """``text`` in its compatibility form (NFKC), without the invisible characters it may bring."""
+    return strip_invisible(unicodedata.normalize("NFKC", text))
+
+
+def _found(text: str, known: list[str]) -> SecretFinding | None:
+    """What looks like a secret in ``text`` as it is or in its compatibility form."""
+    finding = find_secret(text, known)
+    if finding is None and (compatible := _compatible(text)) != text:
+        finding = find_secret(compatible, known)
+    return finding
+
+
 def _secret_once_parsed(parsed: ParsedFile, known: list[str]) -> str | None:
     """What looks like a secret in what the model, the store and the PR would get of a parsed file
-    (a rule whose lines are joined, a folded owner, the text, the problems), with where it is."""
+    (a rule whose lines are joined, a folded owner, the text, the problems), as it is or in its
+    compatibility form, with where it is."""
     for rule in parsed.rules:
-        finding = find_secret(rule.text, known)
+        finding = _found(rule.text, known)
         if finding is not None:
             return f"{finding.kind} in {rule.id} (line {rule.line}, with its lines joined)"
-    if parsed.front.owner and (finding := find_secret(parsed.front.owner, known)) is not None:
+    if parsed.front.owner and (finding := _found(parsed.front.owner, known)) is not None:
         return f"{finding.kind} in its owner"
     for text in (parsed.text, *parsed.problems):
-        finding = find_secret(text, known)
+        finding = _found(text, known)
         if finding is not None:
             return f"{finding.kind} in what the model would read of it"
     return None

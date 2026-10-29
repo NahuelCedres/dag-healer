@@ -322,6 +322,19 @@ def front_matter_lines(text: str) -> dict[str, int]:
     return {}
 
 
+def _text_value(value: Any) -> str | None:
+    """A free-text value of the front matter (the owner) as one line of what shows: the escapes of
+    a quoted YAML value (``\\u200b``, ``\\e``, ``\\U000E0041``) can write back what the reading took
+    out of the file, so invisible and control characters are taken out again, before the secret
+    check and the masking read the value."""
+    if not isinstance(value, str):
+        return None
+    shown = "".join(
+        char for char in strip_invisible(value) if unicodedata.category(char) != "Cc" or char.isspace()
+    )
+    return " ".join(shown.split()) or None
+
+
 def read_front_matter(
     data: Mapping[str, Any] | None,
     *,
@@ -343,9 +356,9 @@ def read_front_matter(
             line = (key_lines or {}).get(str(key))
             where = f" on line {line}" if line else ""
             problems.append(f"front matter: unknown key{where} (known: {', '.join(known)})")
-    owner = data.get("owner")
-    if isinstance(owner, str) and owner.strip():
-        front.owner = owner.strip()
+    owner = _text_value(data.get("owner"))
+    if owner:
+        front.owner = owner
     else:
         problems.append(
             "front matter: owner is missing (who keeps the file up to date, such as @acme/data-eng)"
