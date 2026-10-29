@@ -320,8 +320,10 @@ def check_citations(
     """The answer's cited rules checked against the context files read, and its rule conflict.
 
     The rule of a conflict counts as cited. Without a snapshot every cited ID is unknown; a
-    conflict naming an unknown rule is kept (``known: False``) to be flagged, and changes no
-    decision (:func:`~dag_healer.agent.policy.apply_rule_conflict`).
+    conflict naming an unknown rule is kept (``known: False``) to be flagged, and so is one naming
+    an ORG rule that the ETL Information replaces (``overridden_by``: the rule that replaces it,
+    which is the one that applies). Neither changes a decision
+    (:func:`~dag_healer.agent.policy.apply_rule_conflict`).
     """
     if classification is None:
         return Citations(), None
@@ -338,6 +340,8 @@ def check_citations(
         "known": ref is not None,
         "where": ref.where if ref is not None else None,
     }
+    if ref is not None and ref.overridden_by:
+        data["overridden_by"] = ref.overridden_by
     extra = Citations([ref], []) if ref is not None else Citations([], [data["rule"]])
     return citations.merge(extra), data
 

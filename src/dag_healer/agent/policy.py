@@ -749,12 +749,19 @@ def apply_rule_conflict(decision: Decision, conflict: Mapping[str, Any] | None) 
     """The decision once a rule conflict is taken into account: never less cautious than before.
 
     ``conflict`` is ``{"rule": ID, "reason": text}`` plus, from the classification, ``where``
-    (``path@sha`` of the rule) and ``known``. Only a conflict with a rule of the context files read
-    (``known`` is True) counts: the model cannot stop a decision with a rule it made up, and the
-    caller flags the others. A data or code decision becomes ambiguous with the rule
-    :data:`RULE_CONTEXT`; an ambiguous one keeps its rule and gains the conflict in its reason.
+    (``path@sha`` of the rule), ``known`` and ``overridden_by``. Only a conflict with a rule of the
+    context files read (``known`` is True) that applies to the pipeline (no ``overridden_by``: the
+    ETL Information does not replace it) counts: the model cannot stop a decision with a rule it
+    made up or one that does not apply, and the caller flags the others. A data or code decision
+    becomes ambiguous with the rule :data:`RULE_CONTEXT`; an ambiguous one keeps its rule and gains
+    the conflict in its reason.
     """
-    if not conflict or not str(conflict.get("rule") or "").strip() or conflict.get("known") is not True:
+    if (
+        not conflict
+        or not str(conflict.get("rule") or "").strip()
+        or conflict.get("known") is not True
+        or conflict.get("overridden_by")
+    ):
         return decision
     rule = mask_text(conflict.get("rule")).strip()
     reason = mask_text(conflict.get("reason") or "no reason given").strip().rstrip(".")

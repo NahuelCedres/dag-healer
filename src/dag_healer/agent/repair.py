@@ -896,6 +896,15 @@ class RepairTools:
         parts: list[str] = []
         if checked.applied:
             parts.append("Recorded: " + ", ".join(checked.applied_ids) + ".")
+            replaced = [
+                f"{ref.id} is replaced here by {ref.overridden_by}"
+                for ref in checked.applied
+                if ref.overridden_by
+            ]
+            if replaced:
+                parts.append(
+                    "(" + "; ".join(replaced) + ": the rule that replaces it is the one that applies.)"
+                )
         if checked.unknown:
             parts.append(
                 "Not rules of the context files in the prompt (the pull request flags them): "
@@ -915,6 +924,12 @@ class RepairTools:
             return (
                 f"Error: {shown} is not a rule of the Organization Context or the ETL Information in the "
                 "prompt. Name the ID of the rule the work would go against, or go on when no rule is broken."
+            )
+        if ref.overridden_by:
+            return (
+                f"Error: {rule_id} does not apply to this pipeline: {ref.overridden_by} replaces it "
+                f"({ref.overridden_by} overrides {rule_id}). Stop for {ref.overridden_by}, or another rule "
+                "that applies, only if the work goes against it."
             )
         if not isinstance(reason, str) or not reason.strip():
             return "Error: say in one sentence why the work would go against the rule."

@@ -433,6 +433,20 @@ def test_a_conflict_without_any_context_file_never_changes_a_decision(tmp_path: 
     assert outcome.rule_conflict is not None and outcome.rule_conflict["known"] is False
 
 
+def test_a_conflict_with_an_org_rule_the_etl_information_replaces_changes_nothing(lab_repo: Path) -> None:
+    plain = classify_incident(
+        make_cfg(lab_repo), lab_ctx(snapshot_of(lab_repo)), AnswerProvider(code_answer())
+    )
+    answer = code_answer(
+        rule_conflict=RuleConflict(rule="ORG-3", reason="the fix fills empty results with 0")
+    )
+    outcome = classify_incident(make_cfg(lab_repo), lab_ctx(snapshot_of(lab_repo)), AnswerProvider(answer))
+    assert (outcome.category, outcome.decision.reason) == ("code", plain.decision.reason)
+    assert outcome.rule_conflict is not None
+    assert (outcome.rule_conflict["rule"], outcome.rule_conflict["overridden_by"]) == ("ORG-3", "LAB-2")
+    assert apply_rule_conflict(plain.decision, outcome.rule_conflict) is plain.decision
+
+
 def test_without_context_files_every_citation_is_unknown(tmp_path: Path) -> None:
     provider = AnswerProvider(code_answer(rules_cited=["ORG-1"]))
     outcome = classify_incident(make_cfg(tmp_path), lab_ctx(None), provider)
@@ -555,6 +569,15 @@ def test_stop_for_rule_needs_a_known_rule_and_a_reason_then_stops_the_work(works
     assert tools.replace_in_file("src/calc.py", "int(left)", "float(left)").startswith(refused)
     assert tools.run_tests().startswith(refused)
     assert (workspace / "src" / "calc.py").read_text(encoding="utf-8") == CALC_SOURCE
+
+
+def test_stop_for_rule_points_from_a_replaced_org_rule_to_the_rule_that_replaces_it(workspace: Path) -> None:
+    tools = tools_for(workspace, "fix", snapshot_of(workspace))
+    answer = tools.stop_for_rule("ORG-3", "the fix would fill empty results with 0")
+    assert answer.startswith("Error: ORG-3 does not apply to this pipeline: LAB-2 replaces it")
+    assert tools.rule_conflict is None
+    assert "replaced here by LAB-2" in tools.cite_rules(["ORG-3"])
+    assert tools.stop_for_rule("LAB-2", "the fix would load a preliminary result as 0").startswith("Stopped:")
 
 
 @pytest.mark.parametrize(
@@ -929,7 +952,7 @@ def test_a_repair_stopped_for_a_rule_waits_for_a_person_and_is_logged(lab_repo: 
                 ("write_file", {"path": CALC_TEST_PATH, "content": CALC_TEST}),
                 ("run_tests", {"paths": [CALC_TEST_PATH]}),
             ],
-            "fix": [("stop_for_rule", {"rule": "ORG-3", "reason": "the fix would default the empty values"})],
+            "fix": [("stop_for_rule", {"rule": "LAB-1", "reason": "the fix would default the empty values"})],
         },
     )
     alerts = Alerts()
@@ -944,20 +967,20 @@ def test_a_repair_stopped_for_a_rule_waits_for_a_person_and_is_logged(lab_repo: 
             event for event in store_repo.list_events(session, incident_id) if event.kind == "repair"
         ][-1]
         assert repair_event.data["status"] == RULE_CONFLICT
-        assert repair_event.data["rule_conflict"]["rule"] == "ORG-3"
+        assert repair_event.data["rule_conflict"]["rule"] == "LAB-1"
         assert repair_event.message.startswith(
-            "Needs a decision: the fix this failure needs would go against ORG-3"
+            "Needs a decision: the fix this failure needs would go against LAB-1"
         )
         logged = store_repo.list_decisions(session, incident_id=incident_id)
         assert [(d.stage, d.decision, d.decided_by_kind) for d in logged] == [
             ("classification", "code", "model"),
             ("repair", "rule_conflict", "model"),
         ]
-        assert [rule["id"] for rule in logged[1].rules] == ["ORG-1", "ORG-3"]
+        assert [rule["id"] for rule in logged[1].rules] == ["ORG-1", "LAB-1"]
         assert logged[1].data["rule_conflict"]["phase"] == "fix"
     [(event, extra)] = alerts.events
     assert event == "waiting_human"
-    assert extra["reason"].startswith("Needs a decision: the fix this failure needs would go against ORG-3")
+    assert extra["reason"].startswith("Needs a decision: the fix this failure needs would go against LAB-1")
 
 
 def test_a_repair_outcome_is_logged_with_who_decided(lab_repo: Path, tmp_path: Path) -> None:
