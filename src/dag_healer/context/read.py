@@ -123,12 +123,30 @@ def _is_ancestor(repo: Path, older: str, newer: str) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", older, newer) is not None
 
 
+def _is_shallow(repo: Path) -> bool:
+    return (_git(repo, "rev-parse", "--is-shallow-repository") or "").strip() == "true"
+
+
+def _commit_time(repo: Path, sha: str) -> int:
+    out = (_git(repo, "show", "-s", "--format=%ct", sha) or "").strip()
+    return int(out) if out.isdigit() else 0
+
+
+def _ref_name(ref: str) -> str:
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
 def base_commit(repo: Path, base_branch: str) -> tuple[str, str, str | None] | None:
     """``(sha, ref, note)`` of the commit to read: the newer of the base branch and its ``origin``
     copy, else ``HEAD``.
 
     A local branch behind ``origin/<base_branch>`` (a checkout that fetches without updating it)
-    gives way to it; when the two have diverged, the local branch is read and ``note`` says so.
+    gives way to it. In a shallow clone (git-sync fetches with ``--depth 1``) the history that
+    joins the two may be missing: the one with the newer commit date is read (the origin copy on a
+    tie). When the two have diverged, the local branch is read and ``note`` says so.
     """
     found = [
         (sha, ref)
@@ -141,6 +159,10 @@ def base_commit(repo: Path, base_branch: str) -> tuple[str, str, str | None] | N
         (local, local_ref), (remote, remote_ref) = found
         if _is_ancestor(repo, local, remote):
             return remote, remote_ref, None
+        if not _is_ancestor(repo, remote, local) and _is_shallow(repo):
+            # The origin copy is what a fetch updates: it wins a tie.
+            newer = _commit_time(repo, remote) >= _commit_time(repo, local)
+            return (remote, remote_ref, None) if newer else (local, local_ref, None)
         if not _is_ancestor(repo, remote, local):
             note = (
                 f"{base_branch} ({short_sha(local)}) and origin/{base_branch} ({short_sha(remote)}) have "
@@ -151,6 +173,27 @@ def base_commit(repo: Path, base_branch: str) -> tuple[str, str, str | None] | N
         return found[0][0], found[0][1], None
     head = _commit_of(repo, "HEAD")
     return (head, "HEAD", None) if head is not None else None
+
+
+def head_note(repo: Path, commit: str, ref: str, paths: Iterable[str]) -> str | None:
+    """A note when the checked-out commit (``HEAD``) holds other versions of ``paths`` than
+    ``commit``, the one read: a local base branch that nothing updates any more, or a checkout of
+    another branch whose context files are not merged yet. ``None`` otherwise."""
+    if ref == "HEAD":
+        return None
+    head = _commit_of(repo, "HEAD")
+    wanted = [path for path in paths if path]
+    if head is None or head == commit or not wanted:
+        return None
+    out = _git(repo, "diff", "--name-only", "--relative", "--no-renames", "-z", commit, head, "--", *wanted)
+    changed = sorted(name for name in (out or "").split("\0") if name)
+    if not changed:
+        return None
+    name = _ref_name(ref)
+    return (
+        f"HEAD ({short_sha(head)}) holds other context files than {name}@{short_sha(commit)} "
+        f"({', '.join(changed)}): dag-healer reads the ones of {name}, the base branch."
+    )
 
 
 def _entries(repo: Path, commit: str, path: str) -> list[_Entry] | None:
@@ -334,7 +377,7 @@ def _read_file(
     entry = next((candidate for candidate in entries if candidate.path == item.path), None)
     if entry is None:
         item.status = "missing"
-        item.uncommitted = (repo / item.path).exists()
+        item.uncommitted = _in_tree_as_written(repo, item.path)
         return item
     _read_entry(repo, commit, item, entry, max_bytes=max_bytes, known=known, today=today)
     if history and item.status in ("read", "refused"):
@@ -428,9 +471,19 @@ def etl_path(cfg: HealerConfig, pipeline_id: str) -> str | None:
     return f"{cfg.context.etl_dir}/{pipeline_id}.md"
 
 
+def _in_tree_as_written(root: Path, rel: str) -> bool:
+    """True when ``rel`` is in the working tree with its name as written: a case-insensitive file
+    system also finds ``healer/etl/sales.md`` for ``healer/etl/SALES.md``."""
+    path = root / rel
+    try:
+        return path.exists() and path.name in os.listdir(path.parent)
+    except OSError:
+        return False
+
+
 def _in_working_tree(cfg: HealerConfig, paths: Iterable[str]) -> list[str]:
     root = cfg.repo_root
-    return [path for path in paths if path and (root / path).exists()]
+    return [path for path in paths if path and _in_tree_as_written(root, path)]
 
 
 def read_context(
@@ -498,6 +551,9 @@ def read_context(
     present = any(item.status != "missing" for item in snapshot.files())
     if ref_note and present:
         snapshot.notes.append(ref_note)
+    head = head_note(repo, snapshot.commit, snapshot.ref, wanted)
+    if head:
+        snapshot.notes.append(head)
     if snapshot.ref == "HEAD" and present:
         snapshot.notes.append(
             f"repo.base_branch {cfg.repo.base_branch} was not found in the repository; the context files "
@@ -530,6 +586,8 @@ class ContextReport:
     problem: str | None = None
     #: Why the base branch and its ``origin`` copy were not the same commit, when it matters.
     note: str | None = None
+    #: When ``HEAD`` holds other context files than the commit read (:func:`head_note`).
+    head_note: str | None = None
 
 
 def read_all(
@@ -585,7 +643,8 @@ def read_all(
     for item in files:
         _cross_check(ContextSnapshot(commit=commit, ref=ref, organization=organization, etl=item))
     uncommitted = [f"{etl_dir}/{name}" for name in local if name not in committed]
-    return ContextReport(commit, ref, organization, files, uncommitted, note=ref_note)
+    head = head_note(repo, commit, ref, [cfg.context.organization, etl_dir])
+    return ContextReport(commit, ref, organization, files, uncommitted, note=ref_note, head_note=head)
 
 
 __all__ = [
@@ -598,6 +657,7 @@ __all__ = [
     "edited_in_working_tree",
     "etl_path",
     "file_note",
+    "head_note",
     "is_repository",
     "known_secret_values",
     "read_all",

@@ -248,6 +248,8 @@ def check_context(cfg: HealerConfig) -> CheckResult:
         issues.append(f"repo.base_branch {cfg.repo.base_branch} not found: read from HEAD")
     if report.note:
         issues.append(report.note.replace("; the context files were read from", ", read from").rstrip("."))
+    if report.head_note:
+        issues.append(report.head_note.rstrip("."))
     if secrets:
         issues.append(
             "refused, they hold what looks like a secret (remove it from the history and rotate it): "
@@ -271,7 +273,8 @@ def check_context(cfg: HealerConfig) -> CheckResult:
         uncommitted.insert(0, organization.path)
     if uncommitted:
         issues.append("not committed, so not read: " + _named(uncommitted))
-    edited = edited_in_working_tree(cfg, report.commit or "HEAD", [item.path for item in files])
+    # Edits of the working tree only: what HEAD holds and the base branch does not is head_note.
+    edited = edited_in_working_tree(cfg, "HEAD", [item.path for item in files])
     if edited:
         issues.append("edited but not committed (the committed version is read): " + _named(edited))
     detail = f"{where}: " + "; ".join(parts + issues)

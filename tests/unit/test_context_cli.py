@@ -255,6 +255,23 @@ def test_doctor_escapes_the_control_characters_of_what_the_repository_holds(tmp_
     assert "healer/etl/sales\\x1b]8;;evil\\x07x\\x1b[2K.md (its name is not a pipeline id)" in shown
 
 
+def test_doctor_warns_about_a_head_with_other_context_files_and_no_uncommitted_edit(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    old = _commit(repo, {"healer/organization.md": _org("- ORG-1: The old rule.\n")})
+    new = _commit(repo, {"healer/organization.md": _org("- ORG-1: The new rule.\n")})
+    _git(repo, "checkout", "-q", "--detach", new)
+    _git(repo, "update-ref", "refs/heads/main", old)
+
+    result = check_context(_cfg(repo))
+
+    assert result.status == WARN
+    assert result.detail == (
+        f"main@{old[:7]}: healer/organization.md (1 rule); no ETL Information in healer/etl/; "
+        f"HEAD ({new[:7]}) holds other context files than main@{old[:7]} (healer/organization.md): "
+        "dag-healer reads the ones of main, the base branch"
+    )
+
+
 def test_doctor_warns_about_an_invalid_file_and_shows_its_first_problem(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "repo")
     etl_text = _sales("- SAL1: Amounts are whole cents.\n- sal-2: Refunds are left out.\n- SAL-3: Unique.\n")

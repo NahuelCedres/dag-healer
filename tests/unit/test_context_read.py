@@ -208,14 +208,21 @@ def test_the_base_branch_is_read_whatever_is_checked_out(tmp_path: Path) -> None
 
     assert (snapshot.commit, snapshot.ref, snapshot.ref_name) == (main_sha, "refs/heads/main", "main")
     assert snapshot.organization is not None and snapshot.organization.rule_ids() == ORG_IDS
-    assert snapshot.notes == []
+    head = _git(repo, "rev-parse", "HEAD")
+    assert (
+        snapshot.notes
+        == [  # the checkout's own version is said, never read
+            f"HEAD ({head[:7]}) holds other context files than main@{main_sha[:7]} ({ORG_PATH}): dag-healer "
+            "reads the ones of main, the base branch."
+        ]
+    )
 
 
 def test_the_origin_copy_of_the_base_branch_is_read_without_a_local_branch(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "repo")
     published = _commit(repo, {ORG_PATH: _org()})
     _git(repo, "branch", "-m", "main", "work")
-    _commit(repo, {ORG_PATH: _org("- ORG-7: Only on the local branch.\n")})
+    work = _commit(repo, {ORG_PATH: _org("- ORG-7: Only on the local branch.\n")})
     _git(repo, "update-ref", "refs/remotes/origin/main", published)
 
     snapshot = _read(_cfg(repo))
@@ -227,7 +234,10 @@ def test_the_origin_copy_of_the_base_branch_is_read_without_a_local_branch(tmp_p
     )
     assert snapshot.organization is not None and snapshot.organization.rule_ids() == ORG_IDS
     assert snapshot.summary() == f"origin/main@{published[:7]}: healer/organization.md (3 rules)"
-    assert snapshot.notes == []
+    assert snapshot.notes == [
+        f"HEAD ({work[:7]}) holds other context files than origin/main@{published[:7]} ({ORG_PATH}): "
+        "dag-healer reads the ones of origin/main, the base branch."
+    ]
 
 
 def test_a_local_base_branch_behind_its_origin_copy_gives_way_to_it(tmp_path: Path) -> None:
@@ -277,6 +287,54 @@ def test_a_local_base_branch_that_diverged_from_its_origin_copy_is_read_with_a_n
     _git(repo, "rm", "-q", ORG_PATH)
     _git(repo, "commit", "-q", "-m", "no context files")
     assert _read(_cfg(repo)).notes == []  # nothing to read: nothing to say
+
+
+def test_a_shallow_clone_reads_the_newer_of_the_base_branch_and_its_origin_copy(tmp_path: Path) -> None:
+    source = _repo(tmp_path / "source")
+    for number in range(3):
+        _commit(
+            source, {ORG_PATH: _org(f"- ORG-1: Rule {number}.\n")}, when=f"2026-10-0{number + 1}T08:00:00Z"
+        )
+    _git(tmp_path, "clone", "-q", "--depth", "1", "--branch", "main", f"file://{source}", "clone")
+    clone = tmp_path / "clone"
+    new = _commit(source, {ORG_PATH: _org("- ORG-1: The new rule.\n")}, when="2026-10-20T08:00:00Z")
+    _git(clone, "fetch", "-q", "--depth", "1", "origin", "main")  # as git-sync does: the history is cut
+    _git(clone, "checkout", "-q", "--detach", "origin/main")  # and its checkout is the synced commit
+    assert _git(clone, "rev-parse", "--is-shallow-repository") == "true"
+
+    snapshot = _read(_cfg(clone))
+
+    assert (snapshot.commit, snapshot.ref) == (new, "refs/remotes/origin/main")
+    assert snapshot.rules()["ORG-1"].text == "The new rule."
+    assert snapshot.notes == []
+
+
+def test_a_head_that_holds_other_context_files_than_the_base_branch_gets_a_note(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    old = _commit(repo, {ORG_PATH: _org("- ORG-1: The old rule.\n")})
+    new = _commit(repo, {ORG_PATH: _org("- ORG-1: The new rule.\n")})
+    _git(repo, "checkout", "-q", "--detach", new)
+    _git(repo, "update-ref", "refs/heads/main", old)  # a local main that nothing updates any more
+
+    snapshot = _read(_cfg(repo))
+
+    assert (snapshot.commit, snapshot.ref) == (old, "refs/heads/main")
+    assert snapshot.notes == [
+        f"HEAD ({new[:7]}) holds other context files than main@{old[:7]} ({ORG_PATH}): dag-healer reads "
+        "the ones of main, the base branch."
+    ]
+    assert read_all(_cfg(repo), today=TODAY).head_note == snapshot.notes[0]
+
+
+def test_a_head_with_the_same_context_files_gets_no_note(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    sha = _commit(repo, {ORG_PATH: _org()})
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _commit(repo, {"src/job.py": "print('a change of the code only')\n"})
+
+    snapshot = _read(_cfg(repo))
+
+    assert (snapshot.commit, snapshot.notes) == (sha, [])
 
 
 def test_head_is_read_with_a_note_when_the_base_branch_is_not_found(tmp_path: Path) -> None:
@@ -852,6 +910,16 @@ def test_a_refused_etl_information_leaves_the_organization_context_in_use(tmp_pa
         f"{etl.reason}."
     ]
     assert secret not in json.dumps(snapshot.to_dict()) and secret not in context_blocks(snapshot)
+
+
+def test_a_pipeline_id_in_another_case_gets_no_note_about_the_working_tree(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    _commit(repo, {ORG_PATH: _org(), "healer/etl/sales.md": _sales()})
+
+    snapshot = _read(_cfg(repo), "SALES")  # a case-insensitive file system finds healer/etl/sales.md
+
+    assert snapshot.etl is not None and (snapshot.etl.status, snapshot.etl.uncommitted) == ("missing", False)
+    assert snapshot.notes == []
 
 
 def test_a_folder_where_the_file_should_be_is_an_error(tmp_path: Path) -> None:
