@@ -847,7 +847,9 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
   are taken out, before the secret check, the parsing and the masking: what is checked, stored and
   sent is the same text, and an invisible character cannot hide a secret, an e-mail address or a
   tag. A zero-width joiner or non-joiner between two characters that are not ASCII (an emoji
-  sequence, Persian, Devanagari) and a variation selector after one stay.
+  sequence, Persian, Devanagari) and a variation selector after one stay. The owner of the front
+  matter is cleaned again once parsed, control characters included: the escapes of a quoted YAML
+  value (`\u200b`, `\e`) could write them back.
 - **Refused files.** A file is refused, and nothing of it is sent to the model or stored, when it:
   - holds what looks like a secret (`masking.find_secret`): a private key, an AWS access key or
     secret key, a GitHub, GitLab, Anthropic, Slack, Google, Stripe, Azure storage, Databricks,
@@ -856,12 +858,13 @@ Enforced (`context/`, `agent/`, `repo/protected_paths.py`):
     prefix such as `PGPASSWORD=...`, a value of 12 characters or more without digits that looks
     random, with upper case after its first letter, or the value alone on the next line that is
     not a key of its own), or the value of a secret of `healer.yaml` or of a credential variable
-    of the worker's environment (whole, or a fragment of 16 characters). Code that fetches a
-    credential (`Variable.get(...)`, `settings.X`), a path and words joined by `-` or `_`
-    (`stored-in-vault`) are not values. The check reads the file as it is, without its HTML
-    comments (so a comment cannot split a value), in its NFKC form (fullwidth letters as ASCII),
-    and as the model would read it: each rule with its lines joined, the owner, the text and the
-    problems;
+    of the worker's environment (whole, or a fragment of 16 characters). A value with letters and
+    digits is a credential whatever its separators (`P4ss.Word99`, `8f9Xk2/Lm3pQ/zR7`); without
+    digits, code that fetches a credential (`Variable.get(...)`, `settings.X`), a path and words
+    joined by `-` or `_` (`stored-in-vault`) are not values. The check reads the file as it is,
+    without its HTML comments (so a comment cannot split a value), in its NFKC form (fullwidth
+    letters as ASCII), and as the model would read it, as it is and in its NFKC form: each rule
+    with its lines joined, the owner, the text and the problems;
   - is larger than `context.max_file_bytes` (16 KB by default; it is not even read);
   - is not UTF-8 text, or is a symbolic link or no regular file.
 
@@ -917,9 +920,14 @@ What remains:
   violated, the confidence threshold), and a fix still needs a failing test and a person's review.
 - The secret check is pattern-based, like the masking (G5): a secret in an unusual shape passes it
   (an AWS secret key without its name, a password in a sentence or after a command-line flag such
-  as `-p`, a private key without its header, a long passphrase in lower case only such as
-  `password: supersecretvalue`), and an ordinary sentence shaped like `token: abc12345`, or a
-  value shaped like a real token in an example, is refused.
+  as `-p`, a private key without its header). So do the shapes it leaves out on purpose, the price
+  of reading ordinary lines about credentials (`password: stored-in-vault`,
+  `api_key = os.environ.get(...)`): a passphrase in lower case only (`password: supersecretvalue`),
+  words joined by `-` or `_` (`correct-horse-battery-staple`), an `Authorization: Basic` or
+  `Bearer` credential of letters only, a GitLab or Vault token made of letters and separators, and
+  a value that reads as a key on the next line (`password:`, then `s3cr3t: true`). On the other
+  side, an ordinary sentence shaped like `token: abc12345`, code or a path with digits
+  (`api_key = config.api_key_v2`), and a value shaped like a real token in an example are refused.
 - The model reads the files unchanged apart from the masking: a rule that quotes personal data in
   an unusual shape (in fullwidth letters, say), or a date of birth, reaches it.
 

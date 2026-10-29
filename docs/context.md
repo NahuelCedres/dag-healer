@@ -183,9 +183,9 @@ names it in parentheses after its ID:
    Anthropic, Slack, Google, Stripe, Azure storage, Databricks, Vault, npm and SendGrid tokens,
    `Authorization` headers with a token, passwords in URLs, credentials written with their value
    (`password: ...`, `PGPASSWORD=...`, or the value alone on the next line) and the values of the
-   worker's credentials. Code that fetches a credential (`Variable.get(...)`,
-   `settings.CRM_SECRET`), a path and words such as `stored-in-vault` are not values, so a rule
-   that says where a credential lives is read. It looks at the file as it is, without its HTML
+   worker's credentials. A value with letters and digits is one whatever its separators; without
+   digits, code that fetches a credential (`Variable.get(...)`, `settings.CRM_SECRET`), a path and
+   words such as `stored-in-vault` are not, so a rule that says where a credential lives is read. It looks at the file as it is, without its HTML
    comments (a comment can split a value), in fullwidth letters' ASCII form, and as the model
    would read it: a rule whose lines are joined, the owner, the text. A file larger than
    `context.max_file_bytes`, not UTF-8 text or a symbolic link is refused too. The incident and
